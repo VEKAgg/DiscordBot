@@ -1,10 +1,10 @@
 {
   "name": "discord-bot",
-  "version": "1.0.0",
-  "description": "First iteration of Discord bot made by amateur TwistedVortek from VEKA team. Contributions are greatly appreciated",
+  "version": "0.1.0",
+  "description": "First iteration of VEKA Discord bot",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+      "start": "node index.js"
   },
   "keywords": [],
   "author": "",
