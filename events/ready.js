@@ -4,20 +4,22 @@ module.exports = {
     execute(client) {
         console.log(`Logged in as ${client.user.tag}!`);
 
-        // Rotating statuses
-        const statuses = [
-            'Under Development | veka.gg',
-            'VEKA Bot v0.1 | Contribute on GitHub!',
-            'Type #help for commands!',
-        ];
-
-        let index = 0;
         setInterval(() => {
+            const serverCount = client.guilds.cache.size;
+            const memberCount = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
+
+            const statuses = [
+                `Serving ${serverCount} servers`,
+                `Serving ${memberCount} members`,
+                `Type #help for commands`,
+            ];
+
+            const status = statuses[Math.floor(Math.random() * statuses.length)];
+
             client.user.setPresence({
-                activities: [{ name: statuses[index], type: 'WATCHING' }],
+                activities: [{ name: status, type: 'PLAYING' }],
                 status: 'online',
             });
-            index = (index + 1) % statuses.length; // Loop through statuses
-        }, 10000); // Change every 10 seconds
+        }, 10000); // Update every 10 seconds
     },
 };

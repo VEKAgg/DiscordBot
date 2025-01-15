@@ -1,4 +1,4 @@
-const { createEmbed } = require('../utils/embedUtils');
+const { createEmbed } = require('../../utils/embedUtils');
 const os = require('os');
 
 module.exports = {

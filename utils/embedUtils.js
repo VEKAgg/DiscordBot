@@ -1,13 +1,11 @@
 const { EmbedBuilder } = require('discord.js');
 
-// Default embed color
-const DEFAULT_COLOR = 0xFFA500; // Orange
+function createEmbed(title, description, color = 0xFFA500) {
+    const embed = new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor(color);
+    return embed;
+}
 
-module.exports = {
-    createEmbed(title, description, color = DEFAULT_COLOR) {
-        return new EmbedBuilder()
-            .setTitle(title)
-            .setDescription(description)
-            .setColor(color);
-    },
-};
+module.exports = { createEmbed };

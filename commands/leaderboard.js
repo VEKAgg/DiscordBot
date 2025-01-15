@@ -1,17 +1,16 @@
-const messageCounts = new Map(); // In-memory storage for message counts
+const { createEmbed } = require('../utils/embedUtils');
 
 module.exports = {
     name: 'leaderboard',
-    description: 'Shows the message leaderboard',
-    execute(message) {
-        const sorted = Array.from(messageCounts.entries())
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 5)
-            .map(([userId, count], index) => `${index + 1}. <@${userId}>: ${count} messages`)
+    description: 'Displays the points leaderboard.',
+    execute(message, args, client) {
+        const sorted = Array.from(client.points.entries())
+            .sort(([, a], [, b]) => b - a)
+            .slice(0, 10)
+            .map(([userId, points], index) => `${index + 1}. <@${userId}>: ${points} points`)
             .join('\n');
 
-        message.channel.send({
-            content: '**Message Leaderboard:**\n' + (sorted || 'No messages yet!'),
-        });
+        const embed = createEmbed('Points Leaderboard', sorted || 'No points yet!');
+        message.channel.send({ embeds: [embed] });
     },
 };

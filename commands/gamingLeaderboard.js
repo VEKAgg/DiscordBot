@@ -1,9 +1,11 @@
-const presenceData = new Map();
+const { createEmbed } = require('../utils/embedUtils');
 
 module.exports = {
     name: 'gaming-leaderboard',
-    description: 'Shows the gaming leaderboard',
-    execute(message) {
+    description: 'Displays the gaming leaderboard.',
+    execute(message, args, client) {
+        const presenceData = client.presenceData || new Map();
+
         const leaderboard = Array.from(presenceData.entries())
             .flatMap(([userId, games]) =>
                 Object.entries(games).map(([game, hours]) => ({
@@ -13,12 +15,16 @@ module.exports = {
                 }))
             )
             .sort((a, b) => b.hours - a.hours)
-            .slice(0, 5)
-            .map((entry, index) => `${index + 1}. <@${entry.userId}>: ${entry.hours} hours in ${entry.game}`)
-            .join('\n');
+            .slice(0, 10)
+            .map((entry, index) =>
+                `${index + 1}. <@${entry.userId}>: ${entry.hours} hours in ${entry.game}`
+            );
 
-        message.channel.send({
-            content: '**Gaming Leaderboard:**\n' + (leaderboard || 'No data yet!'),
-        });
+        const embed = createEmbed(
+            'Gaming Leaderboard',
+            leaderboard.length ? leaderboard.join('\n') : 'N/A'
+        );
+
+        message.channel.send({ embeds: [embed] });
     },
 };

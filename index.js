@@ -9,12 +9,22 @@ const client = new Client({
 client.commands = new Collection();
 
 // Load commands
-const commandFiles = fs.readdirSync('./commands').filter((file) => file.endsWith('.js'));
-for (const file of commandFiles) {
-    console.log(`Loading command: ${file}`);
-    const command = require(`./commands/${file}`);
-    client.commands.set(command.name, command);
-}
+const loadCommands = (dir) => {
+    const commandFiles = fs.readdirSync(dir).filter((file) => file.endsWith('.js'));
+    for (const file of commandFiles) {
+        console.log(`Loading command: ${file}`);
+        const command = require(`${dir}/${file}`);
+        client.commands.set(command.name, command);
+    }
+
+    const subfolders = fs.readdirSync(dir).filter((folder) => fs.lstatSync(`${dir}/${folder}`).isDirectory());
+    for (const subfolder of subfolders) {
+        loadCommands(`${dir}/${subfolder}`); // Recursively load subfolders
+    }
+};
+
+loadCommands('./commands');
+
 
 // Load events
 const eventFiles = fs.readdirSync('./events').filter((file) => file.endsWith('.js'));
@@ -30,3 +40,6 @@ for (const file of eventFiles) {
 
 // Login the bot
 client.login(process.env.TOKEN);
+
+client.points = new Map();
+
