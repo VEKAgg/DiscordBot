@@ -2,33 +2,24 @@ const { createEmbed } = require('../../utils/embedCreator');
 
 module.exports = {
     name: 'ping',
-    description: 'Check bot latency',
-    contributor: 'Sleepless',
+    description: 'Responds with bot latency.',
     async execute(message) {
         try {
-            const sent = await message.channel.send('Pinging...');
-            const latency = sent.createdTimestamp - message.createdTimestamp;
-            const apiLatency = Math.round(message.client.ws.ping);
+            if (!message || !message.author || message.author.bot) return; // Ignore bot messages
 
-            const embed = createEmbed({
+            // Send initial response
+            const sent = await message.channel.send('Pinging...');
+
+            // Create an embed with the latency info
+            const pingEmbed = createEmbed({
                 title: '🏓 Pong!',
-                fields: [
-                    { name: 'Bot Latency', value: `${latency}ms`, inline: true },
-                    { name: 'API Latency', value: `${apiLatency}ms`, inline: true }
-                ],
-                author: {
-                    name: message.author.tag,
-                    iconURL: message.author.displayAvatarURL({ dynamic: true })
-                },
-                footer: {
-                    text: `Contributor: ${module.exports.contributor} • VEKA`,
-                    iconURL: message.client.user.displayAvatarURL()
-                }
+                description: `Latency: **${sent.createdTimestamp - message.createdTimestamp}ms**\nAPI Latency: **${Math.round(message.client.ws.ping)}ms**`,
             });
 
-            await sent.edit({ content: null, embeds: [embed] });
+            // Edit the message with the embed
+            await sent.edit({ content: null, embeds: [pingEmbed] });
         } catch (error) {
-            message.reply('Error checking ping. Please try again.');
+            console.error('Error in ping command:', error);
         }
     },
-}; 
+};
