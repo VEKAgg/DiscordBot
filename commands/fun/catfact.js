@@ -1,17 +1,32 @@
-const facts = [
-    'Cats sleep for 70% of their lives.',
-    'A group of cats is called a clowder.',
-    'Cats can rotate their ears 180 degrees.',
-    'A cat’s nose is as unique as a human’s fingerprint.',
-    'Domestic cats share about 95.6% of their DNA with tigers.',
-  ];
-  
-  module.exports = {
+const { EmbedBuilder } = require('discord.js');
+const { fetchAPI } = require('../../utils/apiManager');
+const rateLimiter = require('../../utils/rateLimiter');
+
+module.exports = {
     name: 'catfact',
-    description: 'Send a random cat fact.',
-    execute(message) {
-      const fact = facts[Math.floor(Math.random() * facts.length)];
-      message.channel.send(`🐱 Cat Fact: ${fact}`);
+    description: 'Get a random cat fact with image',
+    async execute(message) {
+        const rateCheck = await rateLimiter.checkLimit('cat');
+        if (!rateCheck.success) {
+            return message.reply(rateCheck.message);
+        }
+
+        try {
+            const [fact, image] = await Promise.all([
+                fetchAPI('cat', '/facts/random'),
+                fetchAPI('cat', '/images/random')
+            ]);
+
+            const embed = new EmbedBuilder()
+                .setTitle('🐱 Cat Fact')
+                .setDescription(fact.text)
+                .setImage(image.url)
+                .setFooter({ text: `Calls remaining: ${rateCheck.remaining} | Resets in: ${Math.ceil(rateCheck.resetIn / 60)}m` });
+
+            message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            message.reply('Failed to fetch cat fact. Please try again later.');
+        }
     },
-  };
+};
   

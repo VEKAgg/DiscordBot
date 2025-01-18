@@ -1,3 +1,5 @@
+const embedUtils = require('../../utils/embedUtils');
+
 module.exports = {
     name: 'report',
     description: 'Report a user to the server admins.',

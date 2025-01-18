@@ -1,15 +1,21 @@
-const { createEmbed } = require('../../utils/embedUtils');
-const moment = require('moment');
+const embedUtils = require('../../utils/embedUtils');
 
 module.exports = {
     name: 'uptime',
-    description: 'Show how long the bot has been online.',
-    execute(message, args, client) {
-        const uptime = moment.duration(client.uptime);
-        const embed = createEmbed(
-            'Bot Uptime',
-            `Online for: **${uptime.days()}d ${uptime.hours()}h ${uptime.minutes()}m ${uptime.seconds()}s**`,
-        );
+    description: 'Check the bot\'s uptime.',
+    execute(message) {
+        const totalSeconds = Math.floor(message.client.uptime / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+
+        const embed = createEmbed({
+            title: 'Uptime',
+            description: `The bot has been online for **${hours}h ${minutes}m ${seconds}s**.`,
+            color: 'BLUE',
+            message,
+        });
+
         message.channel.send({ embeds: [embed] });
     },
 };

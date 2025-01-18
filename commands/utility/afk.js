@@ -1,3 +1,5 @@
+const embedUtils = require('../../utils/embedUtils');
+
 const afkUsers = new Map();
 
 module.exports = {

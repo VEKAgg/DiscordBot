@@ -1,17 +1,33 @@
-const facts = [
-    'Dogs have a sense of time and can predict future events like regular walk times.',
-    'Dogs have three eyelids.',
-    'A dog’s nose print is as unique as a human fingerprint.',
-    'Dogs are as smart as a two-year-old child.',
-    'The Basenji dog is known as the “barkless dog.”',
-  ];
-  
-  module.exports = {
+const { EmbedBuilder } = require('discord.js');
+const { fetchAPI } = require('../../utils/apiManager');
+const rateLimiter = require('../../utils/rateLimiter');
+
+module.exports = {
     name: 'dogfact',
-    description: 'Send a random dog fact.',
-    execute(message) {
-      const fact = facts[Math.floor(Math.random() * facts.length)];
-      message.channel.send(`🐶 Dog Fact: ${fact}`);
+    description: 'Get a random dog fact with image',
+    async execute(message) {
+        const rateCheck = await rateLimiter.checkLimit('dog');
+        if (!rateCheck.success) {
+            return message.reply(rateCheck.message);
+        }
+
+        try {
+            const [fact, image] = await Promise.all([
+                fetchAPI('dog', '/facts/random'),
+                fetchAPI('dog', '/images/random')
+            ]);
+
+            const embed = new EmbedBuilder()
+                .setTitle('🐶 Dog Fact')
+                .setDescription(fact.facts[0])
+                .setImage(image.url)
+                .setColor('#8B4513')
+                .setFooter({ text: `Calls remaining: ${rateCheck.remaining} | Resets in: ${Math.ceil(rateCheck.resetIn / 60)}m` });
+
+            message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            message.reply('Failed to fetch dog fact. Please try again later.');
+        }
     },
-  };
+};
   
