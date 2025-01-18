@@ -1,52 +1,48 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 
 module.exports = {
     name: 'howgay',
-    description: 'Find out how "gay" someone is (for humor)',
+    description: 'Check how gay someone is (just for fun!)',
+    contributor: 'Sleepless',
     execute(message, args) {
-        const target = message.mentions.users.first() || message.author;
+        const target = message.mentions.users.first() || 
+            (args.length ? args.join(' ') : message.author.username);
+        const percentage = Math.floor(Math.random() * 101);
         
-        // Generate consistent percentage based on user ID
-        const seed = parseInt(target.id.slice(-4));
-        const percentage = seed % 101;
+        const getColor = (percent) => {
+            if (percent < 30) return '#00FF00';
+            if (percent < 70) return '#FFA500';
+            return '#FF69B4';
+        };
 
-        let comment, color;
-        if (percentage > 80) {
-            comment = '🌈 YAAAS QUEEN! Slaying the gay game! 💅';
-            color = '#FF1493';
-        } else if (percentage > 60) {
-            comment = '🏳️‍🌈 Living that fabulous life! ✨';
-            color = '#FF69B4';
-        } else if (percentage > 40) {
-            comment = '🌟 Keeping it rainbow casual! 🌈';
-            color = '#FFA500';
-        } else if (percentage > 20) {
-            comment = '🤔 Just a tiny bit fruity! 🍎';
-            color = '#98FB98';
-        } else {
-            comment = '😴 Straight as a ruler! 📏';
-            color = '#87CEEB';
-        }
+        const getMessage = (percent) => {
+            if (percent < 30) return 'Pretty straight! 😎';
+            if (percent < 70) return 'A bit curious? 🤔';
+            return 'Super gay! 🌈';
+        };
 
-        const progressBar = createProgressBar(percentage);
-        const embed = new EmbedBuilder()
-            .setTitle('🏳️‍🌈 Gay-O-Meter 3000')
-            .setDescription(`Analyzing ${target.username}'s gay levels...`)
-            .addFields([
-                { name: 'Gay Level', value: `${progressBar} ${percentage}%`, inline: false },
-                { name: 'Verdict', value: comment, inline: false }
-            ])
-            .setColor(color)
-            .setFooter({ text: 'This is a joke command for entertainment purposes only!' })
-            .setTimestamp();
+        const embed = createEmbed({
+            title: '🏳️‍🌈 Gay Rate Machine',
+            description: `${typeof target === 'string' ? target : target.username} is ${percentage}% gay!\n\n${getMessage(percentage)}`,
+            color: getColor(percentage),
+            fields: [
+                {
+                    name: 'Gay Level',
+                    value: `${'🟦'.repeat(Math.floor(percentage/10))}${'⬜'.repeat(10-Math.floor(percentage/10))}`,
+                    inline: false
+                }
+            ],
+            author: {
+                name: message.author.tag,
+                iconURL: message.author.displayAvatarURL({ dynamic: true })
+            },
+            footer: {
+                text: `Contributor: ${module.exports.contributor} • VEKA | Just for fun, don't take it seriously!`,
+                iconURL: message.client.user.displayAvatarURL()
+            }
+        });
 
         message.channel.send({ embeds: [embed] });
-    },
+    }
 };
-
-function createProgressBar(percentage) {
-    const filled = Math.round(percentage / 10);
-    const empty = 10 - filled;
-    return '🌈'.repeat(filled) + '⬜'.repeat(empty);
-}
   

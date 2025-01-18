@@ -1,21 +1,15 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
 const NodeCache = require('node-cache');
+const { logger } = require('../../utils/logger');
 const cache = new NodeCache({ stdTTL: 3600 }); // Cache for 1 hour
 
 module.exports = {
     name: 'botupdates',
     description: 'Show the latest updates from GitHub repository',
+    contributor: 'Sleepless',
     async execute(message) {
-        const cacheKey = 'github_updates';
-        const cachedUpdates = cache.get(cacheKey);
-
-        if (cachedUpdates) {
-            message.channel.send({ embeds: [cachedUpdates] });
-            return;
-        }
-
         const rateCheck = await rateLimiter.checkLimit('github');
         if (!rateCheck.success) {
             return message.reply(rateCheck.message);
@@ -34,23 +28,30 @@ module.exports = {
                 updateText += `• ${commit.commit.message}\n`;
             });
 
-            const embed = new EmbedBuilder()
-                .setTitle('🤖 Bot Updates')
-                .setDescription('Latest changes from GitHub:')
-                .addFields([
+            const embed = createEmbed({
+                title: '🤖 Bot Updates',
+                description: 'Latest changes from GitHub:',
+                fields: [
                     { name: 'Recent Updates', value: updateText || 'No recent updates' },
                     { name: 'Repository', value: `[View on GitHub](${repo.html_url})` },
                     { name: 'Stats', value: `⭐ ${repo.stargazers_count} | 🔄 ${repo.forks_count}` }
-                ])
-                .setColor('#2b2d31')
-                .setFooter({ text: `Last updated: ${new Date().toLocaleDateString()}` })
-                .setTimestamp();
+                ],
+                color: '#2b2d31',
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Last updated: ${new Date().toLocaleDateString()}`,
+                    iconURL: message.client.user.displayAvatarURL()
+                }
+            });
 
-            cache.set(cacheKey, embed);
+            cache.set('github_updates', embed);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
-            console.error('GitHub API Error:', error);
+            logger.error('Error in botupdates command:', error);
             message.reply('Failed to fetch updates. Please try again later.');
         }
-    },
+    }
 };

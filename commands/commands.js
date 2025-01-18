@@ -1,32 +1,38 @@
-const { EmbedBuilder } = require('discord.js');
-const { createEmbed } = require('../utils/embedUtils');
-
+const { createEmbed } = require('../../utils/embedCreator');
 const fs = require('fs');
 const path = require('path');
+const { logger } = require('../../utils/logger');
 
 module.exports = {
-  name: 'commands',
-  description: 'List all available commands.',
-  execute(message) {
-    const commandDirs = ['./commands/utility', './commands/fun', './commands/informational'];
-    let allCommands = '';
+    name: 'commands',
+    description: 'List all commands',
+    execute(message) {
+        try {
+            const commandsPath = path.join(__dirname, '..');
+            const categories = fs.readdirSync(commandsPath)
+                .filter(folder => fs.statSync(path.join(commandsPath, folder)).isDirectory());
 
-    commandDirs.forEach((dir) => {
-      const files = fs.readdirSync(path.resolve(__dirname, '..', dir.split('/').pop()));
-      const category = dir.split('/').pop().toUpperCase();
-      allCommands += `**${category} Commands**\n`;
-      files.forEach((file) => {
-        const command = require(path.join(__dirname, '..', dir.split('/').pop(), file));
-        allCommands += `\`#${command.name}\` - ${command.description}\n`;
-      });
-      allCommands += '\n';
-    });
+            const embed = createEmbed({
+                title: 'Available Commands',
+                description: 'Here are all available command categories:'
+            });
 
-    const embed = new EmbedBuilder()
-      .setTitle('Available Commands')
-      .setDescription(allCommands)
-      .setColor('BLUE');
+            categories.forEach(category => {
+                const commands = fs.readdirSync(path.join(commandsPath, category))
+                    .filter(file => file.endsWith('.js'))
+                    .map(file => file.replace('.js', ''));
+                
+                embed.addFields({
+                    name: category.charAt(0).toUpperCase() + category.slice(1),
+                    value: commands.join(', ') || 'No commands',
+                    inline: false
+                });
+            });
 
-    message.channel.send({ embeds: [embed] });
-  },
+            message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            logger.error('Error in commands command:', error);
+            message.reply('An error occurred while fetching commands.');
+        }
+    }
 };

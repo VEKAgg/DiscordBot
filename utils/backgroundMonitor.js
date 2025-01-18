@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { logger } = require('./logger');
 
 /**
  * Runs periodic health checks on the bot.
@@ -15,48 +16,40 @@ async function runBackgroundChecks(client) {
     }
 
     setInterval(async () => {
-        console.log('[Background Monitor] Running health checks...');
+        logger.info('[Background Monitor] Running health checks...');
         const errors = [];
 
         try {
-            // Example Check 1: Test command execution (ping)
+            // Test ping command
             const pingCommand = client.commands.get('ping');
             if (pingCommand) {
+                const mockMessage = {
+                    channel: { send: () => Promise.resolve() },
+                    createdTimestamp: Date.now(),
+                    client
+                };
+                
                 try {
-                    await pingCommand.execute({
-                        channel: {
-                            send: () => Promise.resolve(), // Mock send to avoid spamming
-                        },
-                        author: { username: 'BackgroundChecker' },
-                        createdTimestamp: Date.now(),
-                        client,
-                    });
+                    await pingCommand.execute(mockMessage);
                 } catch (err) {
                     errors.push(`Ping command failed: ${err.message}`);
+                    logger.error('Ping command test failed:', err);
                 }
             }
-
-            // Example Check 2: Verify APIs (replace with real checks)
-            const isApiWorking = await checkExampleApi();
-            if (!isApiWorking) {
-                errors.push('Example API is unresponsive.');
-            }
-
-        } catch (err) {
-            errors.push(`Unexpected error: ${err.message}`);
+            
+        } catch (error) {
+            logger.error('Background check failed:', error);
+            errors.push(`Background check error: ${error.message}`);
         }
-
+        
         // Log errors if any
         if (errors.length) {
             const timestamp = new Date().toISOString();
             const logData = `[${timestamp}] Errors: \n${errors.join('\n')}\n\n`;
-
-            // Log to file
             fs.appendFileSync(errorLogPath, logData);
-
-            console.error('[Background Monitor] Errors detected:', errors);
+            logger.error('[Background Monitor] Errors detected:', errors);
         } else {
-            console.log('[Background Monitor] All checks passed.');
+            logger.info('[Background Monitor] All checks passed.');
         }
     }, checkInterval);
 }

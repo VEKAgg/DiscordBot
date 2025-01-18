@@ -1,7 +1,8 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
 const NodeCache = require('node-cache');
+const { logger } = require('../../utils/logger');
 const cache = new NodeCache({ stdTTL: 1800 }); // Cache for 30 minutes
 
 const animals = {
@@ -41,8 +42,8 @@ module.exports = {
     name: 'animalfact',
     aliases: ['catfact', 'dogfact'],
     description: 'Get random animal facts with images',
+    contributor: 'Sleepless',
     async execute(message, args) {
-        // Handle aliases
         let animal = args[0]?.toLowerCase() || 
             (message.content.includes('catfact') ? 'cat' : 
              message.content.includes('dogfact') ? 'dog' : 'random');
@@ -63,14 +64,6 @@ module.exports = {
             return message.reply(rateCheck.message);
         }
 
-        const cacheKey = `animalfact_${animal}`;
-        const cachedFact = cache.get(cacheKey);
-
-        if (cachedFact) {
-            message.channel.send({ embeds: [cachedFact] });
-            return;
-        }
-
         try {
             const [fact, image] = await Promise.all([
                 fetchAPI(animal, '/facts/random'),
@@ -78,11 +71,20 @@ module.exports = {
             ]);
 
             const { emoji, color } = animals[animal];
-            const embed = new EmbedBuilder()
-                .setTitle(`${emoji} ${animal.charAt(0).toUpperCase() + animal.slice(1)} Fact`)
-                .setDescription(animal === 'dog' ? fact.facts[0] : fact.text)
-                .setImage(image.url)
-                .setColor(color);
+            const embed = createEmbed({
+                title: `${emoji} ${animal.charAt(0).toUpperCase() + animal.slice(1)} Fact`,
+                description: animal === 'dog' ? fact.facts[0] : fact.text,
+                image: { url: image.url },
+                color: color,
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Resets in: ${Math.ceil(rateCheck.resetIn / 60)}m`,
+                    iconURL: message.client.user.displayAvatarURL()
+                }
+            });
 
             if (image.breeds?.length) {
                 embed.addFields({
@@ -92,18 +94,13 @@ module.exports = {
                 });
             }
 
-            embed.setFooter({ 
-                text: `Calls remaining: ${rateCheck.remaining} | Use #animalfact [animal] to specify an animal` 
-            })
-            .setTimestamp();
-
-            cache.set(cacheKey, embed);
+            cache.set(`animalfact_${animal}`, embed);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
-            console.error(`${animal} fact Error:`, error);
+            logger.error(`${animal} fact Error:`, error);
             message.reply(`Failed to fetch ${animal} fact. Please try again later.`);
         }
-    },
+    }
 };
 
 function formatBreedInfo(breed) {

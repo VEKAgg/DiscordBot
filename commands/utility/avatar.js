@@ -1,20 +1,16 @@
 const { createEmbed } = require('../../utils/embedCreator');
 
 module.exports = {
-    name: 'coinflip',
-    description: 'Flip a coin',
+    name: 'avatar',
+    description: 'Get user avatar',
     contributor: 'Sleepless',
-    execute(message) {
-        const result = Math.random() < 0.5;
-        const outcomes = {
-            true: { text: 'Heads', emoji: '🦅' },
-            false: { text: 'Tails', emoji: '🦁' }
-        };
-
+    async execute(message, args) {
+        const user = message.mentions.users.first() || message.author;
+        
         const embed = createEmbed({
-            title: `${outcomes[result].emoji} Coin Flip`,
-            description: `The coin landed on **${outcomes[result].text}**!`,
-            color: '#FFD700',
+            title: `${user.username}'s Avatar`,
+            description: `[Click to download](${user.displayAvatarURL({ size: 4096, dynamic: true })})`,
+            image: { url: user.displayAvatarURL({ size: 4096, dynamic: true }) },
             author: {
                 name: message.author.tag,
                 iconURL: message.author.displayAvatarURL({ dynamic: true })

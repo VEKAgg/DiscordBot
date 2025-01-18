@@ -1,12 +1,14 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
 const NodeCache = require('node-cache');
+const { logger } = require('../../utils/logger');
 const cache = new NodeCache({ stdTTL: 600 }); // Cache for 10 minutes
 
 module.exports = {
   name: 'news',
   description: 'Get latest news headlines with filtering options',
+  contributor: 'Sleepless',
   async execute(message, args) {
     const validCategories = ['business', 'technology', 'science', 'health', 'sports'];
     let category = 'general';
@@ -23,14 +25,6 @@ module.exports = {
         query += arg + ' ';
       }
     });
-
-    const cacheKey = `news_${category}_${country}_${query.trim()}`;
-    const cachedNews = cache.get(cacheKey);
-
-    if (cachedNews) {
-      message.channel.send({ embeds: [cachedNews] });
-      return;
-    }
 
     const rateCheck = await rateLimiter.checkLimit('news');
     if (!rateCheck.success) {
@@ -51,12 +45,18 @@ module.exports = {
         return message.reply('No news found for those criteria!');
       }
 
-      const embed = new EmbedBuilder()
-        .setTitle(`📰 Latest ${category.charAt(0).toUpperCase() + category.slice(1)} News`)
-        .setDescription(query ? `Search: "${query.trim()}"` : '')
-        .setColor('#0099ff')
-        .setFooter({ text: `Country: ${country.toUpperCase()} | Calls remaining: ${rateCheck.remaining}` })
-        .setTimestamp();
+      const embed = createEmbed({
+        title: `📰 Latest ${category.charAt(0).toUpperCase() + category.slice(1)} News`,
+        description: query ? `Search: "${query.trim()}"` : '',
+        author: {
+          name: message.author.tag,
+          iconURL: message.author.displayAvatarURL({ dynamic: true })
+        },
+        footer: {
+          text: `Contributor: ${module.exports.contributor} • VEKA | Country: ${country.toUpperCase()} | Calls remaining: ${rateCheck.remaining}`,
+          iconURL: message.client.user.displayAvatarURL()
+        }
+      });
 
       news.articles.forEach((article, index) => {
         embed.addFields([{
@@ -65,10 +65,10 @@ module.exports = {
         }]);
       });
 
-      cache.set(cacheKey, embed);
+      cache.set(`news_${category}_${country}_${query.trim()}`, embed);
       message.channel.send({ embeds: [embed] });
     } catch (error) {
-      console.error('News API Error:', error);
+      logger.error('News API Error:', error);
       message.reply('Error fetching news! Please try again later.');
     }
   },

@@ -1,56 +1,47 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
-const NodeCache = require('node-cache');
-const cache = new NodeCache({ stdTTL: 300 }); // Cache for 5 minutes
+const { logger } = require('../../utils/logger');
 
 module.exports = {
     name: 'gif',
-    description: 'Search for a GIF',
+    description: 'Search for a GIF or get a random one',
+    contributor: 'Sleepless',
     async execute(message, args) {
-        if (!args.length) {
-            return message.reply('Please provide a search term. Example: `#gif cute cats`');
-        }
-
         const query = args.join(' ');
-        const cacheKey = `gif_${query.toLowerCase()}`;
-        const cachedGif = cache.get(cacheKey);
-
-        if (cachedGif) {
-            message.channel.send({ embeds: [cachedGif] });
-            return;
-        }
-
-        const rateCheck = await rateLimiter.checkLimit('giphy');
+        const rateCheck = await rateLimiter.checkLimit('gif');
         if (!rateCheck.success) {
             return message.reply(rateCheck.message);
         }
 
         try {
-            const response = await fetchAPI('giphy', '/v1/gifs/search', {
-                params: {
-                    q: query,
-                    limit: 10,
-                    rating: 'g'
+            const gif = await fetchAPI('giphy', query ? '/search' : '/random', {
+                params: query ? { q: query, limit: 1 } : {}
+            });
+
+            const gifData = query ? gif.data[0] : gif.data;
+            if (!gifData) {
+                return message.reply('No GIF found for that search term!');
+            }
+
+            const embed = createEmbed({
+                title: '🎬 GIF',
+                description: query ? `Search: "${query}"` : 'Random GIF',
+                image: { url: gifData.images.original.url },
+                color: '#FF69B4',
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Powered by GIPHY`,
+                    iconURL: message.client.user.displayAvatarURL()
                 }
             });
 
-            if (!response.data.length) {
-                return message.reply('No GIFs found for that search term.');
-            }
-
-            const randomGif = response.data[Math.floor(Math.random() * response.data.length)];
-            const embed = new EmbedBuilder()
-                .setTitle(`🎬 GIF Search: ${query}`)
-                .setImage(randomGif.images.original.url)
-                .setColor('#00ff00')
-                .setFooter({ text: `Powered by GIPHY | Calls remaining: ${rateCheck.remaining}` })
-                .setTimestamp();
-
-            cache.set(cacheKey, embed);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
-            console.error('GIF API Error:', error);
+            logger.error('GIF Error:', error);
             message.reply('Failed to fetch GIF. Please try again later.');
         }
     },

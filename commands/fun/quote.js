@@ -1,39 +1,28 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
 const NodeCache = require('node-cache');
+const { logger } = require('../../utils/logger');
 const cache = new NodeCache({ stdTTL: 3600 }); // Cache for 1 hour
 
 const categories = {
-    inspirational: { emoji: '✨', color: '#FFD700' },
-    motivational: { emoji: '💪', color: '#FF4500' },
-    life: { emoji: '🌟', color: '#32CD32' },
-    love: { emoji: '❤️', color: '#FF69B4' },
-    wisdom: { emoji: '🧠', color: '#9370DB' },
-    success: { emoji: '🏆', color: '#DAA520' },
-    random: { emoji: '🎲', color: '#4169E1' }
+    inspire: { emoji: '✨', color: '#FFD700', description: 'Inspirational quotes' },
+    life: { emoji: '🌟', color: '#98FB98', description: 'Life wisdom' },
+    love: { emoji: '❤️', color: '#FF69B4', description: 'Love and relationships' },
+    success: { emoji: '🎯', color: '#4169E1', description: 'Success and motivation' },
+    random: { emoji: '🎲', color: '#DDA0DD', description: 'Random quotes' }
 };
 
 module.exports = {
     name: 'quote',
-    description: 'Get inspirational quotes by category or author',
+    description: 'Get an inspiring quote',
+    contributor: 'Sleepless',
     async execute(message, args) {
-        let category = 'random';
-        let author = '';
-
-        // Parse arguments
-        if (args.length) {
-            if (args[0].startsWith('category:')) {
-                category = args[0].split(':')[1].toLowerCase();
-                author = args.slice(1).join(' ');
-            } else {
-                author = args.join(' ');
-            }
-        }
-
-        if (category !== 'random' && !categories[category]) {
+        const category = args[0]?.toLowerCase();
+        
+        if (category && !categories[category]) {
             const categoryList = Object.entries(categories)
-                .map(([name, info]) => `${info.emoji} **${name}**`)
+                .map(([name, info]) => `${info.emoji} **${name}** - ${info.description}`)
                 .join('\n');
             return message.reply(`Invalid category! Available categories:\n${categoryList}`);
         }
@@ -43,45 +32,29 @@ module.exports = {
             return message.reply(rateCheck.message);
         }
 
-        const cacheKey = `quote_${category}_${author}`;
-        const cachedQuote = cache.get(cacheKey);
-
-        if (cachedQuote) {
-            message.channel.send({ embeds: [cachedQuote] });
-            return;
-        }
-
         try {
-            const params = {
-                category: category === 'random' ? undefined : category,
-                author: author || undefined
-            };
+            const quote = await fetchAPI('quotes', category ? `/quotes/${category}` : '/quotes/random');
+            const { emoji, color } = categories[category || 'random'];
 
-            const quote = await fetchAPI('quotes', '/random', { params });
-            const { emoji, color } = categories[category] || categories.random;
+            const embed = createEmbed({
+                title: `${emoji} Quote of the Moment`,
+                description: `*"${quote.text}"*\n\n— ${quote.author || 'Unknown'}`,
+                color: color,
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Category: ${category || 'Random'}`,
+                    iconURL: message.client.user.displayAvatarURL()
+                }
+            });
 
-            const embed = new EmbedBuilder()
-                .setTitle(`${emoji} Quote of the Moment`)
-                .setDescription(`*"${quote.content}"*`)
-                .addFields([
-                    { name: 'Author', value: quote.author || 'Unknown', inline: true },
-                    { name: 'Category', value: quote.category || 'General', inline: true }
-                ])
-                .setColor(color)
-                .setFooter({ 
-                    text: `Tags: ${quote.tags?.join(', ') || 'None'} | Calls remaining: ${rateCheck.remaining}` 
-                })
-                .setTimestamp();
-
-            if (quote.authorImage) {
-                embed.setThumbnail(quote.authorImage);
-            }
-
-            cache.set(cacheKey, embed);
+            cache.set(`quote_${category || 'random'}`, embed);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
-            console.error('Quote Error:', error);
+            logger.error('Quote Error:', error);
             message.reply('Failed to fetch quote. Please try again later.');
         }
-    },
+    }
 };

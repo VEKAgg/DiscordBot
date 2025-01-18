@@ -1,7 +1,8 @@
-const { EmbedBuilder } = require('discord.js');
+const { createEmbed } = require('../../utils/embedCreator');
 const { fetchAPI } = require('../../utils/apiManager');
 const rateLimiter = require('../../utils/rateLimiter');
 const NodeCache = require('node-cache');
+const { logger } = require('../../utils/logger');
 const cache = new NodeCache({ stdTTL: 3600 }); // Cache for 1 hour
 
 const categories = {
@@ -17,6 +18,7 @@ const categories = {
 module.exports = {
     name: 'fact',
     description: 'Get an interesting fact from various categories',
+    contributor: 'Sleepless',
     async execute(message, args) {
         const category = args[0]?.toLowerCase();
         
@@ -32,39 +34,38 @@ module.exports = {
             return message.reply(rateCheck.message);
         }
 
-        const cacheKey = category || 'random';
-        const cachedFact = cache.get(cacheKey);
-
-        if (cachedFact) {
-            message.channel.send({ embeds: [cachedFact] });
-            return;
-        }
-
         try {
             const fact = await fetchAPI('facts', category ? `/facts/${category}` : '/facts/random');
             const { emoji, color } = categories[category || 'random'];
 
-            const embed = new EmbedBuilder()
-                .setTitle(`${emoji} ${category ? category.charAt(0).toUpperCase() + category.slice(1) : 'Random'} Fact`)
-                .setDescription(fact.text)
-                .addFields([
+            const embed = createEmbed({
+                title: `${emoji} ${category ? category.charAt(0).toUpperCase() + category.slice(1) : 'Random'} Fact`,
+                description: fact.text,
+                color: color,
+                fields: [
                     { name: 'Category', value: fact.category, inline: true },
                     { name: 'Source', value: fact.source || 'Unknown', inline: true },
                     { name: 'Verified', value: fact.verified ? '✅ Yes' : '❌ No', inline: true }
-                ])
-                .setColor(color)
-                .setFooter({ text: `Calls remaining: ${rateCheck.remaining} | Use #fact [category] to specify a category` })
-                .setTimestamp();
+                ],
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Resets in: ${Math.ceil(rateCheck.resetIn / 60)}m`,
+                    iconURL: message.client.user.displayAvatarURL()
+                }
+            });
 
             if (fact.image_url) {
                 embed.setImage(fact.image_url);
             }
 
-            cache.set(cacheKey, embed);
+            cache.set(category || 'random', embed);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
-            console.error('Fact Error:', error);
+            logger.error('Fact Error:', error);
             message.reply('Failed to fetch fact. Please try again later.');
         }
-    },
+    }
 };

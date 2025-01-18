@@ -1,23 +1,21 @@
-const embedUtils = require('../../utils/embedUtils');
+const { createEmbed } = require('../../utils/embedCreator');
+const moment = require('moment');
 
 module.exports = {
     name: 'userinfo',
-    description: 'Displays detailed information about a user.',
-    execute(message) {
+    description: 'Display info about a user',
+    async execute(message, args) {
         const member = message.mentions.members.first() || message.member;
-        const { user } = member;
-
-        const embed = createEmbed('User Information', `
-            **Username:** ${user.tag}
-            **User ID:** ${user.id}
-            **Account Created:** ${user.createdAt.toDateString()}
-            **Joined Server:** ${member.joinedAt?.toDateString() || 'N/A'}
-            **Roles:** ${member.roles.cache.map((role) => role.name).join(', ')}
-        `);
-
-        if (user.displayAvatarURL()) {
-            embed.setThumbnail(user.displayAvatarURL({ dynamic: true, size: 1024 }));
-        }
+        
+        const embed = createEmbed({
+            title: `User Information - ${member.user.tag}`,
+            thumbnail: { url: member.user.displayAvatarURL({ dynamic: true }) },
+            fields: [
+                { name: 'Joined Server', value: moment(member.joinedAt).format('MMMM Do YYYY'), inline: true },
+                { name: 'Account Created', value: moment(member.user.createdAt).format('MMMM Do YYYY'), inline: true },
+                { name: 'Roles', value: member.roles.cache.map(r => r).join(', ') || 'None' }
+            ]
+        });
 
         message.channel.send({ embeds: [embed] });
     },
