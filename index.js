@@ -1,10 +1,12 @@
 const { Client, GatewayIntentBits, Collection } = require('discord.js');
 const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 const schedule = require('node-schedule');
 const { runBackgroundChecks } = require('./utils/backgroundMonitor');
 const config = require('./config');
 const { logger } = require('./utils/logger');
+const { connect: connectDB } = require('./database');
 
 const client = new Client({
   intents: [
@@ -12,6 +14,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildPresences,
     GatewayIntentBits.GuildVoiceStates
   ],
 });
@@ -23,20 +26,57 @@ require('events').EventEmitter.defaultMaxListeners = config.maxListeners;
 
 // Load commands
 const loadCommands = (dir) => {
-  const commandFiles = fs.readdirSync(dir).filter((file) => file.endsWith('.js'));
-  for (const file of commandFiles) {
-    logger.info(`Loading command: ${file}`);
-    const command = require(`${dir}/${file}`);
-    client.commands.set(command.name, command);
-  }
+    const commands = [];
+    const duplicates = [];
+    
+    const collectCommands = (directory) => {
+        if (!fs.existsSync(directory)) {
+            logger.error(`Directory not found: ${directory}`);
+            return;
+        }
+        
+        const items = fs.readdirSync(directory);
+        for (const item of items) {
+            const fullPath = path.join(directory, item);
+            if (fs.lstatSync(fullPath).isDirectory()) {
+                collectCommands(fullPath);
+            } else if (item.endsWith('.js')) {
+                try {
+                    delete require.cache[require.resolve(fullPath)];
+                    const command = require(fullPath);
+                    if (command.name) {
+                        if (client.commands.has(command.name)) {
+                            duplicates.push(`${command.name} (${fullPath})`);
+                        } else {
+                            client.commands.set(command.name, command);
+                            commands.push(command.name);
+                            logger.info(`Loaded command: ${command.name}`);
+                        }
+                    }
+                } catch (error) {
+                    logger.error(`Failed to load command ${fullPath}:`, error);
+                }
+            }
+        }
+    };
 
-  const subfolders = fs.readdirSync(dir).filter((folder) => fs.lstatSync(`${dir}/${folder}`).isDirectory());
-  for (const subfolder of subfolders) {
-    loadCommands(`${dir}/${subfolder}`);
-  }
+    process.stdout.write('\x1b[?25l');
+    process.stdout.write('Loading commands...\n');
+    
+    collectCommands(dir);
+    
+    if (duplicates.length > 0) {
+        logger.warn(`Found duplicate commands: ${duplicates.join(', ')}`);
+    }
+    
+    process.stdout.write('\x1b[?25h');
+    logger.info(`Successfully loaded ${commands.length} commands: ${commands.join(', ')}`);
+    
+    return commands;
 };
 
-loadCommands('./commands');
+// Call loadCommands after client initialization
+loadCommands(path.join(__dirname, 'commands'));
 
 // Load events
 const eventFiles = fs.readdirSync('./events').filter((file) => file.endsWith('.js'));
@@ -59,46 +99,17 @@ process.on('unhandledRejection', (error) => {
   logger.error('Unhandled rejection:', error);
 });
 
-// Login the bot
-client.login(process.env.TOKEN).then(() => {
-  logger.info('Bot successfully logged in');
-}).catch((error) => {
-  logger.error('Failed to log in:', error.message);
-  console.error('Check your token and internet connection');
-});
+// Initialize database connection before starting the bot
+async function init() {
+    try {
+        await connectDB();
+        await client.login(process.env.TOKEN);
+    } catch (error) {
+        logger.error('Failed to initialize:', error);
+        process.exit(1);
+    }
+}
+
+init();
 
 client.points = new Map();
-
-client.once('ready', async () => {
-  logger.info(`Logged in as ${client.user.tag}!`);
-
-  // Start background monitoring
-  runBackgroundChecks(client);
-
-  // Set initial presence
-  client.user.setPresence({
-    activities: [{ 
-      name: config.richPresence.activities[0].name,
-      type: config.richPresence.activities[0].type
-    }],
-    status: config.richPresence.status
-  });
-
-  // Set Bio
-  try {
-    const app = await client.application.fetch();
-    await app.edit({
-      description: config.botDescription,
-    });
-    logger.info('Bot bio updated successfully.');
-  } catch (error) {
-    logger.error('Failed to update bot bio:', error);
-  }
-
-  // Schedule periodic tasks
-  schedule.scheduleJob(config.scheduledTaskCron, () => {
-    logger.info('Scheduled task executed.');
-  });
-
-  logger.info('Bot is ready!');
-});

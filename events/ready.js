@@ -1,25 +1,35 @@
+const { ActivityType } = require('discord.js');
+const { richPresence, botDescription, scheduledTaskCron } = require('../config');
+const { logger } = require('../utils/logger');
+const Analytics = require('../utils/analytics');
+const { runBackgroundChecks } = require('../utils/backgroundMonitor');
+const schedule = require('node-schedule');
+const DashboardManager = require('../utils/dashboardManager');
+const ChannelVerifier = require('../utils/channelVerifier');
+const LoggingManager = require('../utils/loggingManager');
+const StatusManager = require('../utils/statusManager');
+
 module.exports = {
     name: 'ready',
     once: true,
-    execute(client) {
-        console.log(`Logged in as ${client.user.tag}!`);
-
-        setInterval(() => {
-            const serverCount = client.guilds.cache.size;
-            const memberCount = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
-
-            const statuses = [
-                `Serving ${serverCount} servers`,
-                `Serving ${memberCount} members`,
-                `Type #help for commands`,
-            ];
-
-            const status = statuses[Math.floor(Math.random() * statuses.length)];
-
-            client.user.setPresence({
-                activities: [{ name: status, type: 'PLAYING' }],
-                status: 'online',
-            });
-        }, 10000); // Update every 10 seconds
+    async execute(client) {
+        try {
+            client.statusManager = new StatusManager(client);
+            client.statusManager.start();
+            
+            const guilds = client.guilds.cache.size;
+            const users = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
+            
+            logger.info(`🟢 ${client.user.tag} is online!`);
+            logger.info(`Serving ${users} users in ${guilds} servers`);
+            
+            // Initialize systems
+            await Promise.all([
+                client.analytics?.initialize(),
+                client.dashboard?.initialize()
+            ]);
+        } catch (error) {
+            logger.error('Startup error:', error);
+        }
     },
 };

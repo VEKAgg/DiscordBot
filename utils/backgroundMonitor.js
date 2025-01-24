@@ -1,13 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const { logger } = require('./logger');
+const mongoose = require('mongoose');
 
 /**
  * Runs periodic health checks on the bot.
  * @param {Object} client - The Discord client instance.
  */
 async function runBackgroundChecks(client) {
-    const checkInterval = 60000; // 1 minute
+    const checkInterval = 300000; // 5 minutes
     const errorLogPath = path.join(__dirname, '../logs/errorLog.txt');
 
     // Create the logs directory if it doesn't exist
@@ -16,27 +17,34 @@ async function runBackgroundChecks(client) {
     }
 
     setInterval(async () => {
+        // Only run checks if no commands were executed in the last minute
+        const lastCommandTime = client.lastCommandTime || 0;
+        if (Date.now() - lastCommandTime < 60000) {
+            return;
+        }
+
         logger.info('[Background Monitor] Running health checks...');
         const errors = [];
 
         try {
-            // Test ping command
-            const pingCommand = client.commands.get('ping');
-            if (pingCommand) {
-                const mockMessage = {
-                    channel: { send: () => Promise.resolve() },
-                    createdTimestamp: Date.now(),
-                    client
-                };
-                
-                try {
-                    await pingCommand.execute(mockMessage);
-                } catch (err) {
-                    errors.push(`Ping command failed: ${err.message}`);
-                    logger.error('Ping command test failed:', err);
-                }
+            // Check client connection status
+            if (!client.ws.ping) {
+                errors.push('WebSocket connection issue detected');
             }
-            
+
+            // Check database connection
+            try {
+                await mongoose.connection.db.admin().ping();
+            } catch (err) {
+                errors.push(`Database connection error: ${err.message}`);
+            }
+
+            // Check memory usage
+            const memoryUsage = process.memoryUsage();
+            if (memoryUsage.heapUsed > 500 * 1024 * 1024) { // 500MB
+                errors.push('High memory usage detected');
+            }
+
         } catch (error) {
             logger.error('Background check failed:', error);
             errors.push(`Background check error: ${error.message}`);

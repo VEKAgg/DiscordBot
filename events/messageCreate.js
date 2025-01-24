@@ -1,6 +1,9 @@
+const { getModel } = require('../database');
+const { logger } = require('../utils/logger');
+
 module.exports = {
     name: 'messageCreate',
-    execute(message, client) {
+    async execute(message, client) {
         if (message.author.bot) return; // Ignore bot messages
 
         const prefix = '#'; // Define your bot's prefix
@@ -12,8 +15,22 @@ module.exports = {
         const command = client.commands.get(commandName);
         if (!command) return; // If the command doesn't exist, ignore
 
+        const startTime = Date.now();
+        
         try {
-            command.execute(message, args, client); // Execute the command
+            await command.execute(message, args, client);
+            client.lastCommandTime = Date.now();
+            
+            // Log successful command execution
+            const CommandLog = getModel('CommandLog');
+            await CommandLog.create({
+                commandName: command.name,
+                userId: message.author.id,
+                guildId: message.guild?.id,
+                args: args,
+                executionTime: Date.now() - startTime,
+                status: 'success'
+            });
 
             // Award points
             const userId = message.author.id;
@@ -29,9 +46,22 @@ module.exports = {
                 };
                 message.channel.send({ embeds: [embed] });
             }
+
         } catch (error) {
-            console.error(error);
+            logger.error(`Command execution error: ${error}`);
             message.reply('There was an error executing that command!');
+            
+            // Log failed command execution
+            const CommandLog = getModel('CommandLog');
+            await CommandLog.create({
+                commandName: command.name,
+                userId: message.author.id,
+                guildId: message.guild?.id,
+                args: args,
+                executionTime: Date.now() - startTime,
+                status: 'error',
+                errorMessage: error.message
+            });
         }
     },
 };

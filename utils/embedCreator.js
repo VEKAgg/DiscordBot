@@ -1,25 +1,16 @@
 const { EmbedBuilder } = require('discord.js');
 
-function createEmbed(options = {}) {
+function createEmbed({ title, description, fields, color, author, footer, timestamp = true }) {
     const embed = new EmbedBuilder()
-        .setColor(options.color || '#FFA500')
-        .setTimestamp();
-        
-    if (typeof options === 'string') {
-        // Support old usage pattern
-        return embed.setDescription(options);
-    }
-    
-    if (options.title) embed.setTitle(options.title);
-    if (options.description) embed.setDescription(options.description);
-    if (options.fields) embed.addFields(options.fields);
-    if (options.footer) {
-        embed.setFooter({ 
-            text: options.footer,
-            iconURL: options.footerIcon 
-        });
-    }
-    
+        .setTitle(title || '')
+        .setColor(color || '#0099ff');
+
+    if (description) embed.setDescription(description);
+    if (fields) embed.addFields(fields);
+    if (author) embed.setAuthor(author);
+    if (footer) embed.setFooter(footer);
+    if (timestamp) embed.setTimestamp();
+
     return embed;
 }
 

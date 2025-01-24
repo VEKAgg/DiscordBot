@@ -2,7 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const axios = require('axios');
 const { User } = require('../database');
 const { logger } = require('./logger');
-const ConnectionAnalytics = require('./connectionAnalytics');
+const Analytics = require('./analytics');
 
 class SocialConnections {
     static async getUserConnections(member) {
@@ -40,7 +40,7 @@ class SocialConnections {
 
             // Process roles and send alerts
             await this.processVerification(member, verifiedAccounts);
-            await ConnectionAnalytics.trackConnection(member, verifiedAccounts);
+            await Analytics.connection.trackConnection(member, verifiedAccounts);
             return verifiedAccounts;
 
         } catch (error) {

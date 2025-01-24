@@ -1,14 +1,10 @@
 const { EmbedBuilder } = require('discord.js');
 const { User } = require('../database');
 
-module.exports = {
-    name: 'leaderboard',
-    description: 'View various server leaderboards',
-    async execute(message, args) {
-        const type = args[0]?.toLowerCase() || 'overall';
-        const timeRange = args[1]?.toLowerCase() || 'all';
-
-        const leaderboardTypes = {
+class LeaderboardManager {
+    constructor(client) {
+        this.client = client;
+        this.leaderboardTypes = {
             overall: { 
                 title: '🏆 Overall Activity', 
                 color: '#FFD700',
@@ -28,141 +24,107 @@ module.exports = {
                 title: '💬 Chat Activity', 
                 color: '#3498DB',
                 description: 'Messages sent in text channels'
-            },
-            daily: { 
-                title: '📅 Daily Streak', 
-                color: '#E74C3C',
-                description: 'Consecutive days active'
-            },
-            reactions: { 
-                title: '😄 Reaction Master', 
-                color: '#F1C40F',
-                description: 'Reactions given and received'
-            },
-            helpful: { 
-                title: '🤝 Most Helpful', 
-                color: '#9B59B6',
-                description: 'Based on reactions to answers/help'
-            },
-            nightowl: { 
-                title: '🦉 Night Owl', 
-                color: '#34495E',
-                description: 'Activity between 10 PM and 6 AM'
-            },
-            weekend: { 
-                title: '🎉 Weekend Warrior', 
-                color: '#E67E22',
-                description: 'Activity during weekends'
-            },
-            social: { 
-                title: '🫂 Social Butterfly', 
-                color: '#FF69B4',
-                description: 'Interactions with other members'
             }
         };
+    }
 
-        if (!leaderboardTypes[type]) {
-            const types = Object.keys(leaderboardTypes)
-                .map(t => `\`${t}\``)
-                .join(', ');
-            return message.reply(`Invalid leaderboard type! Available types: ${types}`);
+    async getLeaderboardData(type, guildId, dateFilter = {}) {
+        const query = { guildId };
+        let sort = {};
+        
+        switch (type) {
+            case 'gaming':
+                return await User.aggregate([
+                    { $match: query },
+                    { $addFields: {
+                        gameCount: { $size: { 
+                            $filter: {
+                                input: "$activity.richPresence",
+                                as: "presence",
+                                cond: { $eq: ["$$presence.type", "PLAYING"] }
+                            }
+                        }}
+                    }},
+                    { $sort: { gameCount: -1 } },
+                    { $limit: 10 }
+                ]);
+            case 'voice':
+                sort = { 'activity.voiceTime': -1 };
+                break;
+            case 'text':
+                sort = { 'activity.messageCount': -1 };
+                break;
+            default:
+                sort = { 'activity.totalScore': -1 };
+        }
+
+        return await User.find(query)
+            .sort(sort)
+            .limit(10)
+            .lean();
+    }
+
+    createEmbed(data, type, timeRange, settings) {
+        const embed = new EmbedBuilder()
+            .setTitle(settings.title)
+            .setColor(settings.color)
+            .setDescription(settings.description)
+            .setTimestamp();
+
+        if (type === 'games') {
+            const description = data.map((game, index) => 
+                `${index + 1}. **${game._id}**\n` +
+                `⏰ ${formatTime(game.totalTime)}\n` +
+                `👥 ${game.playerCount.length} players\n`
+            ).join('\n');
+            embed.setDescription(description);
+        } else {
+            const description = data.map((user, index) => 
+                `${index + 1}. <@${user.userId}> - ${formatStats(user, type)}`
+            ).join('\n');
+            embed.setDescription(description || 'No data available');
+        }
+
+        embed.setFooter({ 
+            text: `Timeframe: ${timeRange.charAt(0).toUpperCase() + timeRange.slice(1)}` 
+        });
+
+        return embed;
+    }
+
+    async execute(message, args) {
+        const type = args[0]?.toLowerCase() || 'overall';
+        const timeRange = args[1]?.toLowerCase() || 'all';
+        
+        if (!this.leaderboardTypes[type]) {
+            return message.reply(`Invalid type! Available types: ${Object.keys(this.leaderboardTypes).join(', ')}`);
         }
 
         try {
-            const dateFilter = getDateFilter(timeRange);
-            const users = await getLeaderboardData(type, message.guild.id, dateFilter);
-            const embed = createLeaderboardEmbed(users, type, timeRange, leaderboardTypes[type]);
+            const data = await this.getLeaderboardData(type, message.guild.id);
+            const embed = this.createEmbed(data, type, timeRange, this.leaderboardTypes[type]);
             message.channel.send({ embeds: [embed] });
         } catch (error) {
             console.error('Leaderboard Error:', error);
             message.reply('Failed to fetch leaderboard data.');
         }
     }
-};
+}
+
+module.exports = LeaderboardManager;
 
 function getDateFilter(timeRange) {
     const now = new Date();
     switch (timeRange) {
+        case 'day':
+            return { $gte: new Date(now.setDate(now.getDate() - 1)) };
         case 'week':
-            return new Date(now.setDate(now.getDate() - 7));
+            return { $gte: new Date(now.setDate(now.getDate() - 7)) };
         case 'month':
-            return new Date(now.setMonth(now.getMonth() - 1));
+            return { $gte: new Date(now.setMonth(now.getMonth() - 1)) };
         default:
-            return null;
+            return {};
     }
-}
-
-async function getLeaderboardData(type, guildId, dateFilter) {
-    let query = { guildId };
-    if (dateFilter) {
-        query['activity.lastSeen'] = { $gte: dateFilter };
-    }
-
-    let sortCriteria = {};
-    switch (type) {
-        case 'gaming':
-            sortCriteria = { 'activity.richPresence': -1 };
-            break;
-        case 'voice':
-            sortCriteria = { 'activity.voiceTime': -1 };
-            break;
-        case 'text':
-            sortCriteria = { 'activity.messageCount': -1 };
-            break;
-        case 'games':
-            return User.aggregate([
-                { $match: query },
-                { $unwind: '$activity.richPresence' },
-                { $group: {
-                    _id: '$activity.richPresence.game',
-                    totalTime: { $sum: '$activity.richPresence.duration' },
-                    playerCount: { $addToSet: '$userId' }
-                }},
-                { $sort: { totalTime: -1 }},
-                { $limit: 10 }
-            ]);
-        default:
-            // Overall score calculation
-            sortCriteria = {
-                $expr: {
-                    $add: [
-                        { $multiply: ['$activity.voiceTime', 0.5] },
-                        { $multiply: ['$activity.messageCount', 1] },
-                        { $size: '$activity.richPresence' }
-                    ]
-                }
-            };
-    }
-
-    return User.find(query).sort(sortCriteria).limit(10);
-}
-
-function createLeaderboardEmbed(data, type, timeRange, { title, color, description }) {
-    const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setColor(color)
-        .setDescription(description)
-        .setTimestamp();
-
-    if (type === 'games') {
-        const description = data.map((game, index) => 
-            `${index + 1}. **${game._id}**\n` +
-            `⏰ ${formatTime(game.totalTime)}\n` +
-            `👥 ${game.playerCount.length} players\n`
-        ).join('\n');
-        embed.setDescription(description);
-    } else {
-        const description = data.map((user, index) => 
-            `${index + 1}. <@${user.userId}> - ${formatStats(user, type)}`
-        ).join('\n');
-        embed.setDescription(description || 'No data available');
-    }
-
-    embed.setFooter({ 
-        text: `Timeframe: ${timeRange.charAt(0).toUpperCase() + timeRange.slice(1)}` 
-    });
-
-    return embed;
 }
 
 function formatTime(minutes) {
@@ -172,23 +134,28 @@ function formatTime(minutes) {
 }
 
 function formatStats(user, type) {
+    if (!user || !user.activity) return 'No data';
+    
     switch (type) {
         case 'gaming':
-            return `${user.activity.richPresence.length} games played`;
+            const playingActivities = user.activity.richPresence?.filter(p => p.type === 'PLAYING') || [];
+            const uniqueGames = [...new Set(playingActivities.map(p => p.name))].length;
+            const totalTime = playingActivities.reduce((acc, curr) => acc + (curr.duration || 0), 0);
+            return `${uniqueGames} games • ${formatTime(totalTime)}`;
         case 'voice':
-            return formatTime(user.activity.voiceTime);
+            return formatTime(user.activity.voiceTime || 0);
         case 'text':
-            return `${user.activity.messageCount} messages`;
+            return `${user.activity.messageCount || 0} messages`;
         default:
-            return `Score: ${calculateOverallScore(user)}`;
+            return `Score: ${user.activity.totalScore || 0}`;
     }
 }
 
 function calculateOverallScore(user) {
     return Math.floor(
-        (user.activity.voiceTime * 0.5) +
-        (user.activity.messageCount * 1) +
-        (user.activity.richPresence.length * 2)
+        user.activity.messageCount * 1 +
+        user.activity.voiceTime * 2 +
+        user.activity.richPresence.length * 5
     );
 }
 
