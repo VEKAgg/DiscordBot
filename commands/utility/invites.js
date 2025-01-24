@@ -1,45 +1,22 @@
 const { EmbedBuilder } = require('discord.js');
 const { User } = require('../../database');
+const InviteAnalytics = require('../../utils/analytics/inviteAnalytics');
 
 module.exports = {
-    name: 'invites',
-    description: 'Check your or another user\'s invite stats',
-    async execute(message, args) {
-        const target = message.mentions.users.first() || message.author;
-        
-        try {
-            const userData = await User.findOne({ 
-                userId: target.id,
-                guildId: message.guild.id 
-            });
+    name: 'invite',
+    description: 'Get bot invite link',
+    async execute(message) {
+        const embed = new EmbedBuilder()
+            .setTitle('🔗 Invite VEKA Bot')
+            .setDescription('Click the link below to add me to your server!')
+            .addFields([
+                { name: 'Invite Link', value: 'https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot&permissions=8' },
+                { name: 'Support Server', value: 'https://discord.gg/YOUR_SUPPORT_SERVER' }
+            ])
+            .setColor('#7289DA')
+            .setTimestamp();
 
-            if (!userData?.invites) {
-                return message.reply(`${target.username} hasn't invited anyone yet!`);
-            }
-
-            const inviteLevel = calculateInviteLevel(userData.invites.total);
-            const nextLevel = getNextLevelRequirement(inviteLevel);
-            const progress = userData.invites.total - getLevelRequirement(inviteLevel);
-            const remaining = nextLevel - userData.invites.total;
-
-            const embed = new EmbedBuilder()
-                .setTitle(`${target.username}'s Invite Stats`)
-                .setThumbnail(target.displayAvatarURL())
-                .setColor(getInviteLevelColor(inviteLevel))
-                .addFields([
-                    { name: 'Total Invites', value: `${userData.invites.total}`, inline: true },
-                    { name: 'Invite Level', value: `${inviteLevel}`, inline: true },
-                    { name: 'Current Perks', value: getInviteLevelPerks(inviteLevel) },
-                    { name: 'Next Level', value: `${remaining} more invites needed for level ${inviteLevel + 1}` },
-                    { name: 'Progress', value: createProgressBar(progress, nextLevel - getLevelRequirement(inviteLevel)) }
-                ])
-                .setTimestamp();
-
-            message.channel.send({ embeds: [embed] });
-        } catch (error) {
-            console.error('Error fetching invite stats:', error);
-            message.reply('Failed to fetch invite stats.');
-        }
+        message.channel.send({ embeds: [embed] });
     }
 };
 

@@ -1,7 +1,8 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  userId: { type: String, required: true },
+  userId: String,
+  guildId: String,
   username: { type: String, required: true },
   discriminator: { type: String, required: true },
   joinedAt: { type: Date, default: Date.now },
@@ -11,8 +12,15 @@ const userSchema = new mongoose.Schema({
     location: String,
   },
   activity: {
-    messagesSent: { type: Number, default: 0 },
-    commandsUsed: { type: Number, default: 0 },
+    richPresence: [{
+      name: String,
+      type: String,
+      timestamp: Date,
+      duration: { type: Number, default: 0 }
+    }],
+    voiceTime: { type: Number, default: 0 },
+    messageCount: { type: Number, default: 0 },
+    totalScore: { type: Number, default: 0 }
   },
   presenceHistory: [{
     status: String,

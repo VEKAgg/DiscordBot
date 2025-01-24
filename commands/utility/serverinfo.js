@@ -1,25 +1,25 @@
-const embedUtils = require('../../utils/embedUtils');
+const { EmbedBuilder } = require('discord.js');
 
 module.exports = {
     name: 'serverinfo',
-    description: 'Displays detailed information about the server.',
-    execute(message) {
-        const { guild } = message;
-
-        const embed = createEmbed('Server Information', `
-            **Server Name:** ${guild.name}
-            **Server ID:** ${guild.id}
-            **Owner:** <@${guild.ownerId}>
-            **Created On:** ${guild.createdAt.toDateString()}
-            **Total Members:** ${guild.memberCount}
-            **Boost Level:** ${guild.premiumTier}
-            **Boost Count:** ${guild.premiumSubscriptionCount || 0}
-        `);
-
-        if (guild.iconURL()) {
-            embed.setThumbnail(guild.iconURL({ dynamic: true, size: 1024 }));
-        }
+    description: 'Display server information',
+    async execute(message) {
+        const guild = message.guild;
+        const owner = await guild.fetchOwner();
+        
+        const embed = new EmbedBuilder()
+            .setTitle(`${guild.name} Server Information`)
+            .setThumbnail(guild.iconURL({ dynamic: true }))
+            .addFields([
+                { name: 'Owner', value: owner.user.tag, inline: true },
+                { name: 'Members', value: guild.memberCount.toString(), inline: true },
+                { name: 'Channels', value: guild.channels.cache.size.toString(), inline: true },
+                { name: 'Roles', value: guild.roles.cache.size.toString(), inline: true },
+                { name: 'Created At', value: guild.createdAt.toLocaleDateString(), inline: true },
+                { name: 'Boost Level', value: guild.premiumTier.toString(), inline: true }
+            ])
+            .setColor('#0099ff');
 
         message.channel.send({ embeds: [embed] });
-    },
+    }
 };

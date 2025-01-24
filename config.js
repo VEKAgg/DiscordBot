@@ -6,6 +6,7 @@ module.exports = {
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
       GatewayIntentBits.GuildPresences,
+      GatewayIntentBits.GuildMembers
     ],
     maxListeners: 15,
     richPresence: {
@@ -14,6 +15,10 @@ module.exports = {
           name: 'your server!',
           type: 'WATCHING', // Can also be PLAYING, LISTENING, STREAMING
         },
+        {
+          name: 'for commands!',
+          type: 'LISTENING',
+        }
       ],
       status: 'online',
     },
