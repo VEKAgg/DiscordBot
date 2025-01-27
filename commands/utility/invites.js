@@ -1,22 +1,82 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { User } = require('../../database');
 const InviteAnalytics = require('../../utils/analytics/inviteAnalytics');
 
 module.exports = {
-    name: 'invite',
-    description: 'Get bot invite link',
-    async execute(message) {
-        const embed = new EmbedBuilder()
-            .setTitle('🔗 Invite VEKA Bot')
-            .setDescription('Click the link below to add me to your server!')
-            .addFields([
-                { name: 'Invite Link', value: 'https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&scope=bot&permissions=8' },
-                { name: 'Support Server', value: 'https://discord.gg/YOUR_SUPPORT_SERVER' }
-            ])
-            .setColor('#7289DA')
-            .setTimestamp();
+    name: 'invites',
+    description: 'Check server invites',
+    category: 'utility',
+    permissions: [PermissionFlagsBits.ManageGuild],
+    slashCommand: new SlashCommandBuilder()
+        .setName('invites')
+        .setDescription('Check server invites')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('Check invites for a specific user')
+                .setRequired(false)),
 
-        message.channel.send({ embeds: [embed] });
+    async execute(interaction) {
+        const isSlash = interaction.commandName !== undefined;
+        const targetUser = isSlash 
+            ? interaction.options.getUser('user')
+            : interaction.mentions.users.first();
+
+        try {
+            const invites = await (isSlash ? interaction.guild : interaction.guild).invites.fetch();
+            const userInvites = new Map();
+
+            // Count invites per user
+            invites.forEach(invite => {
+                const inviter = invite.inviter;
+                if (inviter && (!targetUser || inviter.id === targetUser.id)) {
+                    const count = userInvites.get(inviter.id) || { uses: 0, code: invite.code };
+                    count.uses += invite.uses;
+                    userInvites.set(inviter.id, count);
+                }
+            });
+
+            // Sort users by invite count
+            const sortedInviters = [...userInvites.entries()]
+                .sort((a, b) => b[1].uses - a[1].uses)
+                .slice(0, 10);
+
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Server Invites')
+                .setDescription(targetUser ? `Invites for ${targetUser.tag}` : 'Top 10 Inviters')
+                .setColor('#FFA500')
+                .setTimestamp();
+
+            if (sortedInviters.length > 0) {
+                embed.addFields(
+                    sortedInviters.map((entry, index) => ({
+                        name: `${index + 1}. ${(isSlash ? interaction.guild : interaction.guild).members.cache.get(entry[0])?.user.tag || 'Unknown User'}`,
+                        value: `Invites: ${entry[1].uses} (Code: ${entry[1].code})`,
+                        inline: false
+                    }))
+                );
+            } else {
+                embed.setDescription('No invite data found.');
+            }
+
+            const reply = { embeds: [embed] };
+            if (isSlash) {
+                await interaction.reply(reply);
+            } else {
+                await interaction.channel.send(reply);
+            }
+        } catch (error) {
+            console.error('Error fetching invites:', error);
+            const reply = { 
+                content: 'Failed to fetch invite information.',
+                ephemeral: true 
+            };
+            if (isSlash) {
+                await interaction.reply(reply);
+            } else {
+                await interaction.reply(reply.content);
+            }
+        }
     }
 };
 

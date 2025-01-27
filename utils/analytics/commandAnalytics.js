@@ -1,5 +1,5 @@
 const BaseAnalytics = require('./baseAnalytics');
-const { CommandLog, GuildAnalytics } = require('../../database');
+const { GuildAnalytics, CommandLog } = require('../../database');
 
 class CommandAnalytics extends BaseAnalytics {
     static async logCommand(commandName, userId, guildId, args = [], executionTime = 0, status = 'success', errorMessage = null) {
@@ -34,48 +34,55 @@ class CommandAnalytics extends BaseAnalytics {
         }
     }
 
-    static async getGuildStats(guildId, days = 7) {
+    static async getGuildStats(guildId, type = 'overview', timeframe = '7d') {
         try {
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - days);
-
-            const stats = await GuildAnalytics.aggregate([
-                {
-                    $match: {
+            const startDate = this.getTimeframeDate(timeframe);
+            const [stats, commandUsage] = await Promise.all([
+                this.aggregateData(
+                    GuildAnalytics,
+                    {
                         guildId,
                         date: { $gte: startDate }
-                    }
-                },
-                {
-                    $group: {
+                    },
+                    {
                         _id: null,
                         totalCommands: { $sum: '$metrics.totalCommands' },
                         totalErrors: { $sum: '$metrics.errorCount' },
                         avgCommandsPerDay: { $avg: '$metrics.totalCommands' }
                     }
-                }
-            ]);
-
-            const commandUsage = await CommandLog.aggregate([
-                {
-                    $match: {
+                ),
+                this.aggregateData(
+                    CommandLog,
+                    {
                         guildId,
                         timestamp: { $gte: startDate }
-                    }
-                },
-                {
-                    $group: {
+                    },
+                    {
                         _id: '$commandName',
-                        count: { $sum: 1 }
-                    }
-                },
-                { $sort: { count: -1 } },
-                { $limit: 10 }
+                        count: { $sum: 1 },
+                        successCount: {
+                            $sum: { $cond: [{ $eq: ['$status', 'success'] }, 1, 0] }
+                        }
+                    },
+                    { count: -1 },
+                    10
+                )
             ]);
 
             return {
-                overview: stats[0] || { totalCommands: 0, totalErrors: 0, avgCommandsPerDay: 0 },
-                topCommands: commandUsage
+                overview: {
+                    totalCommands: stats[0]?.totalCommands || 0,
+                    totalErrors: stats[0]?.totalErrors || 0,
+                    avgCommandsPerDay: Math.round(stats[0]?.avgCommandsPerDay || 0),
+                    successRate: stats[0] ? 
+                        ((1 - (stats[0].totalErrors / stats[0].totalCommands)) * 100).toFixed(1) + '%' 
+                        : '0%'
+                },
+                topCommands: commandUsage.map(cmd => ({
+                    name: cmd._id,
+                    uses: cmd.count,
+                    successRate: ((cmd.successCount / cmd.count) * 100).toFixed(1) + '%'
+                }))
             };
         } catch (error) {
             this.logError(error, 'getGuildStats');
@@ -84,9 +91,6 @@ class CommandAnalytics extends BaseAnalytics {
     }
 
     static async aggregateDailyStats() {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
         try {
             const guilds = await GuildAnalytics.distinct('guildId');
             await Promise.all(guilds.map(guildId => this.getGuildStats(guildId)));

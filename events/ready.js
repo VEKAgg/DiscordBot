@@ -1,35 +1,66 @@
 const { ActivityType } = require('discord.js');
-const { richPresence, botDescription, scheduledTaskCron } = require('../config');
+const { joinVoiceChannel } = require('@discordjs/voice');
 const { logger } = require('../utils/logger');
-const Analytics = require('../utils/analytics');
-const { runBackgroundChecks } = require('../utils/backgroundMonitor');
-const schedule = require('node-schedule');
-const DashboardManager = require('../utils/dashboardManager');
-const ChannelVerifier = require('../utils/channelVerifier');
-const LoggingManager = require('../utils/loggingManager');
-const StatusManager = require('../utils/statusManager');
+const config = require('../config/botStatus');
+const { REST, Routes } = require('discord.js');
 
 module.exports = {
     name: 'ready',
     once: true,
     async execute(client) {
         try {
-            client.statusManager = new StatusManager(client);
-            client.statusManager.start();
+            logger.info(`Logged in as ${client.user.tag}`);
+
+            // Get all slash commands
+            const commands = [];
+            client.slashCommands.forEach(command => {
+                if (command.slashCommand) {
+                    commands.push(command.slashCommand.toJSON());
+                }
+            });
+
+            // Register slash commands
+            const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
             
-            const guilds = client.guilds.cache.size;
-            const users = client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0);
-            
-            logger.info(`🟢 ${client.user.tag} is online!`);
-            logger.info(`Serving ${users} users in ${guilds} servers`);
-            
-            // Initialize systems
-            await Promise.all([
-                client.analytics?.initialize(),
-                client.dashboard?.initialize()
-            ]);
+            logger.info(`Started refreshing ${commands.length} application (/) commands.`);
+
+            await rest.put(
+                Routes.applicationCommands(client.user.id),
+                { body: commands }
+            );
+
+            logger.info('Successfully reloaded application (/) commands.');
+
+            // Join voice channel if configured
+            if (process.env.HOME_VOICE_CHANNEL && process.env.HOME_GUILD_ID) {
+                try {
+                    joinVoiceChannel({
+                        channelId: process.env.HOME_VOICE_CHANNEL,
+                        guildId: process.env.HOME_GUILD_ID,
+                        adapterCreator: client.guilds.cache.get(process.env.HOME_GUILD_ID)?.voiceAdapterCreator,
+                        selfDeaf: true
+                    });
+                    logger.info('Successfully joined home voice channel');
+                } catch (error) {
+                    logger.error('Failed to join voice channel:', error);
+                }
+            }
+
+            // Initialize status rotation
+            let statusIndex = 0;
+            setInterval(() => {
+                const status = config.statuses[statusIndex];
+                let text = status.text
+                    .replace('{memberCount}', client.users.cache.size)
+                    .replace('{serverCount}', client.guilds.cache.size)
+                    .replace('{activeVoice}', client.voice.adapters.size);
+
+                client.user.setActivity(text, { type: status.type });
+                statusIndex = (statusIndex + 1) % config.statuses.length;
+            }, config.interval);
+
         } catch (error) {
-            logger.error('Startup error:', error);
+            logger.error('Error in ready event:', error);
         }
-    },
+    }
 };

@@ -1,11 +1,10 @@
 const { EmbedBuilder } = require('discord.js');
 
 /**
- * Creates a standardized embed with the given title and description
- * @param {string} title - The embed title
- * @param {string} description - The embed description
- * @param {string} [color='#2b2d31'] - Hex color code for the embed
- * @returns {EmbedBuilder} The created embed
+ * Creates a standardized embed with consistent styling
+ * @param {string} title - Embed title
+ * @param {string} description - Embed description
+ * @param {string} [color='#2b2d31'] - Hex color code
  */
 function createEmbed(title, description, color = '#2b2d31') {
     return new EmbedBuilder()
@@ -15,7 +14,5 @@ function createEmbed(title, description, color = '#2b2d31') {
         .setTimestamp();
 }
 
-module.exports = {
-    createEmbed
-};
+module.exports = { createEmbed };
 

@@ -5,9 +5,26 @@ const StaffAlerts = require('../staffAlerts');
 class ConnectionAnalytics extends BaseAnalytics {
     static async trackConnection(member, connections) {
         try {
-            // Reference from utils/connectionAnalytics.js
-            startLine: 8
-            endLine: 50
+            await this.updateGuildStats(member.guild.id, {
+                $inc: { 'metrics.totalConnections': 1 },
+                $push: {
+                    'connections': {
+                        userId: member.id,
+                        platforms: Object.keys(connections),
+                        timestamp: new Date()
+                    }
+                }
+            });
+
+            const insights = await this.checkForInsights(member.guild, connections);
+            if (insights) {
+                await StaffAlerts.send(member.guild, {
+                    type: 'connection_insight',
+                    priority: 'low',
+                    content: 'New connection trends detected',
+                    embed: insights
+                });
+            }
         } catch (error) {
             this.logError(error, 'trackConnection');
         }
@@ -20,9 +37,19 @@ class ConnectionAnalytics extends BaseAnalytics {
     }
 
     static async checkForInsights(guild, data) {
-        // Reference from utils/connectionAnalytics.js
-        startLine: 72
-        endLine: 86
+        const platforms = await this.getPopularPlatforms(guild.id);
+        const totalUsers = await this.getTotalConnectedUsers(guild.id);
+        
+        if (totalUsers > 100 && platforms.length >= 3) {
+            return this.createEmbed({
+                title: '🔗 Connection Insights',
+                fields: [
+                    { name: 'Connected Users', value: totalUsers.toString(), inline: true },
+                    { name: 'Top Platforms', value: platforms.join(', '), inline: true }
+                ]
+            });
+        }
+        return null;
     }
 
     static async analyzeConnectionTrends(guildId) {
@@ -31,25 +58,31 @@ class ConnectionAnalytics extends BaseAnalytics {
         endLine: 105
     }
 
-    // Add missing methods from the original file
     static async getTotalConnectedUsers(guildId) {
-        return await User.countDocuments({
-            guildId,
-            'connections.current': { $exists: true, $ne: {} }
-        });
+        return this.aggregateData(
+            User,
+            {
+                guildId,
+                'connections.current': { $exists: true, $ne: {} }
+            },
+            {
+                _id: null,
+                count: { $sum: 1 }
+            }
+        ).then(result => result[0]?.count || 0);
     }
 
     static async getPopularPlatforms(guildId) {
-        const platforms = await User.aggregate([
-            { $match: { guildId } },
-            { $project: { platforms: { $objectToArray: '$connections.current' } } },
-            { $unwind: '$platforms' },
-            { $group: { _id: '$platforms.k', count: { $sum: 1 } } },
-            { $sort: { count: -1 } },
-            { $limit: 3 }
-        ]);
-        
-        return platforms.map(p => p._id);
+        return this.aggregateData(
+            User,
+            { guildId },
+            { 
+                _id: '$platforms.k',
+                count: { $sum: 1 }
+            },
+            { count: -1 },
+            3
+        ).then(platforms => platforms.map(p => p._id));
     }
 }
 

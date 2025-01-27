@@ -1,123 +1,129 @@
-const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const DashboardConfig = require('../../models/DashboardConfig');
-const AnalyticsConfig = require('../../models/AnalyticsConfig');
-const GamingConfig = require('../../models/GamingConfig');
+const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { DashboardConfig, AnalyticsConfig, GamingConfig } = require('../../database');
 const NotificationConfig = require('../../models/NotificationConfig');
 const { logger } = require('../../utils/logger');
 
 module.exports = {
     name: 'setup',
-    description: 'Setup bot features for your server',
-    permissions: [PermissionFlagsBits.Administrator],
-    async execute(message) {
-        const setupEmbed = new EmbedBuilder()
-            .setTitle('🔧 Bot Setup')
-            .setDescription('Let\'s set up the bot for your server! React to configure each feature:')
-            .addFields([
-                { name: '📊 Dashboard', value: 'Server statistics and leaderboards', inline: true },
-                { name: '📈 Analytics', value: 'Track server growth and activity', inline: true },
-                { name: '🎮 Gaming', value: 'Game presence tracking', inline: true },
-                { name: '🔔 Notifications', value: 'Configure alert channels', inline: true }
-            ])
-            .setColor('#FFA500'); // Orange color for setup
+    description: 'Configure bot settings for the server',
+    category: 'admin',
+    slashCommand: new SlashCommandBuilder()
+        .setName('setup')
+        .setDescription('Configure bot settings')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('dashboard')
+                .setDescription('Set up the server dashboard')
+                .addChannelOption(option =>
+                    option.setName('channel')
+                        .setDescription('Channel for the dashboard')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('analytics')
+                .setDescription('Enable server analytics')
+                .addBooleanOption(option =>
+                    option.setName('enabled')
+                        .setDescription('Enable or disable analytics')
+                        .setRequired(true)))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('gaming')
+                .setDescription('Enable game tracking')
+                .addBooleanOption(option =>
+                    option.setName('enabled')
+                        .setDescription('Enable or disable game tracking')
+                        .setRequired(true))),
 
-        message.channel.sendTyping();
-        const setupMsg = await message.channel.send({ embeds: [setupEmbed] });
-        const reactions = ['📊', '📈', '🎮', '🔔'];
-        
-        await Promise.all(reactions.map(r => setupMsg.react(r)));
+    async execute(interaction) {
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+            return interaction.reply({ 
+                content: 'You need Administrator permissions to use this command.',
+                ephemeral: true 
+            });
+        }
 
-        const collector = setupMsg.createReactionCollector({
-            filter: (reaction, user) => 
-                reactions.includes(reaction.emoji.name) && 
-                user.id === message.author.id,
-            time: 300000
-        });
+        const subcommand = interaction.options.getSubcommand();
 
-        collector.on('collect', async (reaction, user) => {
-            try {
-                const setupFunctions = {
-                    '📊': this.setupDashboard,
-                    '📈': this.setupAnalytics,
-                    '🎮': this.setupGaming,
-                    '🔔': this.setupNotifications
-                };
-
-                const selectedFunction = setupFunctions[reaction.emoji.name];
-                if (selectedFunction) {
-                    await selectedFunction.call(this, message);
-                    await reaction.users.remove(user.id);
+        try {
+            switch (subcommand) {
+                case 'dashboard': {
+                    const channel = interaction.options.getChannel('channel');
+                    await DashboardConfig.findOneAndUpdate(
+                        { guildId: interaction.guildId },
+                        { 
+                            channelId: channel.id,
+                            lastUpdate: new Date()
+                        },
+                        { upsert: true }
+                    );
+                    return interaction.reply({
+                        content: `Dashboard will be displayed in ${channel}`,
+                        ephemeral: true
+                    });
                 }
-            } catch (error) {
-                logger.error('Setup error:', error);
-                message.channel.send('Failed to setup selected feature. Please try again.');
+                
+                case 'analytics': {
+                    const enabled = interaction.options.getBoolean('enabled');
+                    await AnalyticsConfig.findOneAndUpdate(
+                        { guildId: interaction.guildId },
+                        { 
+                            enabled,
+                            lastUpdate: new Date()
+                        },
+                        { upsert: true }
+                    );
+                    return interaction.reply({
+                        content: `Analytics system has been ${enabled ? 'enabled' : 'disabled'}.`,
+                        ephemeral: true
+                    });
+                }
+                
+                case 'gaming': {
+                    const enabled = interaction.options.getBoolean('enabled');
+                    await GamingConfig.findOneAndUpdate(
+                        { guildId: interaction.guildId },
+                        { 
+                            enabled,
+                            lastUpdate: new Date()
+                        },
+                        { upsert: true }
+                    );
+                    return interaction.reply({
+                        content: `Game tracking has been ${enabled ? 'enabled' : 'disabled'}.`,
+                        ephemeral: true
+                    });
+                }
             }
-        });
-
-        collector.on('end', () => {
-            setupMsg.reactions.removeAll().catch(error => logger.error('Failed to clear reactions:', error));
-        });
+        } catch (error) {
+            logger.error('Setup command error:', error);
+            return interaction.reply({
+                content: 'An error occurred while setting up the feature. Please try again.',
+                ephemeral: true
+            });
+        }
     },
 
-    async setupDashboard(message) {
-        const channel = await message.channel.send('Please mention the channel for the dashboard (#channel)');
-        const response = await message.channel.awaitMessages({
-            filter: m => m.author.id === message.author.id,
+    async setupNotifications(interaction) {
+        const channel = await interaction.channel.send('Please mention the channel for notifications (#channel)');
+        const response = await interaction.channel.awaitMessages({
+            filter: m => m.author.id === interaction.user.id,
             max: 1,
             time: 30000
         });
         
-        if (!response.size) return message.reply('Setup timed out.');
+        if (!response.size) return interaction.reply('Setup timed out.');
         
         const targetChannel = response.first().mentions.channels.first();
-        if (!targetChannel) return message.reply('Please mention a valid channel.');
-        
-        await DashboardConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { channelId: targetChannel.id },
-            { upsert: true }
-        );
-        
-        message.reply(`Dashboard will be displayed in ${targetChannel}`);
-    },
-
-    async setupAnalytics(message) {
-        await AnalyticsConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { $set: { enabled: true } },
-            { upsert: true }
-        );
-        message.reply('Analytics system has been enabled.');
-    },
-
-    async setupGaming(message) {
-        await GamingConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { $set: { enabled: true } },
-            { upsert: true }
-        );
-        message.reply('Game tracking has been enabled.');
-    },
-
-    async setupNotifications(message) {
-        const channel = await message.channel.send('Please mention the channel for notifications (#channel)');
-        const response = await message.channel.awaitMessages({
-            filter: m => m.author.id === message.author.id,
-            max: 1,
-            time: 30000
-        });
-        
-        if (!response.size) return message.reply('Setup timed out.');
-        
-        const targetChannel = response.first().mentions.channels.first();
-        if (!targetChannel) return message.reply('Please mention a valid channel.');
+        if (!targetChannel) return interaction.reply('Please mention a valid channel.');
         
         await NotificationConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
+            { guildId: interaction.guildId },
             { channelId: targetChannel.id },
             { upsert: true }
         );
         
-        message.reply(`Notifications will be sent to ${targetChannel}`);
+        interaction.reply(`Notifications will be sent to ${targetChannel}`);
     }
 }; 

@@ -1,11 +1,13 @@
 const { ActivityType } = require('discord.js');
 const { statuses, interval } = require('../config/botStatus');
 const { logger } = require('./logger');
+const { User } = require('../database');
 
 class StatusManager {
     constructor(client) {
         this.client = client;
         this.currentIndex = 0;
+        this.voiceChannelName = 'call'; // Default name
     }
 
     start() {
@@ -16,13 +18,14 @@ class StatusManager {
     async updateStatus() {
         try {
             const status = statuses[this.currentIndex];
-            const text = await this.formatStatusText(status.text);
+            let text = await this.formatStatusText(status.text);
             
-            await this.client.user.setActivity({
-                name: text,
-                type: status.type
-            });
+            // If the status type is Competing and text includes 'call'
+            if (status.type === ActivityType.Competing && text.includes('call')) {
+                text = this.voiceChannelName;
+            }
 
+            await this.client.user.setActivity(text, { type: status.type });
             this.currentIndex = (this.currentIndex + 1) % statuses.length;
         } catch (error) {
             logger.error('Status update error:', error);
@@ -31,9 +34,9 @@ class StatusManager {
 
     async formatStatusText(text) {
         const stats = {
-            memberCount: this.client.guilds.cache.reduce((acc, guild) => acc + guild.memberCount, 0),
+            memberCount: this.client.users.cache.size,
             serverCount: this.client.guilds.cache.size,
-            activeVoice: this.client.channels.cache.filter(c => c.type === 2 && c.members.size > 0).size,
+            activeVoice: this.client.voice.adapters.size,
             messageCount: await this.getTodayMessageCount()
         };
 
@@ -45,11 +48,29 @@ class StatusManager {
             const today = new Date();
             today.setHours(0, 0, 0, 0);
             
-            const messageStats = await this.client.analytics.getStats('messages', '1d');
-            return messageStats.total || 0;
-        } catch {
+            const stats = await User.aggregate([
+                {
+                    $match: {
+                        'messages.lastMessageDate': { $gte: today }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalDaily: { $sum: '$messages.daily' }
+                    }
+                }
+            ]);
+
+            return stats[0]?.totalDaily || 0;
+        } catch (error) {
+            logger.error('Error getting daily message count:', error);
             return 0;
         }
+    }
+
+    setVoiceChannelName(name) {
+        this.voiceChannelName = name;
     }
 }
 

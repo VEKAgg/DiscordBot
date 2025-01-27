@@ -4,6 +4,7 @@ const WelcomeAnalytics = require('./welcomeAnalytics');
 const InviteAnalyzer = require('./inviteAnalyzer');
 const CommandAnalytics = require('./commandAnalytics');
 const { logger } = require('../logger');
+const { User, CommandLog } = require('../../database');
 
 class Analytics {
     static connection = ConnectionAnalytics;
@@ -15,8 +16,6 @@ class Analytics {
     static async initialize() {
         try {
             logger.info('Initializing analytics systems...');
-            
-            // Initialize database connections and indexes
             await Promise.all([
                 this.connection.initialize?.(),
                 this.invite.initialize?.(),
@@ -24,10 +23,7 @@ class Analytics {
                 this.inviteAnalyzer.initialize?.(),
                 this.command.initialize?.()
             ]);
-
-            // Set up periodic analytics tasks
             this.setupPeriodicTasks();
-            
             logger.info('Analytics systems initialized successfully');
         } catch (error) {
             logger.error('Failed to initialize analytics:', error);
@@ -36,7 +32,6 @@ class Analytics {
     }
 
     static setupPeriodicTasks() {
-        // Daily analytics aggregation
         setInterval(() => {
             this.command.aggregateDailyStats();
             this.welcome.generateInsights();
@@ -46,26 +41,71 @@ class Analytics {
 
     static async getStats(guildId, type = 'overview', timeframe = '7d') {
         try {
-            const days = parseInt(timeframe) || 7;
-            const stats = {
-                overview: await this.connection.getOverviewStats(guildId, days),
-                invite: await this.invite.getInviteStats(guildId, days),
-                welcome: await this.welcome.getWelcomeStats(guildId, days),
-                command: await this.command.getCommandStats(guildId, days)
-            };
-
-            return stats[type] || stats.overview;
+            switch (type) {
+                case 'overview':
+                    return await this.command.getGuildStats(guildId, type, timeframe);
+                case 'welcome':
+                    return await this.welcome.getGuildStats(guildId);
+                case 'connections':
+                    return await this.connection.getGuildStats(guildId, timeframe);
+                case 'invites':
+                    return await this.invite.getGuildStats(guildId, timeframe);
+                default:
+                    return await this.command.getGuildStats(guildId, type, timeframe);
+            }
         } catch (error) {
             logger.error('Analytics getStats error:', error);
-            return {
-                totalMembers: 0,
-                activeMembers: 0,
-                messageCount: 0,
-                commandCount: 0,
-                voiceMinutes: 0
-            };
+            return null;
         }
+    }
+
+    static async cleanup() {
+        const maxAge = 30 * 24 * 60 * 60 * 1000;
+        const cutoff = new Date(Date.now() - maxAge);
+        await Promise.all([
+            this.command.cleanupOldData(cutoff),
+            this.welcome.cleanupOldData(cutoff),
+            this.connection.cleanupOldData(cutoff)
+        ]);
+    }
+
+    static async healthCheck() {
+        const results = await Promise.all([
+            this.connection.ping(),
+            this.invite.ping(),
+            this.welcome.ping()
+        ]);
+        return results.every(result => result === true);
     }
 }
 
-module.exports = Analytics; 
+module.exports = Analytics;
+
+// Add to utils/logger.js
+const winston = require('winston');
+const DailyRotateFile = require('winston-daily-rotate-file');
+
+const transport = new DailyRotateFile({
+    filename: '/var/log/vekabot/%DATE%.log',
+    datePattern: 'YYYY-MM-DD',
+    maxSize: '20m',
+    maxFiles: '14d',
+    compression: 'gzip'
+});
+
+// Add to utils/monitor.js
+const os = require('os');
+const pidusage = require('pidusage');
+
+class SystemMonitor {
+    static async getMetrics() {
+        const stats = await pidusage(process.pid);
+        return {
+            cpu: stats.cpu,
+            memory: stats.memory / 1024 / 1024,
+            uptime: process.uptime(),
+            loadAvg: os.loadavg(),
+            freeMemory: os.freemem() / 1024 / 1024
+        };
+    }
+}

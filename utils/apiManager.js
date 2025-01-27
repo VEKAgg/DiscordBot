@@ -1,46 +1,33 @@
-const axios = require('axios');
-const apis = require('../config/apis');
+const fetch = require('node-fetch');
 const { logger } = require('./logger');
 
+const API_ENDPOINTS = {
+    github: 'https://api.github.com',
+};
+
 async function fetchAPI(service, endpoint, options = {}) {
-    if (!apis[service]) {
-        throw new Error(`API service "${service}" not configured`);
+    if (!API_ENDPOINTS[service]) {
+        throw new Error(`Unknown API service: ${service}`);
     }
 
-    const config = apis[service];
-    let url;
-
-    // Handle special cases for different APIs
-    switch (service) {
-        case 'cat':
-            url = endpoint.includes('images') ? config.imageUrl : `${config.baseUrl}${endpoint}`;
-            break;
-        case 'dog':
-            url = endpoint.includes('images') ? config.imageUrl : 
-                  endpoint.includes('facts') ? config.factsUrl : 
-                  `${config.baseUrl}${endpoint}`;
-            break;
-        default:
-            url = `${config.baseUrl}${endpoint}`;
-    }
-
+    const url = `${API_ENDPOINTS[service]}${endpoint}`;
     try {
-        const response = await axios({
-            url,
-            method: options.method || 'GET',
-            headers: { ...config.headers, ...options.headers },
-            params: { ...config.params, ...options.params },
-            data: options.data
+        const response = await fetch(url, {
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': 'VEKA-Bot',
+                ...options.headers
+            },
+            ...options
         });
 
-        // Handle different API response formats
-        if (service === 'dog' && endpoint.includes('images')) {
-            return { url: response.data.message };
+        if (!response.ok) {
+            throw new Error(`API request failed: ${response.status} ${response.statusText}`);
         }
 
-        return response.data;
+        return await response.json();
     } catch (error) {
-        logger.error(`API Error (${service}${endpoint}):`, error.message);
+        logger.error(`API Request Error (${service}):`, error);
         throw error;
     }
 }

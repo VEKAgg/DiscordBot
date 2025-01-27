@@ -3,6 +3,8 @@ const { User } = require('../database');
 const { logger } = require('../utils/logger');
 const StaffAlerts = require('../utils/staffAlerts');
 const { ActivityType } = require('discord.js');
+const { RoleManager } = require('../utils/roleManager');
+const { PermissionFlagsBits } = require('discord.js');
 
 module.exports = {
     name: 'presenceUpdate',
@@ -10,6 +12,21 @@ module.exports = {
         if (!newPresence?.user || newPresence.user.bot) return;
 
         try {
+            // Add permission check before role operations
+            if (!newPresence.guild.members.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
+                logger.warn(`Missing Manage Roles permission in guild ${newPresence.guild.id}`);
+                return;
+            }
+            
+            // Check if bot's highest role is above the role it's trying to manage
+            const botRole = newPresence.guild.members.me.roles.highest;
+            const targetRole = newPresence.guild.roles.cache.get('1332452751577452574');
+            
+            if (targetRole && botRole.position <= targetRole.position) {
+                logger.warn(`Bot's role position (${botRole.position}) is not high enough to manage role ${targetRole.name} (${targetRole.position})`);
+                return;
+            }
+
             let user = await User.findOne({ 
                 userId: newPresence.userId,
                 guildId: newPresence.guild.id 
@@ -83,6 +100,30 @@ module.exports = {
 
             await user.save();
             await checkAndAssignRoles(newPresence.member, newPresence.activities);
+
+            const member = newPresence.member;
+
+            // Check if the user is streaming
+            const isLive = newPresence.activities.some(activity => 
+                activity.type === ActivityType.Streaming
+            );
+
+            const liveRole = member.guild.roles.cache.find(role => role.name === 'Live');
+            if (isLive) {
+                if (liveRole) {
+                    await member.roles.add(liveRole);
+                }
+            } else {
+                if (liveRole) {
+                    await member.roles.remove(liveRole);
+                }
+            }
+
+            // Assign streamer chat access role
+            const streamerRole = member.guild.roles.cache.find(role => role.name === 'Streamer');
+            if (isLive && streamerRole) {
+                await member.roles.add(streamerRole);
+            }
 
         } catch (error) {
             logger.error('Presence Update Error:', error);

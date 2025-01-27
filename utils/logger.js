@@ -1,33 +1,34 @@
 const winston = require('winston');
+const { format } = winston;
 const path = require('path');
 
 // Define log format
-const logFormat = winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.errors({ stack: true }),
-    winston.format.printf(({ timestamp, level, message, stack }) => {
-        if (message.startsWith('Loading command:')) return null;
-        return `[${timestamp}] ${level}: ${message}${stack ? '\n' + stack : ''}`;
-    })
+const logFormat = format.combine(
+    format.timestamp({
+        format: 'YYYY-MM-DD HH:mm:ss'
+    }),
+    format.errors({ stack: true }),
+    format.splat(),
+    format.json()
 );
 
 // Create logger instance
 const logger = winston.createLogger({
+    level: 'info',
     format: logFormat,
+    defaultMeta: { service: 'veka-bot' },
     transports: [
         // Console logging
         new winston.transports.Console({
-            format: winston.format.colorize({ all: true }),
+            format: format.combine(
+                format.colorize(),
+                format.simple()
+            )
         }),
         // Error logging
-        new winston.transports.File({
-            filename: path.join(__dirname, '../logs/error.log'),
-            level: 'error',
-        }),
+        new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
         // Combined logging
-        new winston.transports.File({
-            filename: path.join(__dirname, '../logs/combined.log'),
-        }),
+        new winston.transports.File({ filename: 'logs/combined.log' }),
     ],
 });
 
