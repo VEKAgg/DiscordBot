@@ -1,39 +1,91 @@
-const { EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const Analytics = require('../../utils/analytics');
+const { logger } = require('../../utils/logger');
+const { createEmbed } = require('../../utils/embedCreator');
 
 module.exports = {
     name: 'analytics',
     description: 'View server analytics',
+    category: 'admin',
     permissions: [PermissionFlagsBits.Administrator],
-    async execute(message, args) {
+    slashCommand: new SlashCommandBuilder()
+        .setName('analytics')
+        .setDescription('View server analytics')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+        .addStringOption(option =>
+            option.setName('type')
+                .setDescription('Type of analytics to view')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Overview', value: 'overview' },
+                    { name: 'Messages', value: 'messages' },
+                    { name: 'Voice', value: 'voice' },
+                    { name: 'Members', value: 'members' }
+                ))
+        .addStringOption(option =>
+            option.setName('timeframe')
+                .setDescription('Timeframe for analytics')
+                .setRequired(false)
+                .addChoices(
+                    { name: '24 Hours', value: '1d' },
+                    { name: '7 Days', value: '7d' },
+                    { name: '30 Days', value: '30d' }
+                )),
+
+    async execute(interaction) {
         try {
-            const type = args[0] || 'overview';
-            const timeframe = args[1] || '7d';
+            const type = interaction.options.getString('type') || 'overview';
+            const timeframe = interaction.options.getString('timeframe') || '7d';
             
-            const stats = await Analytics.getStats(message.guild.id, type, timeframe);
+            const stats = await Analytics.getStats(interaction.guildId, type, timeframe);
             
             if (!stats || Object.keys(stats).length === 0) {
-                return message.reply('No analytics data available for the specified timeframe.');
+                return interaction.reply({
+                    content: 'No analytics data available for the specified timeframe.',
+                    ephemeral: true
+                });
             }
 
-            const embed = new EmbedBuilder()
-                .setTitle(`📊 Server Analytics - ${type}`)
-                .setDescription('Server activity statistics')
-                .addFields(
-                    Object.entries(stats).map(([key, value]) => ({
+            const fields = [];
+            
+            // Handle overview section
+            if (stats.overview) {
+                Object.entries(stats.overview).forEach(([key, value]) => {
+                    fields.push({
                         name: key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1'),
-                        value: typeof value === 'number' ? value.toLocaleString() : String(value),
+                        value: String(value),
                         inline: true
-                    }))
-                )
-                .setColor('#00ff00')
-                .setFooter({ text: `Timeframe: ${timeframe}` })
-                .setTimestamp();
-                
-            message.channel.send({ embeds: [embed] });
+                    });
+                });
+            }
+
+            // Handle top commands section
+            if (stats.topCommands) {
+                fields.push({
+                    name: 'Top Commands',
+                    value: stats.topCommands.map(cmd => 
+                        `${cmd.name}: ${cmd.uses} uses (${cmd.successRate} success)`
+                    ).join('\n'),
+                    inline: false
+                });
+            }
+
+            const embed = createEmbed({
+                title: `📊 Server Analytics - ${type.charAt(0).toUpperCase() + type.slice(1)}`,
+                description: 'Server activity statistics',
+                fields,
+                color: '#00ff00',
+                footer: { text: `Timeframe: ${timeframe}` },
+                timestamp: true
+            });
+
+            await interaction.reply({ embeds: [embed] });
         } catch (error) {
-            console.error('Analytics Error:', error);
-            message.reply('Failed to fetch analytics data.');
+            logger.error('Analytics command error:', error);
+            return interaction.reply({
+                content: 'An error occurred while fetching analytics data.',
+                ephemeral: true
+            });
         }
     }
-}; 
+};

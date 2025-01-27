@@ -1,17 +1,11 @@
 const mongoose = require('mongoose');
 
 const analyticsConfigSchema = new mongoose.Schema({
-    guildId: { type: String, required: true },
-    features: {
-        welcome: { enabled: Boolean, channelId: String },
-        invite: { enabled: Boolean, channelId: String },
-        command: { enabled: Boolean, channelId: String },
-        connection: { enabled: Boolean, channelId: String }
-    },
-    reporting: {
-        interval: { type: String, default: 'daily' },
-        channelId: String
-    }
+    guildId: { type: String, required: true, unique: true },
+    enabled: { type: Boolean, default: false },
+    trackingChannels: [String],
+    excludedChannels: [String],
+    lastReset: { type: Date, default: Date.now }
 });
 
 module.exports = mongoose.model('AnalyticsConfig', analyticsConfigSchema); 

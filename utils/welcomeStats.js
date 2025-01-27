@@ -2,37 +2,61 @@ const { EmbedBuilder } = require('discord.js');
 const { User } = require('../database');
 
 class WelcomeStats {
+    // Add memory optimization
+    static statsCache = new Map();
+
     static async trackWelcome(member, { dmSuccess, assignedRoles, isVerified }) {
+        // Add bulk operation support
+        const bulkOps = [];
+        const hourOfDay = new Date().getHours();
+        const dayOfWeek = new Date().getDay();
+
         try {
-            const stats = await this.getGuildStats(member.guild.id);
-            const hourOfDay = new Date().getHours();
-            const dayOfWeek = new Date().getDay();
-
-            // Update statistics
-            stats.totalJoins += 1;
-            stats.hourlyJoins[hourOfDay] += 1;
-            stats.dailyJoins[dayOfWeek] += 1;
+            // Use cached stats if available
+            const cacheKey = `stats_${member.guild.id}`;
+            let stats = this.statsCache.get(cacheKey);
             
-            if (dmSuccess) stats.successfulDMs += 1;
-            if (isVerified) stats.verifiedJoins += 1;
+            if (!stats) {
+                stats = await this.getGuildStats(member.guild.id);
+                this.statsCache.set(cacheKey, stats);
+                
+                // Cache cleanup after 5 minutes
+                setTimeout(() => this.statsCache.delete(cacheKey), 300000);
+            }
 
-            // Track retention (we'll update left status in guildMemberRemove)
-            stats.members.push({
-                userId: member.id,
-                joinedAt: new Date(),
-                assignedRoles,
-                dmSuccess,
-                isVerified
+            // Batch updates
+            bulkOps.push({
+                updateOne: {
+                    filter: { guildId: member.guild.id },
+                    update: {
+                        $inc: {
+                            [`hourlyJoins.${hourOfDay}`]: 1,
+                            [`dailyJoins.${dayOfWeek}`]: 1,
+                            totalJoins: 1,
+                            successfulDMs: dmSuccess ? 1 : 0,
+                            verifiedJoins: isVerified ? 1 : 0
+                        },
+                        $push: {
+                            members: {
+                                userId: member.id,
+                                joinedAt: new Date(),
+                                assignedRoles,
+                                dmSuccess,
+                                isVerified
+                            }
+                        }
+                    }
+                }
             });
 
-            await stats.save();
-            
+            await User.bulkWrite(bulkOps);
+
             // Generate insights if threshold reached
             if (stats.totalJoins % 10 === 0) { // Every 10 joins
                 await this.generateInsights(member.guild);
             }
         } catch (error) {
-            console.error('Error tracking welcome stats:', error);
+            logger.error('Error tracking welcome stats:', error);
         }
     }
 
@@ -82,4 +106,4 @@ class WelcomeStats {
     }
 }
 
-module.exports = WelcomeStats; 
+module.exports = WelcomeStats;

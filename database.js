@@ -1,6 +1,20 @@
 const mongoose = require('mongoose');
+mongoose.set('bufferCommands', false); // Disable buffering for better memory usage
 const { Schema } = mongoose;
 const { logger } = require('./utils/logger');
+
+// Add timestamps to all schemas
+const baseOptions = { timestamps: true };
+
+// Update connection options for MongoDB 8.x compatibility
+const connectionOptions = {
+    maxPoolSize: 10,
+    minPoolSize: 2,
+    socketTimeoutMS: 45000,
+    serverSelectionTimeoutMS: 5000,
+    family: 4, // Use IPv4, skip trying IPv6
+    heartbeatFrequencyMS: 30000
+};
 
 // Define base stats schema
 const baseStatsSchema = new Schema({
@@ -19,6 +33,9 @@ const baseStatsSchema = new Schema({
         default: Date.now
     }
 }, { discriminatorKey: 'type' });
+
+// Add indexes for frequently queried fields
+baseStatsSchema.index({ guildId: 1, date: 1 }, { unique: true });
 
 // Define guild analytics schema
 const guildAnalyticsSchema = new Schema({
@@ -45,7 +62,7 @@ const userSchema = new Schema({
     activity: {
         voiceTime: { type: Number, default: 0 },
         messageCount: { type: Number, default: 0 },
-        lastSeen: Date,
+        lastSeen: { type: Date, index: true },
         richPresence: [{
             game: String,
             timestamp: Date,
@@ -56,6 +73,18 @@ const userSchema = new Schema({
         gamesPlayed: Map,
         favoriteGames: Array,
         peakActiveHours: Array
+    }
+}, baseOptions);
+
+// Add indexes for frequently queried fields
+userSchema.index({ userId: 1, guildId: 1 }, { unique: true });
+
+// Add error handling middleware
+userSchema.post('save', function(error, doc, next) {
+    if (error.name === 'MongoError' && error.code === 11000) {
+        next(new Error('Duplicate key error'));
+    } else {
+        next(error);
     }
 });
 
@@ -86,10 +115,13 @@ const commandLogSchema = new Schema({
     errorMessage: String,
     timestamp: {
         type: Date,
-        default: Date.now,
-        index: true
+        default: Date.now
     }
 });
+
+// Add indexes for frequently queried fields
+commandLogSchema.index({ commandName: 1, timestamp: 1 });
+commandLogSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2592000 }); // 30 days TTL
 
 // Define welcome stats schema
 const welcomeStatsSchema = new Schema({
@@ -100,13 +132,13 @@ const welcomeStatsSchema = new Schema({
     hourlyJoins: { type: Map, of: Number, default: new Map() },
     dailyJoins: { type: Map, of: Number, default: new Map() },
     members: [{
-        userId: String,
-        joinedAt: Date,
-        assignedRoles: [String],
-        dmSuccess: Boolean,
-        isVerified: Boolean
+        userId: { type: String, required: true },
+        joinedAt: { type: Date, default: Date.now },
+        assignedRoles: [{ type: String, validate: /^[0-9]{17,19}$/ }],
+        dmSuccess: { type: Boolean, default: false },
+        isVerified: { type: Boolean, default: false }
     }]
-});
+}, baseOptions);
 
 // Define deal schema
 const dealSchema = new Schema({
@@ -128,6 +160,8 @@ const User = mongoose.models.User || mongoose.model('User', userSchema);
 const CommandLog = mongoose.models.CommandLog || mongoose.model('CommandLog', commandLogSchema);
 const WelcomeStats = mongoose.models.WelcomeStats || mongoose.model('WelcomeStats', welcomeStatsSchema);
 const Deal = mongoose.models.Deal || mongoose.model('Deal', dealSchema);
+const GamingConfig = mongoose.models.GamingConfig || mongoose.model('GamingConfig', require('./models/GamingConfig').schema);
+const NotificationConfig = mongoose.models.NotificationConfig || mongoose.model('NotificationConfig', require('./models/NotificationConfig').schema);
 
 // Model getter function
 function getModel(modelName) {
@@ -144,6 +178,33 @@ function getModel(modelName) {
     }
 }
 
+async function connect() {
+    try {
+        await mongoose.connect(process.env.MONGODB_URI, {
+            maxPoolSize: 10,
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000
+        });
+        logger.info('Connected to MongoDB successfully');
+        
+        await mongoose.connection.db.admin().ping();
+        return true;
+    } catch (error) {
+        logger.error('MongoDB connection error:', error.message);
+        return false;
+    }
+}
+
+// Add connection event handlers
+mongoose.connection.on('disconnected', () => {
+    logger.warn('MongoDB disconnected. Attempting to reconnect...');
+    setTimeout(connect, 5000); // Try to reconnect after 5 seconds
+});
+
+mongoose.connection.on('error', (err) => {
+    logger.error('MongoDB error:', err.message);
+});
+
 // Export all models and connection function
 module.exports = {
     User,
@@ -152,15 +213,9 @@ module.exports = {
     WelcomeStats,
     BaseStats,
     Deal,
-    connect: async () => {
-        try {
-            await mongoose.connect(process.env.MONGODB_URI);
-            logger.info('Database connected successfully');
-        } catch (error) {
-            logger.error('Database connection failed:', error);
-            throw error;
-        }
-    },
+    GamingConfig,
+    NotificationConfig,
+    connect,
     getModel
 };
 

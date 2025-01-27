@@ -36,41 +36,36 @@ class WelcomeAnalytics extends BaseAnalytics {
         }
     }
 
+    static getDayName(day) {
+        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        return days[day];
+    }
+
     static async generateInsights(guild) {
         try {
-            const stats = await this.getGuildStats(guild.id) || {
-                totalJoins: 0,
-                successfulDMs: 0,
-                verifiedJoins: 0
-            };
-            
+            const stats = await this.getGuildStats(guild.id);
             const retentionRate = await this.calculateRetentionRate(stats);
             const bestTimes = await this.analyzeBestTimes(stats);
 
-            return new EmbedBuilder()
-                .setTitle('📊 Welcome System Insights')
-                .addFields([
+            return this.createEmbed({
+                title: '📊 Welcome System Insights',
+                fields: [
                     { name: 'Total Joins', value: stats.totalJoins.toString(), inline: true },
                     { name: 'DM Success Rate', value: `${((stats.successfulDMs / (stats.totalJoins || 1)) * 100).toFixed(1)}%`, inline: true },
                     { name: 'Verification Rate', value: `${((stats.verifiedJoins / (stats.totalJoins || 1)) * 100).toFixed(1)}%`, inline: true },
                     { name: 'Member Retention', value: `${retentionRate.toFixed(1)}%`, inline: true },
                     { name: 'Best Time to Join', value: bestTimes ? `${bestTimes.hour}:00` : 'N/A', inline: true },
                     { name: 'Best Day', value: bestTimes ? this.getDayName(bestTimes.day) : 'N/A', inline: true }
-                ])
-                .setColor('#00ff00')
-                .setTimestamp();
+                ]
+            });
         } catch (error) {
             this.logError(error, 'generateInsights');
-            return new EmbedBuilder()
-                .setTitle('📊 Welcome System Insights')
-                .setDescription('Failed to generate insights')
-                .setColor('#ff0000');
+            return this.createEmbed({
+                title: '📊 Welcome System Insights',
+                description: 'Failed to generate insights',
+                color: '#ff0000'
+            });
         }
-    }
-
-    static getDayName(day) {
-        const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-        return days[day];
     }
 
     static async getGuildStats(guildId) {
@@ -80,24 +75,30 @@ class WelcomeAnalytics extends BaseAnalytics {
     }
 
     static async calculateRetentionRate(stats) {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
+        const thirtyDaysAgo = this.getTimeframeDate('30d');
         const joinedUsers = stats.members.filter(m => m.joinedAt < thirtyDaysAgo);
         if (!joinedUsers.length) return 0;
 
-        const stillPresent = await User.countDocuments({
-            guildId: stats.guildId,
-            userId: { $in: joinedUsers.map(u => u.userId) },
-            leftAt: null
-        });
+        const stillPresent = await this.aggregateData(
+            User,
+            {
+                guildId: stats.guildId,
+                userId: { $in: joinedUsers.map(u => u.userId) },
+                leftAt: null
+            },
+            { _id: null, count: { $sum: 1 } }
+        );
 
-        return (stillPresent / joinedUsers.length) * 100;
+        return (stillPresent[0]?.count || 0) / joinedUsers.length * 100;
     }
 
     static analyzeBestTimes(stats) {
+        if (!stats?.hourlyJoins || !stats?.dailyJoins) return null;
+
         const hourlyJoins = Object.entries(stats.hourlyJoins);
         const dailyJoins = Object.entries(stats.dailyJoins);
+
+        if (!hourlyJoins.length || !dailyJoins.length) return null;
 
         const bestHour = hourlyJoins.reduce((a, b) => b[1] > a[1] ? b : a);
         const bestDay = dailyJoins.reduce((a, b) => b[1] > a[1] ? b : a);
