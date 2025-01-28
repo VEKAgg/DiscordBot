@@ -1,3 +1,6 @@
+const { User } = require('../database');
+const { XPManager } = require('../utils/xpManager');
+
 module.exports = {
     name: 'voiceStateUpdate',
     execute(oldState, newState, client) {
@@ -18,6 +21,10 @@ module.exports = {
             client.points.set(userId, totalPoints);
 
             delete client.voiceTimers[userId];
+        }
+
+        if (newState.channelId) {
+            XPManager.handleActivity(newState.member, 'voiceChat');
         }
     },
 };

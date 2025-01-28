@@ -1,22 +1,46 @@
-const { createEmbed } = require('../../utils/embedUtils');
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { fetchAPI } = require('../../utils/apiManager');
+const { logger } = require('../../utils/logger');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'botupdates',
-    description: 'Show the latest updates and the GitHub repository.',
-    execute(message, args, client) {
-        const embed = createEmbed(
-            'Bot Updates',
-            `
-            **Latest Features:**
-            - Added support for polls.
-            - Enhanced stats with detailed data.
-            - Utility commands like #time and #invite.
+    description: 'Show recent bot updates',
+    category: 'informational',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
+    slashCommand: new SlashCommandBuilder()
+        .setName('botupdates')
+        .setDescription('Show recent bot updates and changes'),
 
-            **GitHub Repository:**
-            [Click here to view the code](https://github.com/VEKAgg/DiscordBot)
-            `,
-            'GREEN',
-        );
-        message.channel.send({ embeds: [embed] });
-    },
+    async execute(interaction) {
+        try {
+            const commits = await fetchAPI('github', '/repos/VEKAgg/DiscordBot/commits')
+                .catch(() => null);
+            
+            if (!commits) {
+                return interaction.reply({
+                    content: 'Unable to fetch updates. Please try again later.',
+                    ephemeral: true
+                });
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🤖 Recent Bot Updates')
+                .setDescription(
+                    commits.slice(0, 5).map(commit => 
+                        `• ${commit.commit.message.split('\n')[0]}`
+                    ).join('\n') || 'No recent updates'
+                )
+                .setColor('#2B2D31')
+                .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
+
+            await interaction.reply({ embeds: [embed] });
+        } catch (error) {
+            logger.error('Bot Updates Error:', error);
+            return interaction.reply({
+                content: 'Unable to fetch updates at this time.',
+                ephemeral: true
+            });
+        }
+    }
 };

@@ -1,17 +1,18 @@
-const { EmbedBuilder, Colors } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 
 /**
- * Utility function to create a standard embed.
- * @param {string} title - The title of the embed.
- * @param {string} description - The description of the embed.
- * @param {string} color - The color of the embed. Defaults to Colors.Blurple.
- * @returns {EmbedBuilder} - The created embed object.
+ * Creates a standardized embed with consistent styling
+ * @param {string} title - Embed title
+ * @param {string} description - Embed description
+ * @param {string} [color='#2b2d31'] - Hex color code
  */
-function createEmbed(title, description, color = Colors.Blurple) {
-  return new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(description)
-    .setColor(color);
+function createEmbed(title, description, color = '#2b2d31') {
+    return new EmbedBuilder()
+        .setTitle(title)
+        .setDescription(description)
+        .setColor(color)
+        .setTimestamp();
 }
 
 module.exports = { createEmbed };
+

@@ -1,4 +1,4 @@
-const { EmbedBuilder } = require('discord.js');
+const embedUtils = require('../../utils/embedUtils');
 
 module.exports = {
   name: 'wiki',

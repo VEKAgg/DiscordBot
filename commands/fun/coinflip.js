@@ -1,11 +1,30 @@
-const { createEmbed } = require('../../utils/embedUtils');
+const { createEmbed } = require('../../utils/embedCreator');
 
 module.exports = {
     name: 'coinflip',
-    description: 'Flips a coin and returns Heads or Tails.',
+    description: 'Flip a coin',
+    contributor: 'Sleepless',
     execute(message) {
-        const result = Math.random() < 0.5 ? 'Heads' : 'Tails';
-        const embed = createEmbed('Coin Flip', `The coin landed on **${result}**.`);
+        const result = Math.random() < 0.5;
+        const outcomes = {
+            true: { text: 'Heads', emoji: '🦅' },
+            false: { text: 'Tails', emoji: '🦁' }
+        };
+
+        const embed = createEmbed({
+            title: `${outcomes[result].emoji} Coin Flip`,
+            description: `The coin landed on **${outcomes[result].text}**!`,
+            color: '#FFD700',
+            author: {
+                name: message.author.tag,
+                iconURL: message.author.displayAvatarURL({ dynamic: true })
+            },
+            footer: {
+                text: `Contributor: ${module.exports.contributor} • VEKA`,
+                iconURL: message.client.user.displayAvatarURL()
+            }
+        });
+
         message.channel.send({ embeds: [embed] });
     },
 };
