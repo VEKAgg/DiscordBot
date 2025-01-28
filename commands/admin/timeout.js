@@ -2,55 +2,55 @@ const { EmbedBuilder, SlashCommandBuilder, PermissionFlagsBits } = require('disc
 const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
-    name: 'ban',
-    description: 'Ban a member from the server',
+    name: 'timeout',
+    description: 'Timeout a member',
     category: 'admin',
     contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
-    permissions: [PermissionFlagsBits.BanMembers],
+    permissions: [PermissionFlagsBits.ModerateMembers],
     slashCommand: new SlashCommandBuilder()
-        .setName('ban')
-        .setDescription('Ban a member from the server')
-        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+        .setName('timeout')
+        .setDescription('Timeout a member')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(option =>
             option.setName('user')
-                .setDescription('User to ban')
+                .setDescription('User to timeout')
                 .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName('duration')
+                .setDescription('Timeout duration in minutes')
+                .setRequired(true)
+                .setMinValue(1)
+                .setMaxValue(40320)) // 4 weeks in minutes
         .addStringOption(option =>
             option.setName('reason')
-                .setDescription('Reason for banning')
-                .setRequired(false))
-        .addIntegerOption(option =>
-            option.setName('days')
-                .setDescription('Number of days of messages to delete')
-                .setRequired(false)
-                .setMinValue(0)
-                .setMaxValue(7)),
+                .setDescription('Reason for timeout')
+                .setRequired(false)),
 
     async execute(interaction) {
         const targetUser = interaction.options.getUser('user');
+        const duration = interaction.options.getInteger('duration');
         const reason = interaction.options.getString('reason') || 'No reason provided';
-        const days = interaction.options.getInteger('days') || 0;
         const member = await interaction.guild.members.fetch(targetUser.id);
 
-        if (!member.bannable) {
+        if (!member.moderatable) {
             return interaction.reply({
-                content: 'I cannot ban this user. They may have higher permissions than me.',
+                content: 'I cannot timeout this user. They may have higher permissions than me.',
                 ephemeral: true
             });
         }
 
         const embed = new EmbedBuilder()
-            .setTitle('Member Banned')
+            .setTitle('Member Timed Out')
             .setColor('#2B2D31')
             .addFields([
                 { name: 'User', value: targetUser.tag, inline: true },
                 { name: 'Moderator', value: interaction.user.tag, inline: true },
-                { name: 'Reason', value: reason },
-                { name: 'Message History Deleted', value: `${days} days`, inline: true }
+                { name: 'Duration', value: `${duration} minutes`, inline: true },
+                { name: 'Reason', value: reason }
             ])
             .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
-        await member.ban({ deleteMessageDays: days, reason: reason });
+        await member.timeout(duration * 60 * 1000, reason);
         await interaction.reply({ embeds: [embed] });
     }
-};
+}; 

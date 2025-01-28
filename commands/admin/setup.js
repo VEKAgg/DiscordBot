@@ -2,11 +2,14 @@ const { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('disc
 const { DashboardConfig, AnalyticsConfig, GamingConfig } = require('../../database');
 const NotificationConfig = require('../../models/NotificationConfig');
 const { logger } = require('../../utils/logger');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'setup',
-    description: 'Configure bot settings for the server',
+    description: 'Configure bot settings',
     category: 'admin',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
+    permissions: [PermissionFlagsBits.Administrator],
     slashCommand: new SlashCommandBuilder()
         .setName('setup')
         .setDescription('Configure bot settings')
@@ -17,12 +20,12 @@ module.exports = {
                 .setDescription('Set up the server dashboard')
                 .addChannelOption(option =>
                     option.setName('channel')
-                        .setDescription('Channel for the dashboard')
+                        .setDescription('Channel to display the dashboard')
                         .setRequired(true)))
         .addSubcommand(subcommand =>
             subcommand
                 .setName('analytics')
-                .setDescription('Enable server analytics')
+                .setDescription('Configure analytics settings')
                 .addBooleanOption(option =>
                     option.setName('enabled')
                         .setDescription('Enable or disable analytics')
@@ -52,10 +55,7 @@ module.exports = {
                     const channel = interaction.options.getChannel('channel');
                     await DashboardConfig.findOneAndUpdate(
                         { guildId: interaction.guildId },
-                        { 
-                            channelId: channel.id,
-                            lastUpdate: new Date()
-                        },
+                        { channelId: channel.id },
                         { upsert: true }
                     );
                     return interaction.reply({
@@ -68,10 +68,7 @@ module.exports = {
                     const enabled = interaction.options.getBoolean('enabled');
                     await AnalyticsConfig.findOneAndUpdate(
                         { guildId: interaction.guildId },
-                        { 
-                            enabled,
-                            lastUpdate: new Date()
-                        },
+                        { enabled },
                         { upsert: true }
                     );
                     return interaction.reply({

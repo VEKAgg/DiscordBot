@@ -1,21 +1,25 @@
-const { EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { formatTime } = require('../../utils/formatters');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'uptime',
     description: 'Shows bot uptime',
-    async execute(message) {
-        const uptime = process.uptime();
-        const days = Math.floor(uptime / 86400);
-        const hours = Math.floor(uptime / 3600) % 24;
-        const minutes = Math.floor(uptime / 60) % 60;
-        const seconds = Math.floor(uptime % 60);
+    category: 'utility',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
+    slashCommand: new SlashCommandBuilder()
+        .setName('uptime')
+        .setDescription('Shows how long the bot has been online'),
+
+    async execute(interaction) {
+        const uptime = formatTime(process.uptime() * 1000);
 
         const embed = new EmbedBuilder()
-            .setTitle('🕒 Bot Uptime')
-            .setDescription(`I've been online for:\n${days}d ${hours}h ${minutes}m ${seconds}s`)
-            .setColor('#00ff00')
-            .setTimestamp();
+            .setTitle('Bot Uptime')
+            .setColor('#2B2D31')
+            .setDescription(`I have been online for ${uptime}`)
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
-        message.channel.send({ embeds: [embed] });
+        await interaction.reply({ embeds: [embed] });
     }
 };

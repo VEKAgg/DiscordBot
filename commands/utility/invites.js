@@ -1,11 +1,13 @@
 const { EmbedBuilder, SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { User } = require('../../database');
 const InviteAnalytics = require('../../utils/analytics/inviteAnalytics');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'invites',
     description: 'Check server invites',
     category: 'utility',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
     permissions: [PermissionFlagsBits.ManageGuild],
     slashCommand: new SlashCommandBuilder()
         .setName('invites')
@@ -17,66 +19,29 @@ module.exports = {
                 .setRequired(false)),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        const targetUser = isSlash 
-            ? interaction.options.getUser('user')
-            : interaction.mentions.users.first();
-
-        try {
-            const invites = await (isSlash ? interaction.guild : interaction.guild).invites.fetch();
-            const userInvites = new Map();
-
-            // Count invites per user
-            invites.forEach(invite => {
-                const inviter = invite.inviter;
-                if (inviter && (!targetUser || inviter.id === targetUser.id)) {
-                    const count = userInvites.get(inviter.id) || { uses: 0, code: invite.code };
-                    count.uses += invite.uses;
-                    userInvites.set(inviter.id, count);
-                }
-            });
-
-            // Sort users by invite count
-            const sortedInviters = [...userInvites.entries()]
-                .sort((a, b) => b[1].uses - a[1].uses)
-                .slice(0, 10);
-
-            const embed = new EmbedBuilder()
-                .setTitle('📊 Server Invites')
-                .setDescription(targetUser ? `Invites for ${targetUser.tag}` : 'Top 10 Inviters')
-                .setColor('#FFA500')
-                .setTimestamp();
-
-            if (sortedInviters.length > 0) {
-                embed.addFields(
-                    sortedInviters.map((entry, index) => ({
-                        name: `${index + 1}. ${(isSlash ? interaction.guild : interaction.guild).members.cache.get(entry[0])?.user.tag || 'Unknown User'}`,
-                        value: `Invites: ${entry[1].uses} (Code: ${entry[1].code})`,
-                        inline: false
-                    }))
-                );
-            } else {
-                embed.setDescription('No invite data found.');
-            }
-
-            const reply = { embeds: [embed] };
-            if (isSlash) {
-                await interaction.reply(reply);
-            } else {
-                await interaction.channel.send(reply);
-            }
-        } catch (error) {
-            console.error('Error fetching invites:', error);
-            const reply = { 
-                content: 'Failed to fetch invite information.',
-                ephemeral: true 
-            };
-            if (isSlash) {
-                await interaction.reply(reply);
-            } else {
-                await interaction.reply(reply.content);
-            }
+        const targetUser = interaction.options.getUser('user');
+        const invites = await interaction.guild.invites.fetch();
+        
+        let userInvites;
+        if (targetUser) {
+            userInvites = invites.filter(invite => invite.inviter?.id === targetUser.id);
         }
+
+        const embed = new EmbedBuilder()
+            .setTitle(targetUser ? `${targetUser.tag}'s Invites` : 'Server Invites')
+            .setColor('#2B2D31')
+            .setDescription(
+                targetUser ?
+                    userInvites.map(invite => 
+                        `Code: \`${invite.code}\` - Uses: ${invite.uses || 0}`
+                    ).join('\n') || 'No invites found' :
+                    invites.map(invite => 
+                        `Code: \`${invite.code}\` - By: ${invite.inviter?.tag} - Uses: ${invite.uses || 0}`
+                    ).join('\n') || 'No invites found'
+            )
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
+
+        await interaction.reply({ embeds: [embed] });
     }
 };
 

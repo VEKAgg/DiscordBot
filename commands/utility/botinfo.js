@@ -13,11 +13,9 @@ module.exports = {
         .setDescription('Shows information about the bot'),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        
         const embed = new EmbedBuilder()
             .setTitle('Bot Information')
-            .setColor('#0099ff')
+            .setColor('#2B2D31')
             .addFields([
                 { name: 'Bot Version', value: version, inline: true },
                 { name: 'Discord.js', value: discordVersion, inline: true },
@@ -26,15 +24,9 @@ module.exports = {
                 { name: 'Memory Usage', value: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`, inline: true },
                 { name: 'Uptime', value: `${Math.round(process.uptime() / 60 / 60)}h`, inline: true }
             ])
-            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` })
-            .setTimestamp();
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
-        const reply = { embeds: [embed] };
-        if (isSlash) {
-            await interaction.reply(reply);
-        } else {
-            await interaction.channel.send(reply);
-        }
+        await interaction.reply({ embeds: [embed] });
     },
 
     async setupDashboard(message) {

@@ -1,28 +1,23 @@
 const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { version } = require('../../package.json');
 const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
-    name: 'avatar',
-    description: 'Shows user avatar',
+    name: 'version',
+    description: 'Shows current bot version',
     category: 'utility',
     contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
     slashCommand: new SlashCommandBuilder()
-        .setName('avatar')
-        .setDescription('Shows user avatar')
-        .addUserOption(option =>
-            option.setName('user')
-                .setDescription('User to show avatar for')
-                .setRequired(false)),
+        .setName('version')
+        .setDescription('Shows current bot version'),
 
     async execute(interaction) {
-        const targetUser = interaction.options.getUser('user') || interaction.user;
-
         const embed = new EmbedBuilder()
-            .setTitle(`${targetUser.tag}'s Avatar`)
+            .setTitle('Bot Version')
             .setColor('#2B2D31')
-            .setImage(targetUser.displayAvatarURL({ size: 4096, dynamic: true }))
+            .setDescription(`Current version: v${version}`)
             .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
         await interaction.reply({ embeds: [embed] });
     }
-};
+}; 
