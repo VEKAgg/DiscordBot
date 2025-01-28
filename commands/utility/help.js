@@ -1,9 +1,11 @@
 const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'help',
     description: 'Shows command information',
     category: 'utility',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
     slashCommand: new SlashCommandBuilder()
         .setName('help')
         .setDescription('Get information about commands')
@@ -13,43 +15,43 @@ module.exports = {
                 .setRequired(false)),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        const commandName = isSlash ? interaction.options.getString('command') : null;
+        const commandName = interaction.options.getString('command');
         const commands = interaction.client.commands;
 
         if (commandName) {
             const command = commands.get(commandName);
             if (!command) {
-                return interaction.reply({ 
-                    content: 'That command does not exist!', 
-                    ephemeral: true 
+                return interaction.reply({
+                    content: 'That command does not exist!',
+                    ephemeral: true
                 });
             }
 
             const embed = new EmbedBuilder()
                 .setTitle(`Command: ${command.name}`)
-                .setDescription(command.description || 'No description available')
-                .setColor('#0099ff')
+                .setColor('#2B2D31')
                 .addFields([
-                    { name: 'Category', value: command.category || 'None', inline: true },
-                    { name: 'Usage', value: command.usage || 'No usage specified', inline: true }
-                ]);
+                    { name: 'Description', value: command.description || 'No description available' },
+                    { name: 'Category', value: command.category || 'Uncategorized' },
+                    { name: 'Usage', value: command.usage || `/${command.name}` }
+                ])
+                .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
             return interaction.reply({ embeds: [embed] });
         }
 
-        // Group commands by category
         const categories = {};
         commands.forEach(cmd => {
-            const category = cmd.category || 'Miscellaneous';
+            const category = cmd.category || 'Uncategorized';
             if (!categories[category]) categories[category] = [];
             categories[category].push(cmd.name);
         });
 
         const embed = new EmbedBuilder()
             .setTitle('Command Help')
-            .setDescription('Use `/help <command>` for detailed information about a specific command.')
-            .setColor('#0099ff');
+            .setDescription('Use `/help <command>` for detailed information about a specific command')
+            .setColor('#2B2D31')
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
         Object.entries(categories).forEach(([category, cmds]) => {
             embed.addFields({
@@ -58,6 +60,6 @@ module.exports = {
             });
         });
 
-        return interaction.reply({ embeds: [embed] });
+        await interaction.reply({ embeds: [embed] });
     }
 };

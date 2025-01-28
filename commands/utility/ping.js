@@ -1,51 +1,30 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'ping',
-    description: 'Check bot latency and API response time',
+    description: 'Check bot latency',
     category: 'utility',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
     slashCommand: new SlashCommandBuilder()
         .setName('ping')
-        .setDescription('Check bot latency and API response time'),
+        .setDescription('Check bot latency'),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        
-        try {
-            const sent = isSlash 
-                ? await interaction.deferReply({ fetchReply: true })
-                : await interaction.channel.send('Pinging...');
+        const sent = await interaction.reply({ 
+            content: 'Pinging...', 
+            fetchReply: true 
+        });
 
-            const roundtripLatency = sent.createdTimestamp - (isSlash ? interaction.createdTimestamp : interaction.createdAt);
-            const wsLatency = interaction.client.ws.ping;
+        const embed = new EmbedBuilder()
+            .setTitle('🏓 Pong!')
+            .setColor('#2B2D31')
+            .addFields([
+                { name: 'Latency', value: `${sent.createdTimestamp - interaction.createdTimestamp}ms`, inline: true },
+                { name: 'API Latency', value: `${Math.round(interaction.client.ws.ping)}ms`, inline: true }
+            ])
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
-            const embed = new EmbedBuilder()
-                .setTitle('🏓 Pong!')
-                .setColor('#00ff00')
-                .addFields([
-                    { name: 'Bot Latency', value: `${roundtripLatency}ms`, inline: true },
-                    { name: 'API Latency', value: `${wsLatency}ms`, inline: true }
-                ])
-                .setFooter({ text: 'Bot Status: Online' })
-                .setTimestamp();
-
-            const reply = { embeds: [embed] };
-            if (isSlash) {
-                await interaction.editReply(reply);
-            } else {
-                await sent.edit(reply);
-            }
-        } catch (error) {
-            logger.error('Ping command error:', error);
-            const reply = { 
-                content: 'An error occurred while checking latency.',
-                ephemeral: true 
-            };
-            if (isSlash) {
-                await interaction.editReply(reply);
-            } else {
-                await interaction.reply(reply.content);
-            }
-        }
+        await interaction.editReply({ content: null, embeds: [embed] });
     }
 };

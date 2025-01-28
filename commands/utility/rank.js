@@ -1,57 +1,52 @@
 const { EmbedBuilder, SlashCommandBuilder } = require('discord.js');
 const { User } = require('../../database');
-const { XPManager } = require('../../utils/xpManager');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
     name: 'rank',
-    description: 'Shows your current rank, level, and XP progress',
-    usage: 'rank [@user]',
+    description: 'Shows your or another user\'s rank',
     category: 'utility',
+    contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
     slashCommand: new SlashCommandBuilder()
         .setName('rank')
-        .setDescription('Shows your current rank and level')
+        .setDescription('Shows rank information')
         .addUserOption(option =>
             option.setName('user')
                 .setDescription('User to check rank for')
                 .setRequired(false)),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        const target = isSlash 
-            ? interaction.options.getUser('user') || interaction.user
-            : interaction.mentions.users.first() || interaction.author;
-
+        const targetUser = interaction.options.getUser('user') || interaction.user;
         const userData = await User.findOne({ 
-            userId: target.id,
-            guildId: isSlash ? interaction.guildId : interaction.guild.id
+            userId: targetUser.id,
+            guildId: interaction.guildId
         });
 
         if (!userData) {
-            const reply = { content: 'No XP data found for this user.', ephemeral: true };
-            return isSlash ? interaction.reply(reply) : interaction.reply(reply.content);
+            return interaction.reply({
+                content: 'No rank data found for this user.',
+                ephemeral: true
+            });
         }
 
-        const level = XPManager.calculateLevel(userData.xp);
-        const nextLevelXP = XPManager.calculateNextLevelXP(level);
-        const progress = (userData.xp / nextLevelXP) * 100;
-        const progressBar = XPManager.createProgressBar(progress);
+        const level = Math.floor(Math.sqrt(userData.xp / 100));
+        const currentLevelXP = level * level * 100;
+        const nextLevelXP = (level + 1) * (level + 1) * 100;
+        const xpProgress = userData.xp - currentLevelXP;
+        const xpNeeded = nextLevelXP - currentLevelXP;
+        const progressPercentage = Math.round((xpProgress / xpNeeded) * 100);
 
         const embed = new EmbedBuilder()
-            .setTitle(`${target.username}'s Rank`)
-            .setThumbnail(target.displayAvatarURL())
-            .setColor('#0099ff')
+            .setTitle(`${targetUser.tag}'s Rank`)
+            .setThumbnail(targetUser.displayAvatarURL({ dynamic: true }))
+            .setColor('#2B2D31')
             .addFields([
                 { name: 'Level', value: level.toString(), inline: true },
-                { name: 'XP', value: `${userData.xp}/${nextLevelXP}`, inline: true },
-                { name: 'Progress', value: progressBar }
+                { name: 'XP', value: userData.xp.toString(), inline: true },
+                { name: 'Progress to Next Level', value: `${progressPercentage}%`, inline: true }
             ])
-            .setFooter({ text: `Rank stats for ${target.tag}` });
+            .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
 
-        const reply = { embeds: [embed] };
-        if (isSlash) {
-            await interaction.reply(reply);
-        } else {
-            await interaction.channel.send(reply);
-        }
+        await interaction.reply({ embeds: [embed] });
     }
 }; 

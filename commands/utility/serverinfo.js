@@ -12,8 +12,7 @@ module.exports = {
         .setDescription('Shows detailed information about the server'),
 
     async execute(interaction) {
-        const isSlash = interaction.commandName !== undefined;
-        const guild = isSlash ? interaction.guild : interaction.guild;
+        const guild = interaction.guild;
         
         try {
             const owner = await guild.fetchOwner();
@@ -52,23 +51,12 @@ module.exports = {
                 embed.setImage(guild.bannerURL({ dynamic: true }));
             }
 
-            const reply = { embeds: [embed] };
-            if (isSlash) {
-                await interaction.reply(reply);
-            } else {
-                await interaction.channel.send(reply);
-            }
+            await interaction.reply({ embeds: [embed] });
         } catch (error) {
-            logger.error('Server Info Error:', error);
-            const reply = { 
+            await interaction.reply({
                 content: 'Failed to fetch server information.',
-                ephemeral: true 
-            };
-            if (isSlash) {
-                await interaction.reply(reply);
-            } else {
-                await interaction.reply(reply.content);
-            }
+                ephemeral: true
+            });
         }
     }
 };

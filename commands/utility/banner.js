@@ -1,10 +1,11 @@
 const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { getRandomFooter } = require('../../utils/footerRotator');
 
 module.exports = {
   name: 'banner',
   description: "Show a user's banner",
   category: 'utility',
-  contributor: 'Sleepless',
+  contributor: 'TwistedVorteK (@https://github.com/twistedvortek/)',
   slashCommand: new SlashCommandBuilder()
     .setName('banner')
     .setDescription("Show a user's banner")
@@ -14,49 +15,22 @@ module.exports = {
         .setRequired(false)),
 
   async execute(interaction) {
-    const isSlash = interaction.commandName !== undefined;
-    const target = isSlash
-      ? interaction.options.getUser('user') || interaction.user
-      : interaction.mentions.users.first() || interaction.author;
+    const targetUser = interaction.options.getUser('user') || interaction.user;
+    const fetchedUser = await interaction.client.users.fetch(targetUser.id, { force: true });
 
-    try {
-      const user = await target.fetch();
-      const bannerURL = user.bannerURL({ size: 4096 });
-
-      if (!bannerURL) {
-        const reply = { content: 'This user does not have a banner.', ephemeral: true };
-        return isSlash ? interaction.reply(reply) : interaction.reply(reply.content);
-      }
-
-      const embed = new EmbedBuilder()
-        .setTitle(`${user.username}'s Banner`)
-        .setImage(bannerURL)
-        .setColor('#0099ff')
-        .setAuthor({
-          name: isSlash ? interaction.user.tag : interaction.author.tag,
-          iconURL: isSlash ? interaction.user.displayAvatarURL({ dynamic: true }) 
-            : interaction.author.displayAvatarURL({ dynamic: true })
-        })
-        .setFooter({
-          text: `Contributor: ${module.exports.contributor} • VEKA`,
-          iconURL: interaction.client.user.displayAvatarURL()
-        })
-        .setTimestamp();
-
-      const reply = { embeds: [embed] };
-      if (isSlash) {
-        await interaction.reply(reply);
-      } else {
-        await interaction.channel.send(reply);
-      }
-    } catch (error) {
-      logger.error('Banner Command Error:', error);
-      const reply = { content: 'Failed to fetch banner.', ephemeral: true };
-      if (isSlash) {
-        await interaction.reply(reply);
-      } else {
-        await interaction.reply(reply.content);
-      }
+    if (!fetchedUser.banner) {
+      return interaction.reply({
+        content: 'This user does not have a banner!',
+        ephemeral: true
+      });
     }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${fetchedUser.tag}'s Banner`)
+      .setColor('#2B2D31')
+      .setImage(fetchedUser.bannerURL({ size: 4096, dynamic: true }))
+      .setFooter({ text: `Contributed by ${this.contributor} • ${getRandomFooter()}` });
+
+    await interaction.reply({ embeds: [embed] });
   }
 };
