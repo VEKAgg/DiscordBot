@@ -1,17 +1,43 @@
-const facts = [
-    'Cats sleep for 70% of their lives.',
-    'A group of cats is called a clowder.',
-    'Cats can rotate their ears 180 degrees.',
-    'A cat’s nose is as unique as a human’s fingerprint.',
-    'Domestic cats share about 95.6% of their DNA with tigers.',
-  ];
-  
-  module.exports = {
+const { createEmbed } = require('../../utils/embedCreator');
+const { fetchAPI } = require('../../utils/apiManager');
+const rateLimiter = require('../../utils/rateLimiter');
+const { logger } = require('../../utils/logger');
+
+module.exports = {
     name: 'catfact',
-    description: 'Send a random cat fact.',
-    execute(message) {
-      const fact = facts[Math.floor(Math.random() * facts.length)];
-      message.channel.send(`🐱 Cat Fact: ${fact}`);
+    description: 'Get a random cat fact with image',
+    contributor: 'Sleepless',
+    async execute(message) {
+        const rateCheck = await rateLimiter.checkLimit('cat');
+        if (!rateCheck.success) {
+            return message.reply(rateCheck.message);
+        }
+
+        try {
+            const [fact, image] = await Promise.all([
+                fetchAPI('cat', '/facts/random'),
+                fetchAPI('cat', '/images/random')
+            ]);
+
+            const embed = createEmbed({
+                title: '🐱 Cat Fact',
+                description: fact.text,
+                image: { url: image.url },
+                author: {
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL({ dynamic: true })
+                },
+                footer: {
+                    text: `Contributor: ${module.exports.contributor} • VEKA | Resets in: ${Math.ceil(rateCheck.resetIn / 60)}m`,
+                    iconURL: message.client.user.displayAvatarURL()
+                }
+            });
+
+            message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            logger.error('Cat fact Error:', error);
+            message.reply('Failed to fetch cat fact. Please try again later.');
+        }
     },
-  };
+};
   

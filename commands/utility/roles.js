@@ -1,14 +1,26 @@
-const { createEmbed } = require('../../utils/embedUtils');
+const { EmbedBuilder } = require('discord.js');
+const { UTILITY } = require('../../utils/embedColors');
+const ErrorHandler = require('../../utils/errorHandler');
 
 module.exports = {
     name: 'roles',
-    description: 'List all roles in the server.',
-    execute(message, args, client) {
-        const roles = message.guild.roles.cache
-            .filter((role) => role.name !== '@everyone')
-            .map((role) => `${role.name} - ${role.members.size} members`);
+    description: 'Display server roles',
+    async execute(message) {
+        try {
+            const roles = message.guild.roles.cache
+                .sort((a, b) => b.position - a.position)
+                .map(role => role.toString())
+                .join(', ');
 
-        const embed = createEmbed('Server Roles', roles.join('\n') || 'No roles found.');
-        message.channel.send({ embeds: [embed] });
-    },
+            const embed = new EmbedBuilder()
+                .setTitle('Server Roles')
+                .setDescription(roles)
+                .setColor(UTILITY)
+                .setTimestamp();
+
+            await message.channel.send({ embeds: [embed] });
+        } catch (error) {
+            await ErrorHandler.sendErrorMessage(message, error);
+        }
+    }
 };

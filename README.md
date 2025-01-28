@@ -1,87 +1,70 @@
 # VEKA Bot
 
-VEKA Bot is a multi-purpose Discord bot designed to enhance your server with utility, fun, and informational commands.
+VEKA Bot is a multi-purpose Discord bot designed to enhance your server with utility, fun, and informational commands. It uses advanced algorithms to create an engaging and dynamic server environment.
 
----
+## 🌟 Key Features
+- **Smart Role Management:** Automatic role assignment based on user activity and engagement
+- **Advanced Analytics:** Track server growth and member engagement
+- **Intelligent Moderation:** Automated content filtering and user monitoring
+- **Activity Rewards:** Dynamic point system for active members
+- **Real-time Updates:** GitHub repository and social media integration
+- **Custom Embeds:** Beautiful message formatting for all commands
+- **Smart Caching:** Optimized performance for faster response times
+- **Background Tasks:** Automated server maintenance and updates
 
-## Features
-- Utility commands to manage your server.
-- Fun commands to entertain your members.
-- Informational commands to provide real-time data and insights.
+## 🤖 Commands
+### 🛠️ Utility
+`#afk` `#ban` `#banner` `#botinfo` `#channelinfo` `#emojiinfo` `#help` `#invite` `#invites` `#leaderboard` `#logging` `#nick` `#poll` `#report` `#roles` `#serverbanner` `#serverinfo` `#stats` `#time` `#uptime` `#userinfo`
 
----
+### 🎮 Fun
+`#8ball` `#animalfact` `#avatar` `#cakeday` `#catfact` `#coinflip` `#dadjoke` `#dogfact` `#fact` `#gif` `#hack` `#horoscope` `#howgay` `#lmgtfy` `#meme` `#mock` `#ping` `#quote` `#randomcolor` `#remindme` `#reverse` `#roll` `#rps` `#ship` `#simp`
 
-## Commands
-### Utility Commands
-- **`#time [timezone]`** – Display current time for a specific timezone.
-- **`#invite`** – Generate an invite link for the bot.
-- **`#channelinfo`** – Get details about the current channel.
-- **`#emojiinfo [emoji]`** – Show details about an emoji in the server.
-- **`#afk [message]`** – Set yourself as AFK with an optional message.
-- **`#nick [nickname]`** – Change your nickname (if allowed).
-- **`#serverbanner`** – Display the server banner.
-- **`#banner [user]`** – Show a user's banner.
-- **`#report [user] [reason]`** – Report a user to admins.
+### 📊 Informational
+`#botupdates` `#commands` `#crypto` `#gamingLeaderboard` `#news` `#schedule` `#stock` `#weather` `#wiki`
 
-### Fun Commands
-- **`#dadjoke`** – Send a random dad joke.
-- **`#meme`** – Fetch a random meme from Reddit.
-- **`#gif [search]`** – Search for a GIF.
-- **`#ship [user1] [user2]`** – Show compatibility between two users.
-- **`#rps [rock/paper/scissors]`** – Play Rock, Paper, Scissors against the bot.
-- **`#lmgtfy [query]`** – Generate a "Let Me Google That For You" link.
-- **`#catfact`** – Send a random cat fact.
-- **`#dogfact`** – Send a random dog fact.
-- **`#horoscope [sign]`** – Fetch today’s horoscope for a given zodiac sign.
-- **`#randomcolor`** – Display a random color and its hex code.
-- **`#hack [user]`** – Pretend to hack a user for fun.
-- **`#howgay [user]`** – Randomly determine how "gay" someone is (for humor).
-- **`#simp [user]`** – Randomly determine how much of a "simp" someone is.
+> **Tip**: Use `#help <command>` for detailed information about any command
 
-### Informational Commands
-- **`#botupdates`** – Show the latest updates made to the bot.
-- **`#quote [author/keyword]`** – Fetch a quote based on author or keyword.
-- **`#news [topic]`** – Fetch the latest news headlines.
-- **`#crypto [symbol]`** – Display cryptocurrency prices (e.g., Bitcoin).
-- **`#stock [symbol]`** – Show stock market prices for a company.
-- **`#dictionary [word]`** – Provide the definition of a word.
-- **`#translate [language] [text]`** – Translate text to a specific language.
-- **`#isbn [number]`** – Look up a book by its ISBN.
-- **`#movie [title]`** – Fetch details about a movie.
-- **`#tvshow [title]`** – Fetch details about a TV show.
-- **`#recipe [dish]`** – Search for a recipe by name.
-- **`#wiki [topic]`** – Fetch a summary from Wikipedia.
-- **`#lyrics [song]`** – Display lyrics for a song.
+## 🚀 Self-Hosting Instructions
+1. **Prerequisites**
+   - Node.js 16.x or higher
+   - MongoDB database
+   - Discord Bot Token
 
----
+2. **Setup**
+```bash
+npm install
+```
 
-## Purpose
-The VEKA Bot aims to be an all-in-one solution for Discord servers, offering utility features, entertainment, and information delivery in an easy-to-use package.
+2. **Clone repository**
+```
+git clone https://github.com/VEKAgg/DiscordBot.git
+cd DiscordBot
+```
 
----
+2. **Create .env file**
+```
+echo "TOKEN=your_discord_bot_token
+MONGODB_URI=your_mongodb_uri" > .env
+```
 
-## Contribution
-We welcome contributions to improve the bot! Here's how you can contribute:
-1. Fork the repository.
-2. Make your changes in a new branch.
-3. Submit a pull request with a clear explanation of your changes.
+3. **Run the bot**
+```
+npm start
+```
 
-For more details, read our [Contributing Guide](CONTRIBUTING.md).
+## 👥 Contributors
+<a href="https://github.com/VEKAgg/DiscordBot/graphs/contributors">
+  <img src="https://contributors-img.web.app/image?repo=VEKAgg/DiscordBot" />
+</a>
 
----
+## 📝 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## License
-This project is licensed under the [MIT License](LICENSE).
-
----
-
-## Getting Started
-To run the bot locally:
-1. Clone the repository.
-2. Install dependencies: `npm install`
-3. Run the bot: `node index.js`
-
----
+## 🔗 Links
+- [Invite Bot](https://discord.com/oauth2/authorize)
+- [GitHub Repository](https://github.com/VEKAgg/DiscordBot)
+- [Support Server](https://discord.gg/vekagg)
+- [Documentation](https://github.com/VEKAgg/DiscordBot/wiki)
 
 ## Contact
 Feel free to reach out for support or suggestions via GitHub Issues.

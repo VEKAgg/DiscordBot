@@ -1,3 +1,5 @@
+const embedUtils = require('../../utils/embedUtils');
+
 module.exports = {
     name: 'nick',
     description: 'Change your nickname.',
