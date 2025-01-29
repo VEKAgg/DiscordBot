@@ -3,6 +3,8 @@ const { joinVoiceChannel } = require('@discordjs/voice');
 const { logger } = require('../utils/logger');
 const config = require('../config/botStatus');
 const { REST, Routes } = require('discord.js');
+const schedule = require('node-schedule');
+const { dmInactiveUsers } = require('../utils/userDM');
 
 module.exports = {
     name: 'ready',
@@ -14,8 +16,8 @@ module.exports = {
             // Get all slash commands
             const commands = [];
             client.slashCommands.forEach(command => {
-                if (command.slashCommand) {
-                    commands.push(command.slashCommand.toJSON());
+                if (command.data) {
+                    commands.push(command.data.toJSON());
                 }
             });
 
@@ -58,6 +60,18 @@ module.exports = {
                 client.user.setActivity(text, { type: status.type });
                 statusIndex = (statusIndex + 1) % config.statuses.length;
             }, config.interval);
+
+            // Schedule the DM task to run once a day
+            schedule.scheduleJob('0 0 * * *', () => {
+                dmInactiveUsers(client);
+            });
+
+            // Initialize deal tracker
+            const DealTracker = require('../services/dealTracker');
+            const dealTracker = new DealTracker(client);
+            await dealTracker.init().catch(error => {
+                logger.error('Failed to initialize deal tracker:', error);
+            });
 
         } catch (error) {
             logger.error('Error in ready event:', error);

@@ -1,27 +1,92 @@
 const { logger } = require('../logger');
-const { User, GuildAnalytics } = require('../../database');
+const { User, CommandLog, GuildAnalytics } = require('../../database');
 const { EmbedBuilder } = require('discord.js');
 
 class BaseAnalytics {
+    static CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+    static MAX_AGE = 30 * 24 * 60 * 60 * 1000; // 30 days
+
     static async initialize() {
         try {
-            // Ensure indexes are created
-            await GuildAnalytics.createIndexes();
-            logger.info(`${this.name} analytics initialized`);
+            await this.setupIndexes();
+            this.startCleanupTask();
+            logger.info(`${this.name} initialized`);
         } catch (error) {
-            this.logError(error, 'initialize');
+            logger.error(`${this.name} initialization failed:`, error);
+            throw error;
         }
+    }
+
+    static async setupIndexes() {
+        const indexes = this.getRequiredIndexes();
+        for (const [model, modelIndexes] of Object.entries(indexes)) {
+            try {
+                await model.createIndexes(modelIndexes);
+            } catch (error) {
+                logger.error(`Failed to create indexes for ${model.modelName}:`, error);
+                throw error;
+            }
+        }
+    }
+
+    static getRequiredIndexes() {
+        return {
+            [GuildAnalytics.modelName]: [
+                { guildId: 1, date: 1 },
+                { updatedAt: 1 }
+            ],
+            [CommandLog.modelName]: [
+                { guildId: 1, commandName: 1, timestamp: 1 },
+                { timestamp: 1 }
+            ],
+            [User.modelName]: [
+                { guildId: 1, userId: 1 },
+                { joinedAt: 1 }
+            ]
+        };
+    }
+
+    static startCleanupTask() {
+        setInterval(() => this.cleanup(), this.CLEANUP_INTERVAL);
+    }
+
+    static async cleanup() {
+        const cutoff = new Date(Date.now() - this.MAX_AGE);
+        try {
+            await Promise.all([
+                CommandLog.deleteMany({ timestamp: { $lt: cutoff } }),
+                GuildAnalytics.deleteMany({ timestamp: { $lt: cutoff } })
+            ]);
+        } catch (error) {
+            logger.error(`${this.name} cleanup failed:`, error);
+        }
+    }
+
+    static async aggregateData(model, match, group, options = {}) {
+        try {
+            const pipeline = [
+                { $match: match },
+                { $group: group }
+            ];
+
+            if (options.sort) pipeline.push({ $sort: options.sort });
+            if (options.limit) pipeline.push({ $limit: options.limit });
+
+            return await model.aggregate(pipeline);
+        } catch (error) {
+            logger.error(`${this.name} aggregation failed:`, error);
+            return [];
+        }
+    }
+
+    static getTimeframeDate(timeframe) {
+        const now = Date.now();
+        const days = parseInt(timeframe.replace('d', '')) || 7;
+        return new Date(now - (days * 24 * 60 * 60 * 1000));
     }
 
     static logError(error, methodName) {
         logger.error(`[${this.name}] Error in ${methodName}:`, error);
-    }
-
-    static getTimeframeDate(timeframe = '7d') {
-        const days = parseInt(timeframe.replace('d', ''));
-        const date = new Date();
-        date.setDate(date.getDate() - days);
-        return date;
     }
 
     static async getGuildStats(guildId, timeframe) {
@@ -61,23 +126,6 @@ class BaseAnalytics {
         }
     }
 
-    static async aggregateData(model, matchQuery, groupQuery, sortQuery = null, limit = null) {
-        try {
-            const pipeline = [
-                { $match: matchQuery },
-                { $group: groupQuery }
-            ];
-
-            if (sortQuery) pipeline.push({ $sort: sortQuery });
-            if (limit) pipeline.push({ $limit: limit });
-
-            return await model.aggregate(pipeline);
-        } catch (error) {
-            this.logError(error, 'aggregateData');
-            return [];
-        }
-    }
-
     static createEmbed({ title, description = '', fields = [], color = '#00ff00', footer = null }) {
         const embed = new EmbedBuilder()
             .setTitle(title)
@@ -89,16 +137,6 @@ class BaseAnalytics {
         if (footer) embed.setFooter(footer);
 
         return embed;
-    }
-
-    static async cleanupOldData(cutoff) {
-        try {
-            await GuildAnalytics.deleteMany({
-                date: { $lt: cutoff }
-            });
-        } catch (error) {
-            this.logError(error, 'cleanupOldData');
-        }
     }
 
     static async ping() {

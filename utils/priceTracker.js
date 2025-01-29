@@ -3,54 +3,102 @@ const cheerio = require('cheerio');
 const { logger } = require('./logger');
 
 class PriceTracker {
-    static async trackProduct(url) {
-        const platform = this.detectPlatform(url);
-        switch (platform) {
-            case 'amazon.in':
-                return await this.trackAmazonIn(url);
-            case 'amazon.ae':
-                return await this.trackAmazonAe(url);
-            case 'flipkart':
-                return await this.trackFlipkart(url);
-            case 'noon':
-                return await this.trackNoon(url);
-            default:
-                throw new Error('Unsupported platform');
+    static supportedPlatforms = {
+        'amazon.in': {
+            priceSelector: '#priceblock_ourprice, #priceblock_dealprice, .a-price-whole',
+            titleSelector: '#productTitle',
+            imageSelector: '#landingImage'
+        },
+        'amazon.ae': {
+            priceSelector: '#priceblock_ourprice, #priceblock_dealprice, .a-price-whole',
+            titleSelector: '#productTitle',
+            imageSelector: '#landingImage'
+        },
+        'flipkart.com': {
+            priceSelector: '._30jeq3',
+            titleSelector: '.B_NuCI',
+            imageSelector: '._396cs4'
+        },
+        'noon.com': {
+            priceSelector: '.priceNow',
+            titleSelector: '.productTitle',
+            imageSelector: '.productImage'
         }
-    }
+    };
 
-    static detectPlatform(url) {
-        if (url.includes('amazon.in')) return 'amazon.in';
-        if (url.includes('amazon.ae')) return 'amazon.ae';
-        if (url.includes('flipkart.com')) return 'flipkart';
-        if (url.includes('noon.com')) return 'noon';
-        return null;
-    }
-
-    static async trackAmazonIn(url) {
+    static async trackProduct(url) {
         try {
+            const platform = this.getPlatform(url);
+            if (!this.supportedPlatforms[platform]) {
+                throw new Error('Unsupported platform');
+            }
+
             const response = await axios.get(url, {
                 headers: {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 }
             });
+
             const $ = cheerio.load(response.data);
-            const price = $('.a-price-whole').first().text().replace(/[,.]/g, '');
-            const title = $('#productTitle').text().trim();
-            
+            const selectors = this.supportedPlatforms[platform];
+
+            const price = this.extractPrice($, selectors.priceSelector);
+            const title = $(selectors.titleSelector).text().trim();
+            const image = $(selectors.imageSelector).attr('src');
+
             return {
-                title,
-                price: parseInt(price),
                 url,
-                platform: 'Amazon India'
+                platform,
+                title,
+                price,
+                image,
+                lastChecked: new Date(),
+                isAvailable: price !== null
             };
         } catch (error) {
-            logger.error('Error tracking Amazon.in product:', error);
-            throw error;
+            logger.error(`Error tracking product (${url}):`, error);
+            return {
+                url,
+                platform: this.getPlatform(url),
+                error: error.message,
+                lastChecked: new Date(),
+                isAvailable: false
+            };
         }
     }
 
-    // Add similar methods for other platforms...
+    static getPlatform(url) {
+        try {
+            const hostname = new URL(url).hostname;
+            return hostname.replace('www.', '');
+        } catch {
+            throw new Error('Invalid URL');
+        }
+    }
+
+    static extractPrice($, selector) {
+        const priceText = $(selector).first().text().trim();
+        const numericPrice = priceText.replace(/[^0-9.]/g, '');
+        return numericPrice ? parseFloat(numericPrice) : null;
+    }
+
+    static async trackMultipleProducts(urls) {
+        const results = await Promise.allSettled(
+            urls.map(url => this.trackProduct(url))
+        );
+
+        return results.map(result => {
+            if (result.status === 'fulfilled') {
+                return result.value;
+            }
+            return {
+                url: urls[results.indexOf(result)],
+                error: result.reason.message,
+                lastChecked: new Date(),
+                isAvailable: false
+            };
+        });
+    }
 }
 
 module.exports = PriceTracker; 

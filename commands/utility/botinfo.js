@@ -28,23 +28,4 @@ module.exports = {
 
         await interaction.reply({ embeds: [embed] });
     },
-
-    async setupDashboard(message) {
-        const channel = message.mentions.channels.first() || message.channel;
-        await DashboardConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { channelId: channel.id },
-            { upsert: true }
-        );
-        message.reply(`Dashboard will be displayed in ${channel}`);
-    },
-
-    async setupAnalytics(message) {
-        const config = await AnalyticsConfig.findOneAndUpdate(
-            { guildId: message.guild.id },
-            { enabled: true },
-            { upsert: true, new: true }
-        );
-        message.reply('Analytics system has been enabled for this server.');
-    }
 };

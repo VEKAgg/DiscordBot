@@ -1,28 +1,39 @@
-const ConnectionAnalytics = require('./connectionAnalytics');
-const InviteAnalytics = require('./inviteAnalytics');
-const WelcomeAnalytics = require('./welcomeAnalytics');
-const InviteAnalyzer = require('./inviteAnalyzer');
-const CommandAnalytics = require('./commandAnalytics');
+const { User, CommandLog, GuildAnalytics } = require('../../database');
 const { logger } = require('../logger');
-const { User, CommandLog } = require('../../database');
+const StaffAlerts = require('../staffAlerts');
+
+class BaseAnalytics {
+    static async aggregateData(model, match, group, sort = null, limit = null) {
+        try {
+            let pipeline = [{ $match: match }, { $group: group }];
+            if (sort) pipeline.push({ $sort: sort });
+            if (limit) pipeline.push({ $limit: limit });
+            return await model.aggregate(pipeline);
+        } catch (error) {
+            this.logError(error, 'aggregateData');
+            return [];
+        }
+    }
+
+    static logError(error, method) {
+        logger.error(`Analytics Error in ${method}:`, error);
+    }
+
+    static getTimeframeDate(timeframe) {
+        const now = Date.now();
+        switch (timeframe) {
+            case '1d': return new Date(now - 24 * 60 * 60 * 1000);
+            case '7d': return new Date(now - 7 * 24 * 60 * 60 * 1000);
+            case '30d': return new Date(now - 30 * 24 * 60 * 60 * 1000);
+            default: return new Date(now - 7 * 24 * 60 * 60 * 1000);
+        }
+    }
+}
 
 class Analytics {
-    static connection = ConnectionAnalytics;
-    static invite = InviteAnalytics;
-    static welcome = WelcomeAnalytics;
-    static inviteAnalyzer = InviteAnalyzer;
-    static command = CommandAnalytics;
-
     static async initialize() {
         try {
             logger.info('Initializing analytics systems...');
-            await Promise.all([
-                this.connection.initialize?.(),
-                this.invite.initialize?.(),
-                this.welcome.initialize?.(),
-                this.inviteAnalyzer.initialize?.(),
-                this.command.initialize?.()
-            ]);
             this.setupPeriodicTasks();
             logger.info('Analytics systems initialized successfully');
         } catch (error) {
@@ -33,25 +44,85 @@ class Analytics {
 
     static setupPeriodicTasks() {
         setInterval(() => {
-            this.command.aggregateDailyStats();
-            this.welcome.generateInsights();
-            this.connection.checkForInsights();
+            this.aggregateDailyStats();
+            this.generateWelcomeInsights();
+            this.checkConnectionInsights();
+            this.cleanup();
         }, 24 * 60 * 60 * 1000);
+    }
+
+    // Command Analytics
+    static async aggregateDailyStats() {
+        try {
+            const guilds = await GuildAnalytics.distinct('guildId');
+            await Promise.all(guilds.map(guildId => this.getGuildStats(guildId)));
+        } catch (error) {
+            logger.error('Error in aggregateDailyStats:', error);
+        }
+    }
+
+    // Welcome Analytics
+    static async calculateRetentionRate(guildId) {
+        const thirtyDaysAgo = this.getTimeframeDate('30d');
+        const stats = await this.getGuildStats(guildId);
+        const joinedUsers = stats.members.filter(m => m.joinedAt < thirtyDaysAgo);
+        if (!joinedUsers.length) return 0;
+
+        const stillPresent = await BaseAnalytics.aggregateData(
+            User,
+            {
+                guildId,
+                userId: { $in: joinedUsers.map(u => u.userId) },
+                leftAt: null
+            },
+            { _id: null, count: { $sum: 1 } }
+        );
+
+        return (stillPresent[0]?.count || 0) / joinedUsers.length * 100;
+    }
+
+    // Invite Analytics
+    static async analyzeInvites(guild, inviter, invitedUser) {
+        try {
+            const timeWindow = 24 * 60 * 60 * 1000;
+            const stats = await this.getInviterStats(inviter.id, guild.id, timeWindow);
+            
+            if (this.detectSuspiciousPatterns(stats)) {
+                await StaffAlerts.sendAlert(guild, 'Suspicious invite activity detected', {
+                    inviter,
+                    stats
+                });
+            }
+        } catch (error) {
+            logger.error('Error in analyzeInvites:', error);
+        }
     }
 
     static async getStats(guildId, type = 'overview', timeframe = '7d') {
         try {
+            const startDate = BaseAnalytics.getTimeframeDate(timeframe);
+            const baseStats = await this.getGuildStats(guildId, startDate);
+
             switch (type) {
                 case 'overview':
-                    return await this.command.getGuildStats(guildId, type, timeframe);
+                    return {
+                        ...baseStats,
+                        retentionRate: await this.calculateRetentionRate(guildId)
+                    };
                 case 'welcome':
-                    return await this.welcome.getGuildStats(guildId);
-                case 'connections':
-                    return await this.connection.getGuildStats(guildId, timeframe);
+                    return {
+                        joins: baseStats.totalJoins,
+                        leaves: baseStats.totalLeaves,
+                        retention: await this.calculateRetentionRate(guildId)
+                    };
                 case 'invites':
-                    return await this.invite.getGuildStats(guildId, timeframe);
+                    return {
+                        total: baseStats.totalInvites,
+                        active: baseStats.activeInvites,
+                        conversion: await this.calculateConversionRate(guildId, startDate)
+                    };
                 default:
-                    return await this.command.getGuildStats(guildId, type, timeframe);
+                    return baseStats;
             }
         } catch (error) {
             logger.error('Analytics getStats error:', error);
@@ -62,20 +133,15 @@ class Analytics {
     static async cleanup() {
         const maxAge = 30 * 24 * 60 * 60 * 1000;
         const cutoff = new Date(Date.now() - maxAge);
-        await Promise.all([
-            this.command.cleanupOldData(cutoff),
-            this.welcome.cleanupOldData(cutoff),
-            this.connection.cleanupOldData(cutoff)
-        ]);
-    }
-
-    static async healthCheck() {
-        const results = await Promise.all([
-            this.connection.ping(),
-            this.invite.ping(),
-            this.welcome.ping()
-        ]);
-        return results.every(result => result === true);
+        
+        try {
+            await Promise.all([
+                CommandLog.deleteMany({ timestamp: { $lt: cutoff } }),
+                GuildAnalytics.deleteMany({ timestamp: { $lt: cutoff } })
+            ]);
+        } catch (error) {
+            logger.error('Analytics cleanup error:', error);
+        }
     }
 }
 

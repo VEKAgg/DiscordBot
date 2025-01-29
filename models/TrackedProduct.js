@@ -13,8 +13,8 @@ const trackedProductSchema = new mongoose.Schema({
     isPopular: { type: Boolean, default: false },
     watchers: [{
         userId: String,
-        notifyOnAnyChange: { type: Boolean, default: false },
-        targetPrice: Number
+        targetPrice: Number,
+        notifyOnAnyChange: Boolean
     }],
     lastChecked: { type: Date, default: Date.now }
 });
