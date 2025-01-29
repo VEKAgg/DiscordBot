@@ -1,10 +1,22 @@
 const mongoose = require('mongoose');
-mongoose.set('bufferCommands', false); // Disable buffering for better memory usage
 const { Schema } = mongoose;
 const { logger } = require('./utils/logger');
 
-// Add timestamps to all schemas
-const baseOptions = { timestamps: true };
+// Remove deprecated options and use new connection style
+async function connectDB(uri) {
+    try {
+        await mongoose.connect(uri);
+        logger.info('MongoDB connection established');
+    } catch (error) {
+        logger.error('MongoDB connection error:', error);
+        throw error;
+    }
+}
+
+// Base options for all schemas
+const baseOptions = {
+    timestamps: true
+};
 
 // Update connection options for MongoDB 8.x compatibility
 const connectionOptions = {
@@ -39,14 +51,11 @@ baseStatsSchema.index({ guildId: 1, date: 1 }, { unique: true });
 
 // Define guild analytics schema
 const guildAnalyticsSchema = new Schema({
-    metrics: {
-        totalCommands: { type: Number, default: 0 },
-        uniqueUsers: { type: Number, default: 0 },
-        messageCount: { type: Number, default: 0 },
-        errorCount: { type: Number, default: 0 },
-        commandUsage: { type: Map, of: Number, default: new Map() },
-        activeHours: { type: Map, of: Number, default: new Map() }
-    }
+    guildId: { type: String, required: true, unique: true },
+    memberCount: { type: Number, default: 0 },
+    messageCount: { type: Number, default: 0 },
+    commandCount: { type: Number, default: 0 },
+    lastActivity: { type: Date, default: Date.now }
 });
 
 // Define user schema
@@ -140,82 +149,43 @@ const welcomeStatsSchema = new Schema({
     }]
 }, baseOptions);
 
-// Define deal schema
+// Define deal schema before using it
 const dealSchema = new Schema({
     platform: String,
     title: String,
     originalPrice: Number,
     salePrice: Number,
     discount: Number,
-    url: String,
+    url: { type: String, unique: true },
     thumbnail: String,
     expiryDate: Date,
-    postedDate: Date
+    postedDate: { type: Date, default: Date.now }
 });
 
-// Create models
-const BaseStats = mongoose.models.BaseStats || mongoose.model('BaseStats', baseStatsSchema);
-const GuildAnalytics = BaseStats.discriminator('GuildAnalytics', guildAnalyticsSchema);
-const User = mongoose.models.User || mongoose.model('User', userSchema);
-const CommandLog = mongoose.models.CommandLog || mongoose.model('CommandLog', commandLogSchema);
-const WelcomeStats = mongoose.models.WelcomeStats || mongoose.model('WelcomeStats', welcomeStatsSchema);
-const Deal = mongoose.models.Deal || mongoose.model('Deal', dealSchema);
-const GamingConfig = mongoose.models.GamingConfig || mongoose.model('GamingConfig', require('./models/GamingConfig').schema);
-const NotificationConfig = mongoose.models.NotificationConfig || mongoose.model('NotificationConfig', require('./models/NotificationConfig').schema);
+// Create models with a check to prevent recompilation
+const models = {};
 
-// Model getter function
-function getModel(modelName) {
-    if (mongoose.models[modelName]) {
-        return mongoose.models[modelName];
-    }
-
-    switch (modelName) {
-        case 'CommandLog':
-            return mongoose.model('CommandLog', commandLogSchema);
-        // Add other models here as needed
-        default:
-            throw new Error(`Unknown model: ${modelName}`);
-    }
+// Helper function to safely get or create a model
+function getModel(name, schema) {
+    return mongoose.models[name] || mongoose.model(name, schema);
 }
 
-async function connect() {
-    try {
-        await mongoose.connect(process.env.MONGODB_URI, {
-            maxPoolSize: 10,
-            serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000
-        });
-        logger.info('Connected to MongoDB successfully');
-        
-        await mongoose.connection.db.admin().ping();
-        return true;
-    } catch (error) {
-        logger.error('MongoDB connection error:', error.message);
-        return false;
-    }
-}
-
-// Add connection event handlers
-mongoose.connection.on('disconnected', () => {
-    logger.warn('MongoDB disconnected. Attempting to reconnect...');
-    setTimeout(connect, 5000); // Try to reconnect after 5 seconds
-});
-
-mongoose.connection.on('error', (err) => {
-    logger.error('MongoDB error:', err.message);
-});
-
-// Export all models and connection function
+// Export models through getter functions to prevent duplicate compilation
 module.exports = {
-    User,
-    CommandLog,
-    GuildAnalytics,
-    WelcomeStats,
-    BaseStats,
-    Deal,
-    GamingConfig,
-    NotificationConfig,
-    connect,
+    connectDB,
+    baseOptions,
+    get Deal() {
+        return getModel('Deal', dealSchema);
+    },
+    get GuildAnalytics() {
+        return getModel('GuildAnalytics', guildAnalyticsSchema);
+    },
+    User: userSchema,
+    CommandLog: commandLogSchema,
+    WelcomeStats: welcomeStatsSchema,
+    BaseStats: baseStatsSchema,
+    GamingConfig: require('./models/GamingConfig').schema,
+    NotificationConfig: require('./models/NotificationConfig').schema,
     getModel
 };
 

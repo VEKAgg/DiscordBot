@@ -1,14 +1,16 @@
 const { Client, GatewayIntentBits, Collection, REST, Routes } = require('discord.js');
-const fs = require('fs');
-const path = require('path');
+const CommandLoader = require('./utils/commandLoader');
 require('dotenv').config();
 const schedule = require('node-schedule');
 const { runBackgroundChecks } = require('./utils/backgroundMonitor');
 const config = require('./config');
 const { logger } = require('./utils/logger');
-const { connectDB } = require('./database/connection');
+const dbManager = require('./database/connection');
 const { dmInactiveUsers } = require('./utils/userDM');
 const { massDMUsers } = require('./utils/massDM');
+const EventLoader = require('./utils/eventLoader');
+const MonitoringService = require('./services/MonitoringService');
+const { connectDB } = require('./database');
 
 const client = new Client({
   intents: [
@@ -27,80 +29,33 @@ client.slashCommands = new Collection();
 // Increase max event listeners
 require('events').EventEmitter.defaultMaxListeners = config.maxListeners;
 
+// Initialize command loader
+const commandLoader = new CommandLoader(client);
+
 // Load commands
-const loadCommands = (dir) => {
-    const files = fs.readdirSync(dir);
-    let loadedCount = 0;
-    let errorCount = 0;
-    let errorCommands = [];
-
-    for (const file of files) {
-        const filePath = path.join(dir, file);
-        const stat = fs.statSync(filePath);
-        
-        if (stat.isDirectory()) {
-            const [loaded, errors, errorFiles] = loadCommands(filePath);
-            loadedCount += loaded;
-            errorCount += errors;
-            errorCommands.push(...errorFiles);
-        } else if (file.endsWith('.js')) {
-            try {
-                delete require.cache[require.resolve(filePath)];
-                const command = require(filePath);
-                if (command.name) {
-                    if (client.commands.has(command.name)) {
-                        logger.warn(`Duplicate command found: ${command.name}`);
-                        continue;
-                    }
-                    client.commands.set(command.name, command);
-                    if (command.slashCommand) {
-                        client.slashCommands.set(command.name, command);
-                        logger.info(`Loaded slash command: ${command.name}`);
-                    }
-                    loadedCount++;
-                }
-            } catch (error) {
-                errorCount++;
-                errorCommands.push(file);
-                logger.error(`Failed to load ${file}:`, error);
-            }
-        }
+(async () => {
+    try {
+        const stats = await commandLoader.loadCommands('./commands');
+        logger.info(`Loaded ${stats.total} commands (${stats.slash} slash commands) in ${stats.categories} categories`);
+    } catch (error) {
+        logger.error('Failed to load commands:', error);
+        process.exit(1);
     }
-    
-    return [loadedCount, errorCount, errorCommands];
-};
+})();
 
-// Load all commands
-const [loaded, errors, errorFiles] = loadCommands(path.join(__dirname, 'commands'));
-logger.info(`Loaded ${loaded} commands with ${errors} errors`);
-if (errors > 0) {
-    logger.error('Failed commands:', errorFiles);
-}
+// Initialize event loader
+const eventLoader = new EventLoader(client);
 
 // Load events
-const eventFiles = fs.readdirSync('./events').filter(file => file.endsWith('.js'));
-let loadedEvents = 0;
-let errorEvents = [];
-
-for (const file of eventFiles) {
+(async () => {
     try {
-        const event = require(`./events/${file}`);
-        if (event.once) {
-            client.once(event.name, (...args) => event.execute(...args, client));
-        } else {
-            client.on(event.name, (...args) => event.execute(...args, client));
-        }
-        loadedEvents++;
+        const stats = await eventLoader.loadEvents('./events');
+        logger.info(`Loaded ${stats.total} events: ${stats.names.join(', ')}`);
     } catch (error) {
-        errorEvents.push(file);
-        logger.error(`Failed to load event ${file}: ${error.message}`);
+        logger.error('Failed to load events:', error);
+        process.exit(1);
     }
-}
-
-logger.info(`Loaded ${loadedEvents} events successfully.`);
-if (errorEvents.length > 0) {
-    logger.error(`Failed to load events: ${errorEvents.join(', ')}`);
-}
+})();
 
 // Add error event handlers
 client.on('error', (error) => {
@@ -123,24 +78,6 @@ connectDB(process.env.MONGODB_URI)
     });
 
 client.points = new Map();
-
-client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}`);
-
-    // Schedule the DM task to run once a day
-    schedule.scheduleJob('0 0 * * *', () => {
-        dmInactiveUsers(client);
-    });
-});
-
-// Command to trigger mass DM
-client.on('messageCreate', async (message) => {
-    if (message.content.startsWith('!massdm')) {
-        const presetMessage = "This is a preset message for all users.";
-        await massDMUsers(client, presetMessage);
-        message.reply('Mass DM process started.');
-    }
-});
 
 // Function to handle command execution
 async function handleCommand(message, commandName, args) {
@@ -194,3 +131,17 @@ client.on('interactionCreate', async interaction => {
         });
     }
 });
+
+// After client initialization
+const monitor = new MonitoringService(client, {
+    checkInterval: 30000, // 30 seconds
+    memoryThreshold: 750 * 1024 * 1024, // 750MB
+    cpuThreshold: 85 // 85%
+});
+
+monitor.on('unhealthy', (issues) => {
+    // Handle unhealthy state
+    logger.error('Bot health issues detected:', issues);
+});
+
+monitor.start();
