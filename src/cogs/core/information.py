@@ -24,6 +24,21 @@ class Information(commands.Cog):
         minutes, seconds = divmod(remainder, 60)
         return f"{days}d {hours}h {minutes}m {seconds}s"
 
+    def format_duration(self, delta: timedelta) -> str:
+        years = delta.days // 365
+        months = (delta.days % 365) // 30
+        days = (delta.days % 365) % 30
+        
+        parts = []
+        if years:
+            parts.append(f"{years} year{'s' if years != 1 else ''}")
+        if months:
+            parts.append(f"{months} month{'s' if months != 1 else ''}")
+        if days:
+            parts.append(f"{days} day{'s' if days != 1 else ''}")
+            
+        return ", ".join(parts) + " ago"
+
     @app_commands.command(name="botinfo", description="View bot information and statistics")
     async def botinfo(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -373,6 +388,97 @@ class Information(commands.Cog):
                 pass
             
             await message.channel.send(f"Welcome back {message.author.mention}! I've removed your AFK status.", delete_after=10)
+
+    @app_commands.command(name="userinfo", description="View detailed user information")
+    async def userinfo(self, interaction: discord.Interaction, member: discord.Member = None):
+        await interaction.response.defer()
+        
+        try:
+            member = member or interaction.user
+            now = datetime.utcnow()
+            
+            embed = discord.Embed(
+                title=f"User Information - {member.name}",
+                color=member.color
+            )
+            
+            if member.avatar:
+                embed.set_thumbnail(url=member.avatar.url)
+
+            # Account Information
+            created_duration = self.format_duration(now - member.created_at)
+            joined_duration = self.format_duration(now - member.joined_at)
+            first_join = await self.db.member_history.find_one(
+                {"guild_id": interaction.guild.id, "user_id": member.id},
+                sort=[("first_joined", 1)]
+            )
+            
+            embed.add_field(
+                name="📅 Dates",
+                value=f"**Account Created:** {discord.utils.format_dt(member.created_at)} ({created_duration})\n"
+                      f"**Current Join:** {discord.utils.format_dt(member.joined_at)} ({joined_duration})\n"
+                      f"**First Joined:** {discord.utils.format_dt(first_join['first_joined']) if first_join else 'Unknown'}",
+                inline=False
+            )
+
+            # Boost Information
+            if member.premium_since:
+                boost_duration = self.format_duration(now - member.premium_since)
+                boost_stats = await self.db.boost_stats.find_one(
+                    {"guild_id": interaction.guild.id, "user_id": member.id}
+                )
+                embed.add_field(
+                    name="🚀 Boosting",
+                    value=f"**Boosting Since:** {discord.utils.format_dt(member.premium_since)} ({boost_duration})\n"
+                          f"**Total Boosts:** {boost_stats.get('total_boosts', 0) if boost_stats else 0}\n"
+                          f"**Longest Streak:** {boost_stats.get('longest_streak', 0) if boost_stats else 0} months",
+                    inline=False
+                )
+
+            # Activity Statistics
+            activity_stats = await self.db.activity_stats.find_one(
+                {"guild_id": interaction.guild.id, "user_id": member.id}
+            )
+            if activity_stats:
+                hours = activity_stats.get('total_duration', 0) / 3600  # Convert seconds to hours
+                embed.add_field(
+                    name="⚡ Activity",
+                    value=f"**Total Active Hours:** {hours:.1f}\n"
+                          f"**Voice Channel Time:** {activity_stats.get('voice_time', 0):.1f} hours\n"
+                          f"**Stream Time:** {activity_stats.get('stream_time', 0):.1f} hours",
+                    inline=False
+                )
+
+            # Special Roles
+            special_roles = [
+                role for role in member.roles 
+                if role.name in ["Dev", "Artist", "Live", "Music", "Cake Day"]
+            ]
+            if special_roles:
+                embed.add_field(
+                    name="🎭 Special Roles",
+                    value="\n".join(f"{role.mention} - {await self.get_role_earned_date(member, role)}"
+                                  for role in special_roles),
+                    inline=False
+                )
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in userinfo command: {str(e)}")
+            await interaction.followup.send("❌ An error occurred while fetching user information.")
+
+    async def get_role_earned_date(self, member: discord.Member, role: discord.Role) -> str:
+        role_stats = await self.db.role_history.find_one(
+            {
+                "guild_id": member.guild.id,
+                "user_id": member.id,
+                "role_id": role.id
+            }
+        )
+        if role_stats and role_stats.get('first_earned'):
+            return f"earned {self.format_duration(datetime.utcnow() - role_stats['first_earned'])}"
+        return "date unknown"
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Information(bot)) 
