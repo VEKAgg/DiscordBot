@@ -187,19 +187,20 @@ class InviteTracker(commands.Cog):
                 logger.error(f"Error processing pending invites: {str(e)}")
                 await asyncio.sleep(300)  # Wait 5 minutes on error
 
-    @commands.hybrid_command(name="invites", description="View invite statistics")
-    async def invites(self, ctx: commands.Context, member: Optional[discord.Member] = None):
-        member = member or ctx.author
+    @app_commands.command(name="invites", description="View invite statistics")
+    async def invites(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        member = member or interaction.user
+        await interaction.response.defer()
         
         try:
             # Get detailed invite stats
             total_invites = await self.db.invite_logs.count_documents({
-                "guild_id": ctx.guild.id,
+                "guild_id": interaction.guild.id,
                 "inviter_id": member.id
             })
             
             valid_invites = await self.db.invite_logs.count_documents({
-                "guild_id": ctx.guild.id,
+                "guild_id": interaction.guild.id,
                 "inviter_id": member.id,
                 "rewarded": True
             })
@@ -213,11 +214,11 @@ class InviteTracker(commands.Cog):
             embed.add_field(name="XP Earned", value=f"{valid_invites * 500:,} XP", inline=True)
             embed.set_footer(text="Valid invites: Members who stayed at least 3 days")
             
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
             
         except Exception as e:
             logger.error(f"Error fetching invite stats: {str(e)}")
-            await ctx.send("Failed to fetch invite statistics.")
+            await interaction.followup.send("Failed to fetch invite statistics.")
 
     async def check_invite_milestone(self, member: discord.Member):
         try:
@@ -277,31 +278,43 @@ class InviteTracker(commands.Cog):
         except Exception as e:
             logger.error(f"Error checking invite milestone: {str(e)}")
 
-    @commands.hybrid_group(name="invitesettings", description="Configure invite settings")
-    @commands.has_permissions(manage_guild=True)
-    async def invite_settings(self, ctx: commands.Context):
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a subcommand: setrole, viewroles")
+    @app_commands.command(name="invitesettings", description="Configure invite settings")
+    @app_commands.default_permissions(manage_guild=True)
+    async def invite_settings(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        embed = discord.Embed(
+            title="Invite Settings",
+            description="Use the following commands to configure invite settings:",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="/invitesettings setrole",
+            value="Set role rewards for invite milestones",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed)
 
-    @invite_settings.command(name="setrole", description="Set role for invite milestone")
-    async def set_invite_role(self, ctx: commands.Context, milestone: int, role: discord.Role):
+    @app_commands.command(name="setinviterole", description="Set role for invite milestone")
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_invite_role(self, interaction: discord.Interaction, milestone: int, role: discord.Role):
+        await interaction.response.defer()
         try:
             if milestone not in self.invite_xp_rewards:
                 valid_milestones = ", ".join(str(m) for m in self.invite_xp_rewards.keys())
-                await ctx.send(f"Invalid milestone. Valid milestones: {valid_milestones}")
+                await interaction.followup.send(f"Invalid milestone. Valid milestones: {valid_milestones}")
                 return
 
             await self.db.guild_settings.update_one(
-                {"guild_id": ctx.guild.id},
+                {"guild_id": interaction.guild.id},
                 {"$set": {f"invite_roles.{milestone}": role.id}},
                 upsert=True
             )
 
-            await ctx.send(f"Set {role.mention} as the reward for {milestone} invites!")
+            await interaction.followup.send(f"Set {role.mention} as the reward for {milestone} invites!")
 
         except Exception as e:
             logger.error(f"Error setting invite role: {str(e)}")
-            await ctx.send("Failed to set invite role.")
+            await interaction.followup.send("Failed to set invite role.")
 
 async def setup(bot: commands.Bot):
     cog = InviteTracker(bot)

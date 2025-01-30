@@ -22,12 +22,12 @@ class Leveling(commands.Cog):
         self.voice_users = {}  # Track users in voice channels
         self.presence_cache = {}  # Track presence duration
         self.activity_xp_rates = {
-            discord.ActivityType.playing: 5,      # Gaming
-            discord.ActivityType.streaming: 8,    # Streaming
-            discord.ActivityType.listening: 3,    # Music
-            discord.ActivityType.watching: 3,     # Watching
-            discord.ActivityType.custom: 2,       # Custom status
-            discord.ActivityType.competing: 5     # Competing
+            discord.ActivityType.playing: 2,
+            discord.ActivityType.streaming: 3,
+            discord.ActivityType.listening: 1,
+            discord.ActivityType.watching: 1,
+            discord.ActivityType.custom: 1,
+            discord.ActivityType.competing: 2
         }
         self.activity_bonuses = {
             # Gaming bonuses
@@ -98,6 +98,10 @@ class Leveling(commands.Cog):
                 20: {"xp": 1500, "message": "Activity Legend!"}
             }
         }
+
+        self.stream_sessions = {}  # Track active streams
+        self.stream_xp_rate = 5  # XP per minute of streaming
+        self.stream_xp_cap = 300  # Max XP per stream session
 
     async def calculate_level(self, xp: int) -> int:
         return int(math.sqrt(xp) // 10)
@@ -260,78 +264,108 @@ class Leveling(commands.Cog):
             return
             
         try:
-            current_time = datetime.utcnow()
+            # Check for streaming status
+            was_streaming = any(activity.type == discord.ActivityType.streaming for activity in before.activities if activity)
+            is_streaming = any(activity.type == discord.ActivityType.streaming for activity in after.activities if activity)
             
-            # Handle activity end
-            if before.activity and before.id in self.presence_cache:
-                start_time = self.presence_cache[before.id].get('time')
-                if start_time:
-                    duration = (current_time - start_time).total_seconds() / 60  # Convert to minutes
-                    activity_type = self.presence_cache[before.id].get('type')
-                    
-                    if duration >= 5:  # Minimum 5 minutes for XP
-                        base_xp = self.activity_xp_rates.get(activity_type, 2)
-                        xp_gain = min(int(duration * base_xp), 100)  # Cap at 100 XP per activity
-                        
-                        # Bonus XP for specific activities
-                        activity_name = self.presence_cache[before.id].get('name', '').lower()
-                        if 'visual studio code' in activity_name or 'intellij' in activity_name:
-                            xp_gain += 10  # Bonus for coding
-                        elif 'spotify' in activity_name:
-                            xp_gain += 5   # Bonus for music
-                        
-                        await self.award_xp(before, xp_gain, f"presence_{activity_type.name}")
-                        
-                        # Log activity for analytics
-                        await self.db.activity_stats.update_one(
-                            {
-                                "guild_id": before.guild.id,
-                                "user_id": before.id,
-                                "activity_type": str(activity_type)
-                            },
-                            {
-                                "$inc": {
-                                    "total_duration": duration,
-                                    "total_xp_earned": xp_gain
-                                },
-                                "$set": {
-                                    "last_activity": before.activity.name,
-                                    "last_seen": current_time
-                                }
-                            },
-                            upsert=True
-                        )
-                
-                del self.presence_cache[before.id]
+            # Get stream role from settings
+            settings = await self.db.guild_settings.find_one({"guild_id": after.guild.id})
+            stream_role_id = settings.get("stream_role_id") if settings else None
+            stream_role = after.guild.get_role(stream_role_id) if stream_role_id else None
             
-            # Handle activity start
-            if after.activity:
-                self.presence_cache[after.id] = {
-                    'time': current_time,
-                    'type': after.activity.type,
-                    'name': after.activity.name
+            # Create default role if none exists
+            if not stream_role:
+                stream_role = discord.utils.get(after.guild.roles, name="Live")
+                if not stream_role:
+                    stream_role = await after.guild.create_role(
+                        name="Live",
+                        color=discord.Color.purple(),
+                        reason="Auto-created role for streamers"
+                    )
+
+            if is_streaming and not was_streaming:
+                # Start stream session tracking
+                self.stream_sessions[after.id] = {
+                    "start_time": datetime.utcnow(),
+                    "guild_id": after.guild.id,
+                    "channel_id": after.voice.channel.id if after.voice else None
                 }
                 
-            # Modify XP calculation with new bonuses
-            activity_name = after.activity.name.lower() if after.activity.name else ""
-            
-            # Apply specific activity bonuses
-            bonus_xp = self.activity_bonuses.get(activity_name, 0)
-            
-            # Categorize activity for milestones
-            activity_category = None
-            if any(dev_app in activity_name for dev_app in ["visual studio", "intellij", "github"]):
-                activity_category = "development"
-            elif after.activity.type == discord.ActivityType.streaming:
-                activity_category = "streaming"
-            elif after.activity.type == discord.ActivityType.playing:
-                activity_category = "gaming"
+                await after.add_roles(stream_role)
                 
-            if activity_category:
-                await self.check_milestones(after, activity_category, duration)
+                # Notify in system channel or first available channel
+                channel = after.guild.system_channel or next(
+                    (ch for ch in after.guild.text_channels 
+                     if ch.permissions_for(after.guild.me).send_messages),
+                    None
+                )
+                if channel:
+                    stream_activity = next(activity for activity in after.activities 
+                                        if activity and activity.type == discord.ActivityType.streaming)
+                    embed = discord.Embed(
+                        title="🎥 Stream Started!",
+                        description=f"{after.mention} is now live!",
+                        color=discord.Color.purple()
+                    )
+                    if stream_activity.name:
+                        embed.add_field(name="Streaming", value=stream_activity.name)
+                    if stream_activity.url:
+                        embed.add_field(name="Watch", value=f"[Click here]({stream_activity.url})")
+                    await channel.send(embed=embed)
+                    
+            elif was_streaming and not is_streaming:
+                # End stream session and award XP
+                if after.id in self.stream_sessions:
+                    session = self.stream_sessions[after.id]
+                    duration = datetime.utcnow() - session["start_time"]
+                    minutes = duration.total_seconds() / 60
+                    
+                    # Calculate XP (capped)
+                    xp_gain = min(int(minutes * self.stream_xp_rate), self.stream_xp_cap)
+                    await self.award_xp(after, xp_gain, "streaming")
+                    
+                    # Update stream stats
+                    await self.db.stream_stats.update_one(
+                        {
+                            "guild_id": after.guild.id,
+                            "user_id": after.id
+                        },
+                        {
+                            "$inc": {
+                                "total_streams": 1,
+                                "total_duration": minutes,
+                                "total_xp": xp_gain
+                            },
+                            "$set": {"last_stream": datetime.utcnow()}
+                        },
+                        upsert=True
+                    )
+                    
+                    del self.stream_sessions[after.id]
                 
-            # Add streak check
-            await self.check_streak(after, "activity")
+                await after.remove_roles(stream_role)
+            
+            # Handle other presence updates (fix for the NoneType error)
+            if after.activity:
+                activity_name = after.activity.name.lower() if after.activity.name else ""
+                
+                # Modify XP calculation with new bonuses
+                bonus_xp = self.activity_bonuses.get(activity_name, 0)
+                
+                # Categorize activity for milestones
+                activity_category = None
+                if any(dev_app in activity_name for dev_app in ["visual studio", "intellij", "github"]):
+                    activity_category = "development"
+                elif after.activity.type == discord.ActivityType.streaming:
+                    activity_category = "streaming"
+                elif after.activity.type == discord.ActivityType.playing:
+                    activity_category = "gaming"
+                
+                if activity_category:
+                    await self.check_milestones(after, activity_category, duration)
+                    
+                # Add streak check
+                await self.check_streak(after, "activity")
                 
         except Exception as e:
             logger.error(f"Error in presence XP: {str(e)}\n{traceback.format_exc()}")
@@ -707,7 +741,7 @@ class Leveling(commands.Cog):
                 value_key = "total_duration"
             elif type == "voice":
                 cursor = self.db.user_stats.find(query).sort("activity_xp.voice", -1).limit(10)
-                title = "�� Voice Leaderboard"
+                title = "🎤 Voice Leaderboard"
                 field_name = "Voice XP"
                 value_key = "activity_xp.voice"
             elif type == "streaks":
@@ -764,6 +798,32 @@ class Leveling(commands.Cog):
         except Exception as e:
             logger.error(f"Error in leaderboard command: {str(e)}\n{traceback.format_exc()}")
             await interaction.followup.send("❌ An error occurred while fetching the leaderboard.")
+
+    @commands.hybrid_group(name="streamconfig", description="Configure stream settings")
+    @commands.has_permissions(manage_guild=True)
+    async def stream_config(self, ctx):
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Please specify a subcommand: setrole, setxp, viewsettings")
+
+    @stream_config.command(name="setrole", description="Set role for streamers")
+    async def set_stream_role(self, ctx, role: discord.Role):
+        try:
+            await self.db.guild_settings.update_one(
+                {"guild_id": ctx.guild.id},
+                {"$set": {"stream_role_id": role.id}},
+                upsert=True
+            )
+            await ctx.send(f"✅ Set {role.mention} as the streamer role!")
+        except Exception as e:
+            logger.error(f"Error setting stream role: {str(e)}")
+            await ctx.send("❌ Failed to set stream role.")
+
+    async def get_xp(self, member: discord.Member) -> int:
+        """Get user's current XP"""
+        data = await self.db.user_levels.find_one(
+            {"guild_id": member.guild.id, "user_id": member.id}
+        )
+        return data["xp"] if data else 0
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Leveling(bot)) 
