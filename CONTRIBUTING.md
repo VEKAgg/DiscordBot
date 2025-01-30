@@ -10,33 +10,47 @@ We love your input! We want to make contributing to VEKA Bot as easy and transpa
 5. Submit a Pull Request
 
 ## Code Style Guidelines
-- Use meaningful variable and function names
-- Comment complex logic
-- Follow the existing code structure
-- Use ES6+ features when appropriate
+- Follow PEP 8 style guidelines
+- Use type hints for all functions
+- Document functions using Google-style docstrings
+- Use async/await for Discord operations
 - Add appropriate error handling
+- Keep functions focused and modular
 
 ## Project Structure
-- `src/`: Contains the main bot code.
-- `config/`: Configuration files.
-- `utils/`: Utility functions and helpers.
-- `commands/`: Command handlers.
-- `events/`: Event handlers.
-- `api/`: API integrations.
-- `database/`: Database models and migrations.
-- `test/`: Test files.
+- `src/`: Contains the main bot code
+  - `bot.py`: Main bot file
+  - `cogs/`: Command categories
+  - `utils/`: Utility functions
+  - `database/`: Database models
+- `config/`: Configuration files
+- `tests/`: Test files
+- `docs/`: Documentation
 
 ## Setting Up Development Environment
-1. Install Node.js 16.x or higher
+1. Install Python 3.10 or higher
 2. Clone your fork
-3. Install dependencies: `npm install`
-4. Create a `.env` file with required credentials
-5. Start the bot: `npm start`
+3. Create virtual environment:
+   ```
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+4. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+5. Copy and configure environment variables:
+   ```
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
 
 ## Pull Request Process
-1. Update the README.md with details of changes if needed
-2. Update the documentation if you're adding/modifying features
-3. The PR will be merged once you have the sign-off of a maintainer
+1. Update documentation for any new features
+2. Add tests for new functionality
+3. Ensure all tests pass: `pytest tests/`
+4. Update requirements.txt if needed
+5. The PR will be merged once reviewed
 
 ## Bug Reports
 Please use the GitHub Issues tab and include:
@@ -44,6 +58,7 @@ Please use the GitHub Issues tab and include:
 - Steps to reproduce
 - What you expected would happen
 - What actually happens
+- Python version and OS information
 
 ## Feature Requests
 We love feature requests! Please include:
