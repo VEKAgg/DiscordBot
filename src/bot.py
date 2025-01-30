@@ -6,6 +6,7 @@ from utils.logger import setup_logger
 from utils.database import init_database
 import asyncio
 import random
+import traceback
 
 # Setup logging
 logger = setup_logger()
@@ -38,36 +39,46 @@ class VEKABot(commands.Bot):
         self.status_task = None
         self.voice_client = None
         
+        # Define initial extensions
+        self.initial_extensions = [
+            'cogs.core.commands',
+            'cogs.core.information',
+            'cogs.core.leveling',
+            'cogs.core.welcome',
+            'cogs.core.invites',
+            'cogs.management.server',
+            'cogs.analytics.stats',
+            'cogs.system.monitor'
+        ]
+        
     async def setup_hook(self):
         """Initialize bot services and load cogs"""
-        logger.info("Initializing bot...")
+        logger.info("Initializing bot services...")
         
-        # Initialize database
-        await init_database()
-        
-        # Load cogs by category
-        cog_categories = ['core', 'analytics', 'management', 'system']
-        
-        for folder in cog_categories:
-            path = f'cogs/{folder}'
-            if not os.path.exists(path):
-                os.makedirs(path)
-                continue
-                
-            for file in os.listdir(path):
-                if file.endswith('.py'):
-                    try:
-                        await self.load_extension(f'cogs.{folder}.{file[:-3]}')
-                        logger.info(f"Loaded extension: {folder}.{file[:-3]}")
-                    except Exception as e:
-                        logger.error(f"Failed to load extension {folder}.{file[:-3]}: {str(e)}")
-        
-        # Sync commands once after all cogs are loaded
         try:
+            # Initialize database
+            await init_database()
+            logger.info("Database initialized successfully")
+            
+            # Load extensions
+            loaded_cogs = 0
+            for cog_name in self.initial_extensions:
+                try:
+                    await self.load_extension(cog_name)
+                    loaded_cogs += 1
+                    logger.info(f"Loaded extension: {cog_name}")
+                except Exception as e:
+                    logger.error(f"Failed to load extension {cog_name}: {str(e)}\n{traceback.format_exc()}")
+            
+            logger.info(f"Successfully loaded {loaded_cogs} cogs")
+            
+            # Clear existing commands and sync
+            self.tree.clear_commands(guild=None)
             await self.tree.sync()
-            logger.info("Successfully synced all commands")
+            logger.info("Successfully synced application commands")
+            
         except Exception as e:
-            logger.error(f"Failed to sync commands: {str(e)}")
+            logger.error(f"Error in setup_hook: {str(e)}\n{traceback.format_exc()}")
 
     async def change_status(self):
         """Rotate bot status messages"""

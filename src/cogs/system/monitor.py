@@ -3,6 +3,7 @@ import psutil
 from discord import app_commands
 from discord.ext import commands
 from utils.logger import setup_logger
+import traceback
 
 logger = setup_logger()
 
@@ -15,37 +16,46 @@ class SystemMonitor(commands.Cog):
         await interaction.response.defer()
         
         try:
+            logger.info(f"Status command executed by {interaction.user} in {interaction.guild.name}")
+            
             # Gather system metrics
             cpu_usage = psutil.cpu_percent()
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             
             embed = discord.Embed(
-                title="System Health Status",
+                title="🖥️ System Health Status",
+                description="Current system metrics:",
                 color=discord.Color.green()
             )
             
             embed.add_field(
                 name="CPU Usage",
-                value=f"{cpu_usage}%",
+                value=f"```{cpu_usage}%```",
                 inline=True
             )
             embed.add_field(
                 name="Memory Usage",
-                value=f"{memory.percent}%",
+                value=f"```{memory.percent}%```",
                 inline=True
             )
             embed.add_field(
                 name="Disk Usage",
-                value=f"{disk.percent}%",
+                value=f"```{disk.percent}%```",
                 inline=True
             )
             
+            logger.info(f"System metrics - CPU: {cpu_usage}%, Memory: {memory.percent}%, Disk: {disk.percent}%")
             await interaction.followup.send(embed=embed)
             
+        except psutil.Error as e:
+            error_msg = f"System monitoring error: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            await interaction.followup.send("❌ Failed to gather system metrics. Check logs for details.")
         except Exception as e:
-            logger.error(f"Error in status command: {str(e)}")
-            await interaction.followup.send("An error occurred while checking system health.")
+            error_msg = f"Error in status command: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            await interaction.followup.send(f"❌ An unexpected error occurred: `{str(e)}`")
 
     @app_commands.command(name="debug", description="Run diagnostic tests")
     @app_commands.default_permissions(administrator=True)
@@ -53,12 +63,14 @@ class SystemMonitor(commands.Cog):
         await interaction.response.defer()
         
         try:
-            # Run diagnostics
+            logger.info(f"Debug command executed by {interaction.user} in {interaction.guild.name}")
             diagnostics = await self.run_diagnostics()
             await interaction.followup.send(embed=diagnostics)
+            logger.info("Debug diagnostics completed successfully")
         except Exception as e:
-            logger.error(f"Error in debug command: {str(e)}")
-            await interaction.followup.send("An error occurred while running diagnostics.")
+            error_msg = f"Error in debug command: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            await interaction.followup.send(f"❌ Failed to run diagnostics: `{str(e)}`")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SystemMonitor(bot)) 

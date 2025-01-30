@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from utils.database import Database
 from utils.logger import setup_logger
+import traceback
 
 logger = setup_logger()
 
@@ -57,10 +58,28 @@ class CoreEvents(commands.Cog):
     async def on_command_error(self, ctx, error):
         """Global error handler for prefix commands"""
         if isinstance(error, commands.CommandNotFound):
+            await ctx.send(f"Command not found. Use `v help` to see available commands.")
             return
         
-        logger.error(f"Command error: {str(error)}")
-        await ctx.send("An error occurred while executing the command.")
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send(f"You don't have the required permissions to use this command.")
+            return
+        
+        if isinstance(error, commands.NoPrivateMessage):
+            await ctx.send("This command can only be used in servers.")
+            return
+        
+        # Log detailed error information
+        error_details = f"""
+        Command: {ctx.command}
+        Author: {ctx.author} (ID: {ctx.author.id})
+        Guild: {ctx.guild.name if ctx.guild else 'DM'} (ID: {ctx.guild.id if ctx.guild else 'N/A'})
+        Error: {str(error)}
+        Traceback: {traceback.format_exc()}
+        """
+        logger.error(error_details)
+        
+        await ctx.send("An error occurred while executing the command. The error has been logged.")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(CoreEvents(bot)) 
