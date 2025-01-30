@@ -45,3 +45,4 @@ logs/
 
 # Config (except example)
 config.yml 
+config.yaml 
