@@ -264,6 +264,9 @@ class Leveling(commands.Cog):
             return
             
         try:
+            duration = 0  # Initialize duration
+            activity_category = None
+            
             # Check for streaming status
             was_streaming = any(activity.type == discord.ActivityType.streaming for activity in before.activities if activity)
             is_streaming = any(activity.type == discord.ActivityType.streaming for activity in after.activities if activity)
@@ -353,7 +356,6 @@ class Leveling(commands.Cog):
                 bonus_xp = self.activity_bonuses.get(activity_name, 0)
                 
                 # Categorize activity for milestones
-                activity_category = None
                 if any(dev_app in activity_name for dev_app in ["visual studio", "intellij", "github"]):
                     activity_category = "development"
                 elif after.activity.type == discord.ActivityType.streaming:
@@ -679,8 +681,7 @@ class Leveling(commands.Cog):
             app_commands.Choice(name="XP", value="xp"),
             app_commands.Choice(name="Activity", value="activity"),
             app_commands.Choice(name="Voice", value="voice"),
-            app_commands.Choice(name="Streaks", value="streaks"),
-            app_commands.Choice(name="Milestones", value="milestones")
+            app_commands.Choice(name="Streaks", value="streaks")
         ],
         scope=[
             app_commands.Choice(name="Server", value="server"),
