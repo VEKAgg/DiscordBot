@@ -3,10 +3,11 @@ from discord.ext import commands
 from utils.database import Database
 from utils.logger import setup_logger
 from typing import Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 from discord.ext import commands
 from discord import app_commands
+import traceback
 
 logger = setup_logger()
 
@@ -25,11 +26,10 @@ class InviteTracker(commands.Cog):
 
         # Invite XP rewards
         self.invite_xp_rewards = {
-            5: {"xp": 1000, "role_id": None, "message": "Recruiter"},
-            10: {"xp": 2500, "role_id": None, "message": "Talent Scout"},
-            25: {"xp": 5000, "role_id": None, "message": "Community Builder"},
-            50: {"xp": 10000, "role_id": None, "message": "Growth Master"},
-            100: {"xp": 25000, "role_id": None, "message": "Server Legend"}
+            5: 2500,   # 5 invites = 2,500 XP
+            10: 5000,  # 10 invites = 5,000 XP
+            25: 15000, # 25 invites = 15,000 XP
+            50: 35000  # 50 invites = 35,000 XP
         }
 
     async def get_leveling_cog(self):
@@ -80,18 +80,12 @@ class InviteTracker(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Cache invites for all guilds when bot starts."""
-        for guild in self.bot.guilds:
-            await self.cache_invites(guild)
-
         try:
-            leveling_cog = await self.get_leveling_cog()
-            if leveling_cog:
-                # Add invite leaderboard type
-                leveling_cog.leaderboard.choices.append(
-                    app_commands.Choice(name="Invites", value="invites")
-                )
+            for guild in self.bot.guilds:
+                await self.cache_invites(guild)
+            logger.info("Successfully cached invites for all guilds")
         except Exception as e:
-            logger.error(f"Error adding invite leaderboard: {str(e)}")
+            logger.error(f"Error caching guild invites: {str(e)}\n{traceback.format_exc()}")
 
     @commands.Cog.listener()
     async def on_invite_create(self, invite: discord.Invite):
@@ -242,7 +236,7 @@ class InviteTracker(commands.Cog):
                         # Award XP
                         leveling_cog = await self.get_leveling_cog()
                         if leveling_cog:
-                            await leveling_cog.award_xp(member, reward["xp"], "invite_milestone")
+                            await leveling_cog.award_xp(member, reward, "invite_milestone")
 
                         # Assign role if configured
                         settings = await self.db.guild_settings.find_one({"guild_id": member.guild.id})
@@ -256,8 +250,8 @@ class InviteTracker(commands.Cog):
                         embed = discord.Embed(
                             title="🎉 Invite Milestone Reached!",
                             description=f"{member.mention} has reached {invite_count} successful invites!\n"
-                                      f"Reward: {reward['xp']:,} XP\n"
-                                      f"Title: {reward['message']}",
+                                      f"Reward: {reward:,} XP\n"
+                                      f"Title: {invite_count} invites",
                             color=discord.Color.gold()
                         )
 
@@ -315,6 +309,90 @@ class InviteTracker(commands.Cog):
         except Exception as e:
             logger.error(f"Error setting invite role: {str(e)}")
             await interaction.followup.send("Failed to set invite role.")
+
+    @app_commands.command(name="inviteleaderboard", description="View top inviters")
+    @app_commands.describe(
+        timeframe="Timeframe for the leaderboard",
+        scope="Scope of the leaderboard"
+    )
+    @app_commands.choices(
+        timeframe=[
+            app_commands.Choice(name="All Time", value="all"),
+            app_commands.Choice(name="Monthly", value="month"),
+            app_commands.Choice(name="Weekly", value="week"),
+            app_commands.Choice(name="Daily", value="day")
+        ],
+        scope=[
+            app_commands.Choice(name="Server", value="server"),
+            app_commands.Choice(name="Global", value="global")
+        ]
+    )
+    async def invite_leaderboard(
+        self,
+        interaction: discord.Interaction,
+        timeframe: str = "all",
+        scope: str = "server"
+    ):
+        await interaction.response.defer()
+        
+        try:
+            # Build query based on scope and timeframe
+            query = {}
+            if scope == "server":
+                query["guild_id"] = interaction.guild_id
+            
+            if timeframe != "all":
+                threshold = datetime.now(timezone.utc)
+                if timeframe == "month":
+                    threshold -= timedelta(days=30)
+                elif timeframe == "week":
+                    threshold -= timedelta(days=7)
+                elif timeframe == "day":
+                    threshold -= timedelta(days=1)
+                query["timestamp"] = {"$gte": threshold}
+
+            # Aggregate invite data
+            pipeline = [
+                {"$match": query},
+                {"$group": {
+                    "_id": "$inviter_id",
+                    "total_invites": {"$sum": 1},
+                    "valid_invites": {
+                        "$sum": {"$cond": ["$rewarded", 1, 0]}
+                    }
+                }},
+                {"$sort": {"valid_invites": -1}},
+                {"$limit": 10}
+            ]
+
+            cursor = self.db.invite_logs.aggregate(pipeline)
+            entries = await cursor.to_list(length=10)
+
+            embed = discord.Embed(
+                title=f"🎯 Invite Leaderboard - {scope.title()} ({timeframe.title()})",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+
+            for i, entry in enumerate(entries, 1):
+                user_id = entry["_id"]
+                user = interaction.guild.get_member(user_id) if scope == "server" else self.bot.get_user(user_id)
+                username = user.name if user else "Unknown User"
+                
+                embed.add_field(
+                    name=f"{i}. {username}",
+                    value=f"Valid Invites: {entry['valid_invites']}\n"
+                          f"Total Invites: {entry['total_invites']}\n"
+                          f"XP Earned: {entry['valid_invites'] * 500:,}",
+                    inline=False
+                )
+
+            embed.set_footer(text=f"Requested by {interaction.user.name}")
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in invite leaderboard: {str(e)}\n{traceback.format_exc()}")
+            await interaction.followup.send("❌ An error occurred while fetching the leaderboard.")
 
 async def setup(bot: commands.Bot):
     cog = InviteTracker(bot)
