@@ -7,6 +7,7 @@ import traceback
 import random
 import math
 from datetime import datetime, timedelta
+from typing import Optional, Literal
 
 logger = setup_logger()
 
@@ -100,8 +101,16 @@ class Leveling(commands.Cog):
         }
 
         self.stream_sessions = {}  # Track active streams
-        self.stream_xp_rate = 5  # XP per minute of streaming
-        self.stream_xp_cap = 300  # Max XP per stream session
+        self.stream_xp_rate = 2  # XP per minute of streaming
+        self.stream_xp_cap = 100  # Max XP per stream session
+
+        # Check if we have the required intents
+        if not self.bot.intents.presences:
+            logger.warning("Presence intent is disabled. Stream detection and activity tracking will be limited.")
+        if not self.bot.intents.members:
+            logger.warning("Members intent is disabled. Member-related features will be limited.")
+        if not self.bot.intents.voice_states:
+            logger.warning("Voice States intent is disabled. Voice activity tracking will be limited.")
 
     async def calculate_level(self, xp: int) -> int:
         return int(math.sqrt(xp) // 10)
@@ -223,6 +232,9 @@ class Leveling(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        if not self.bot.intents.voice_states:
+            return
+            
         try:
             if member.bot:
                 return
@@ -260,6 +272,9 @@ class Leveling(commands.Cog):
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        if not self.bot.intents.presences:
+            return
+            
         if before.bot:
             return
             
@@ -625,6 +640,10 @@ class Leveling(commands.Cog):
 
     @app_commands.command(name="activitystats", description="View detailed activity statistics")
     async def activity_stats(self, interaction: discord.Interaction, member: discord.Member = None):
+        if not self.bot.intents.presences:
+            await interaction.response.send_message("❌ Activity tracking is disabled due to missing presence intent.", ephemeral=True)
+            return
+            
         await interaction.response.defer()
         
         try:
@@ -827,4 +846,19 @@ class Leveling(commands.Cog):
         return data["xp"] if data else 0
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Leveling(bot)) 
+    if not isinstance(bot, commands.Bot):
+        raise TypeError("This cog requires a commands.Bot instance")
+        
+    required_intents = ["members", "presences", "guilds"]
+    missing_intents = [intent for intent in required_intents if not getattr(bot.intents, intent)]
+    
+    if missing_intents:
+        logger.warning(f"Missing required intents: {', '.join(missing_intents)}")
+        logger.warning("Some features may not work as expected")
+    
+    try:
+        await bot.add_cog(Leveling(bot))
+        logger.info("Leveling cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load Leveling cog")
+        raise 

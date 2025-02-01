@@ -1,38 +1,57 @@
-import discord
-from discord.ext import commands, tasks
-from utils.database import Database
-from utils.logger import setup_logger
+import nextcord
+from nextcord.ext import commands, tasks
 import psutil
 from datetime import datetime, timezone, timedelta
-import traceback
-from .alerts import AlertSystem
+import logging
 
-logger = setup_logger()
+# Get logger for this module
+logger = logging.getLogger('nextcord.system.tasks')
 
 class BackgroundTasks(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = Database.db
+        self.db = bot.db
         self.last_command_time = datetime.now(timezone.utc)
         self.alert_system = None
+        logger.info("Initializing background tasks")
         self.background_check.start()
 
     def cog_unload(self):
-        self.background_check.cancel()
+        try:
+            self.background_check.cancel()
+            logger.info("Background tasks stopped")
+        except Exception as e:
+            logger.exception("Error stopping background tasks")
 
     @commands.Cog.listener()
     async def on_command(self, ctx):
-        self.last_command_time = datetime.now(timezone.utc)
+        try:
+            self.last_command_time = datetime.now(timezone.utc)
+            logger.debug(f"Command usage tracked: {ctx.command}")
+        except Exception as e:
+            logger.exception("Error tracking command usage")
 
     @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.application_command:
-            self.last_command_time = datetime.now(timezone.utc)
+    async def on_interaction(self, interaction: nextcord.Interaction):
+        try:
+            if interaction.type == nextcord.InteractionType.application_command:
+                self.last_command_time = datetime.now(timezone.utc)
+                logger.debug(f"Slash command usage tracked: {interaction.command.name}")
+        except Exception as e:
+            logger.exception("Error tracking interaction")
 
     async def get_alert_system(self):
-        if not self.alert_system:
-            self.alert_system = self.bot.get_cog("AlertSystem")
-        return self.alert_system
+        try:
+            if not self.alert_system:
+                self.alert_system = self.bot.get_cog("AlertSystem")
+                if self.alert_system:
+                    logger.debug("AlertSystem cog loaded")
+                else:
+                    logger.warning("AlertSystem cog not found")
+            return self.alert_system
+        except Exception as e:
+            logger.exception("Error getting alert system")
+            return None
 
     @tasks.loop(minutes=5)
     async def background_check(self):
@@ -83,12 +102,25 @@ class BackgroundTasks(commands.Cog):
 
             # Add more checks as needed...
 
+            logger.debug(f"System health check - CPU: {cpu_usage}%, Memory: {memory.percent}%")
+            logger.debug(f"Memory check completed")
+            logger.info(f"Error rate check - Found {recent_errors} errors in last 5 minutes")
+
         except Exception as e:
-            logger.error(f"Critical error in background check: {str(e)}\n{traceback.format_exc()}")
+            logger.exception("Critical error in background check")
 
     @background_check.before_loop
     async def before_background_check(self):
-        await self.bot.wait_until_ready()
+        try:
+            await self.bot.wait_until_ready()
+            logger.info("Background check loop ready to start")
+        except Exception as e:
+            logger.exception("Error in background check setup")
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(BackgroundTasks(bot)) 
+    try:
+        await bot.add_cog(BackgroundTasks(bot))
+        logger.info("BackgroundTasks cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load BackgroundTasks cog")
+        raise 

@@ -1,220 +1,163 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
+import nextcord
+from nextcord import Interaction, SlashOption
+from nextcord.ext import commands
 from utils.database import Database
 from utils.logger import setup_logger
 import traceback
 from typing import Optional, Literal
 from datetime import datetime, timezone
+import logging
 
-logger = setup_logger()
+# Get logger for this module
+logger = logging.getLogger('nextcord.management.server')
 
 class ServerManagement(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.db = Database.db
+        self.db = bot.db
+        logger.info("ServerManagement cog initialized")
 
-    @app_commands.command(name="backup", description="Manage server backups")
-    @app_commands.describe(action="Backup action to perform")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="Create", value="create"),
-        app_commands.Choice(name="List", value="list"),
-        app_commands.Choice(name="Restore", value="restore")
-    ])
-    @app_commands.default_permissions(administrator=True)
-    async def backup(self, interaction: discord.Interaction, action: str):
-        await interaction.response.defer()
-        logger.info(f"Backup command executed by {interaction.user} in {interaction.guild.name} - Action: {action}")
-        
-        try:
-            if action == "create":
-                await self.create_backup(interaction)
-                logger.info(f"Backup created for guild {interaction.guild_id}")
-            elif action == "list":
-                await self.list_backups(interaction)
-                logger.info(f"Backup list retrieved for guild {interaction.guild_id}")
-            elif action == "restore":
-                await self.restore_backup(interaction)
-                logger.info(f"Backup restored for guild {interaction.guild_id}")
-                
-        except discord.Forbidden as e:
-            error_msg = f"Permission error in backup command: {str(e)}\n{traceback.format_exc()}"
-            logger.error(error_msg)
-            await interaction.followup.send("❌ Bot lacks required permissions to manage backups.")
-        except Exception as e:
-            error_msg = f"Error in backup command: {str(e)}\n{traceback.format_exc()}"
-            logger.error(error_msg)
-            await interaction.followup.send(f"❌ Failed to manage backups: `{str(e)}`")
-
-    @app_commands.command(name="rolemgmt", description="Advanced role management")
-    @app_commands.describe(
-        action="Action to perform",
-        role="Role to manage",
-        target_role="Target role for hierarchy actions",
-        reason="Reason for the action"
+    role_management = nextcord.SlashCommandGroup(
+        "role", 
+        "Advanced role management commands",
+        default_member_permissions=nextcord.Permissions(manage_roles=True)
     )
-    @app_commands.choices(action=[
-        app_commands.Choice(name="Create Role", value="create"),
-        app_commands.Choice(name="Delete Role", value="delete"),
-        app_commands.Choice(name="Add to All", value="mass_add"),
-        app_commands.Choice(name="Remove from All", value="mass_remove"),
-        app_commands.Choice(name="Move Above", value="move_above"),
-        app_commands.Choice(name="Move Below", value="move_below")
-    ])
-    @app_commands.default_permissions(manage_roles=True)
-    async def rolemgmt(
-        self, 
-        interaction: discord.Interaction, 
-        action: str,
-        role: Optional[discord.Role] = None,
-        target_role: Optional[discord.Role] = None,
+
+    async def cog_command_error(self, interaction: Interaction, error: Exception):
+        """Global error handler for the cog"""
+        if isinstance(error, commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ You don't have permission to manage roles.", 
+                ephemeral=True
+            )
+        elif isinstance(error, commands.BotMissingPermissions):
+            await interaction.response.send_message(
+                "❌ I don't have permission to manage roles.", 
+                ephemeral=True
+            )
+        elif isinstance(error, nextcord.Forbidden):
+            await interaction.response.send_message(
+                "❌ I don't have permission to perform this action.", 
+                ephemeral=True
+            )
+        else:
+            logger.exception("Unhandled command error", exc_info=error)
+            await interaction.response.send_message(
+                "❌ An unexpected error occurred.", 
+                ephemeral=True
+            )
+
+    @role_management.subcommand(name="mass", description="Mass role operations")
+    async def mass_role(
+        self,
+        interaction: Interaction,
+        action: Literal["add", "remove"],
+        role: nextcord.Role,
         reason: Optional[str] = None
     ):
         await interaction.response.defer()
         
         try:
-            if action == "create":
-                new_role = await interaction.guild.create_role(
-                    name=role.name if role else "New Role",
-                    reason=reason or f"Created by {interaction.user}"
-                )
-                await interaction.followup.send(f"✅ Created role {new_role.mention}")
-                
-            elif action in ["mass_add", "mass_remove"]:
-                if not role:
-                    await interaction.followup.send("❌ Please specify a role!")
-                    return
-                    
-                await interaction.followup.send("⏳ Processing mass role update...")
-                
-                success = 0
-                failed = 0
-                for member in interaction.guild.members:
-                    try:
-                        if action == "mass_add":
-                            if role not in member.roles:
-                                await member.add_roles(role, reason=reason)
-                                success += 1
-                        else:
-                            if role in member.roles:
-                                await member.remove_roles(role, reason=reason)
-                                success += 1
-                    except:
-                        failed += 1
-                        
-                await interaction.followup.send(
-                    f"✅ Role {'added to' if action == 'mass_add' else 'removed from'} "
-                    f"{success} members ({failed} failed)"
-                )
-                
-            elif action in ["move_above", "move_below"]:
-                if not role or not target_role:
-                    await interaction.followup.send("❌ Please specify both roles!")
-                    return
-                    
-                positions = {r: r.position for r in interaction.guild.roles}
-                
-                if action == "move_above":
-                    positions[role] = positions[target_role] + 1
-                else:
-                    positions[role] = positions[target_role] - 1
-                    
-                await interaction.guild.edit_role_positions(positions)
-                await interaction.followup.send(
-                    f"✅ Moved {role.mention} {'above' if action == 'move_above' else 'below'} {target_role.mention}"
-                )
-                
-            # Log the action
-            await self.db.role_logs.insert_one({
-                "guild_id": interaction.guild_id,
-                "user_id": interaction.user.id,
-                "action": action,
-                "role_id": role.id if role else None,
-                "target_role_id": target_role.id if target_role else None,
-                "reason": reason,
-                "timestamp": datetime.now(timezone.utc)
-            })
+            await interaction.followup.send("⏳ Processing mass role update...")
             
-        except discord.Forbidden as e:
-            logger.error(f"Permission error in rolemgmt: {str(e)}\n{traceback.format_exc()}")
-            await interaction.followup.send("❌ Missing required permissions!")
+            success = 0
+            failed = 0
+            for member in interaction.guild.members:
+                try:
+                    if action == "add" and role not in member.roles:
+                        await member.add_roles(role, reason=reason)
+                        success += 1
+                    elif action == "remove" and role in member.roles:
+                        await member.remove_roles(role, reason=reason)
+                        success += 1
+                except Exception:
+                    failed += 1
+            
+            await interaction.followup.send(
+                f"✅ Role {'added to' if action == 'add' else 'removed from'} "
+                f"{success} members ({failed} failed)"
+            )
+            
+            await self._log_role_action(interaction, "mass_" + action, role, reason=reason)
+            
         except Exception as e:
-            logger.error(f"Error in rolemgmt: {str(e)}\n{traceback.format_exc()}")
-            await interaction.followup.send(f"❌ An error occurred: {str(e)}")
+            logger.exception("Error in mass role operation")
+            await interaction.followup.send("❌ An error occurred during the operation.", ephemeral=True)
 
-    @app_commands.command(name="audit", description="View audit logs")
-    @app_commands.describe(
-        action="Type of actions to view",
-        user="Filter by user",
-        limit="Number of entries to show (default: 10)"
-    )
-    @app_commands.choices(action=[
-        app_commands.Choice(name="All Actions", value="all"),
-        app_commands.Choice(name="Member Updates", value="member"),
-        app_commands.Choice(name="Role Changes", value="role"),
-        app_commands.Choice(name="Channel Updates", value="channel"),
-        app_commands.Choice(name="Message Deletions", value="message"),
-        app_commands.Choice(name="Bans/Kicks", value="moderation")
-    ])
-    @app_commands.default_permissions(view_audit_log=True)
-    async def audit(
-        self, 
-        interaction: discord.Interaction, 
-        action: str = "all",
-        user: Optional[discord.Member] = None,
-        limit: Optional[int] = 10
+    @role_management.subcommand(name="position", description="Adjust role position")
+    async def role_position(
+        self,
+        interaction: Interaction,
+        role: nextcord.Role,
+        target_role: nextcord.Role,
+        position: Literal["above", "below"]
     ):
         await interaction.response.defer()
         
         try:
-            entries = []
-            async for entry in interaction.guild.audit_logs(limit=limit):
-                if action != "all":
-                    if action == "member" and entry.action not in [
-                        discord.AuditLogAction.member_update,
-                        discord.AuditLogAction.member_role_update
-                    ]:
-                        continue
-                    elif action == "role" and entry.action not in [
-                        discord.AuditLogAction.role_create,
-                        discord.AuditLogAction.role_update,
-                        discord.AuditLogAction.role_delete
-                    ]:
-                        continue
-                    # Add more action filters...
-                
-                if user and entry.user.id != user.id:
-                    continue
-                    
-                entries.append(entry)
+            positions = {r: r.position for r in interaction.guild.roles}
             
-            if not entries:
-                await interaction.followup.send("No matching audit log entries found.")
-                return
+            if position == "above":
+                positions[role] = positions[target_role] + 1
+            else:
+                positions[role] = positions[target_role] - 1
                 
-            embed = discord.Embed(
-                title="📋 Audit Log",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
+            await interaction.guild.edit_role_positions(positions)
+            await interaction.followup.send(
+                f"✅ Moved {role.mention} {position} {target_role.mention}"
             )
             
-            for entry in entries[:10]:  # Show first 10 entries
-                embed.add_field(
-                    name=f"{entry.action.name} by {entry.user}",
-                    value=f"Target: {entry.target}\n"
-                          f"Reason: {entry.reason or 'No reason provided'}\n"
-                          f"Time: {discord.utils.format_dt(entry.created_at, 'R')}",
-                    inline=False
-                )
+            await self._log_role_action(
+                interaction, 
+                f"move_{position}", 
+                role, 
+                target_role=target_role
+            )
             
-            await interaction.followup.send(embed=embed)
-            
-        except discord.Forbidden as e:
-            logger.error(f"Permission error in audit: {str(e)}\n{traceback.format_exc()}")
-            await interaction.followup.send("❌ Missing required permissions!")
         except Exception as e:
-            logger.error(f"Error in audit: {str(e)}\n{traceback.format_exc()}")
-            await interaction.followup.send(f"❌ An error occurred: {str(e)}")
+            logger.exception("Error in role position adjustment")
+            await interaction.followup.send("❌ Failed to adjust role position.", ephemeral=True)
+
+    async def _log_role_action(
+        self, 
+        interaction: Interaction, 
+        action: str, 
+        role: nextcord.Role, 
+        target_role: Optional[nextcord.Role] = None,
+        reason: Optional[str] = None
+    ):
+        """Log role management actions to database with error handling"""
+        try:
+            await self.db.role_logs.insert_one({
+                "guild_id": interaction.guild_id,
+                "user_id": interaction.user.id,
+                "action": action,
+                "role_id": role.id,
+                "target_role_id": target_role.id if target_role else None,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc)
+            })
+        except Exception as e:
+            logger.exception("Failed to log role action", 
+                           extra={"guild_id": interaction.guild_id, 
+                                 "action": action,
+                                 "role_id": role.id})
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(ServerManagement(bot)) 
+    if not isinstance(bot, commands.Bot):
+        raise TypeError("This cog requires a commands.Bot instance")
+        
+    required_permissions = ["manage_roles", "manage_guild"]
+    missing_permissions = [perm for perm in required_permissions 
+                         if not getattr(bot.user.guild_permissions, perm, False)]
+    
+    if missing_permissions:
+        logger.warning(f"Missing required permissions: {', '.join(missing_permissions)}")
+        logger.warning("Some features may not work as expected")
+    
+    try:
+        await bot.add_cog(ServerManagement(bot))
+        logger.info("ServerManagement cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load ServerManagement cog")
+        raise 
