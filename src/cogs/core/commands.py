@@ -2,7 +2,7 @@ import nextcord
 from nextcord.ext import commands, tasks
 from utils.database import Database
 from utils.logger import setup_logger
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import traceback
 import datetime
 from datetime import datetime, timezone, timedelta
@@ -27,116 +27,149 @@ import openai
 from utils.web_scraper import WebScraper
 from nextcord.ext import app_commands
 from loguru import logger
+from nextcord import Interaction, SlashOption
+import logging
 
-logger = setup_logger()
-load_dotenv()
+# Get logger for this module
+logger = logging.getLogger('nextcord.core.commands')
 
 class CoreCommands(commands.Cog):
     """Core bot commands and functionality"""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.bot_app_info = None
+        self.tree = bot.tree
+        logger.info("Initializing CoreCommands cog")
         
-        # Validate environment variables
-        required_vars = {
-            'MONGODB_URI': os.getenv('MONGODB_URI'),
-            'REDIS_URI': os.getenv('REDIS_URI'),
-            'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY')
-        }
-        
-        missing_vars = [key for key, value in required_vars.items() if not value]
-        if missing_vars:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-            
-        # Initialize services
-        self.db = motor.motor_asyncio.AsyncIOMotorClient(required_vars['MONGODB_URI']).veka
-        self.redis = aioredis.from_url(required_vars['REDIS_URI'])
-        self.web_scraper = None  # Will initialize after DB connection
-        
-        self.translator = GoogleTranslator(source='auto', target='en')
-        self.start_time = datetime.now(timezone.utc)
-        self.afk_users = {}
-        self.command_groups = {
-            "🎮 Activity": {
-                "description": "Activity tracking and stats",
-                "commands": ["activity", "activitystats", "voice"]
-            },
-            "📊 Analytics": {
-                "description": "Server and user analytics",
-                "commands": ["analytics", "leaderboard", "stats"]
-            },
-            "🛠️ Core": {
-                "description": "Essential bot commands",
-                "commands": ["help", "info", "ping", "invite"]
-            },
-            "ℹ️ Information": {
-                "description": "Server and user information",
-                "commands": ["botinfo", "serverinfo", "userinfo", "avatar", "banner"]
-            },
-            "🎯 Leveling": {
-                "description": "XP and leveling system",
-                "commands": ["rank", "levels", "rewards"]
-            },
-            "⚙️ Settings": {
-                "description": "Server configuration",
-                "commands": ["welcome", "autorole", "prefix"]
-            },
-            "🔧 Utility": {
-                "description": "Useful utility commands",
-                "commands": ["afk", "poll", "nick"]
+        try:
+            # Validate environment variables
+            required_vars = {
+                'MONGODB_URI': os.getenv('MONGODB_URI'),
+                'REDIS_URI': os.getenv('REDIS_URI'),
+                'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY')
             }
-        }
-        
-        # Initialize scheduler
-        self.scheduler = AsyncIOScheduler()
-        
-        # Schedule background tasks
-        self.scheduler.add_job(
-            self.update_status_task,
-            CronTrigger(minute="*/5"),  # Every 5 minutes
-            id="status_updater"
-        )
-        self.scheduler.add_job(
-            self.cleanup_cache_task,
-            CronTrigger(hour="*/1"),  # Every hour
-            id="cache_cleanup"
-        )
-        self.scheduler.add_job(
-            self.backup_stats_task,
-            CronTrigger(hour="0"),  # Daily at midnight
-            id="stats_backup"
-        )
-        
-        # Start the scheduler
-        self.scheduler.start()
-        logger.info("Background tasks scheduler started")
+            
+            missing_vars = [key for key, value in required_vars.items() if not value]
+            if missing_vars:
+                raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+            
+            # Initialize services
+            self.db = motor.motor_asyncio.AsyncIOMotorClient(required_vars['MONGODB_URI']).veka
+            self.redis = aioredis.from_url(required_vars['REDIS_URI'])
+            self.web_scraper = None  # Will initialize after DB connection
+            
+            self.translator = GoogleTranslator(source='auto', target='en')
+            self.start_time = datetime.now(timezone.utc)
+            self.afk_users = {}
+            self.command_groups = {
+                "🎮 Activity": {
+                    "description": "Activity tracking and stats",
+                    "commands": ["activity", "activitystats", "voice"]
+                },
+                "📊 Analytics": {
+                    "description": "Server and user analytics",
+                    "commands": ["analytics", "leaderboard", "stats"]
+                },
+                "🛠️ Core": {
+                    "description": "Essential bot commands",
+                    "commands": ["help", "info", "ping", "invite"]
+                },
+                "ℹ️ Information": {
+                    "description": "Server and user information",
+                    "commands": ["botinfo", "serverinfo", "userinfo", "avatar", "banner"]
+                },
+                "🎯 Leveling": {
+                    "description": "XP and leveling system",
+                    "commands": ["rank", "levels", "rewards"]
+                },
+                "⚙️ Settings": {
+                    "description": "Server configuration",
+                    "commands": ["welcome", "autorole", "prefix"]
+                },
+                "🔧 Utility": {
+                    "description": "Useful utility commands",
+                    "commands": ["afk", "poll", "nick"]
+                }
+            }
+            
+            self.cache = {}
+            self.cache_ttl = {
+                "stats": 300,  # 5 minutes
+                "guild": 600,  # 10 minutes
+                "user": 300,   # 5 minutes
+                "analytics": 900  # 15 minutes
+            }
 
-        self.cache = {}
-        self.cache_ttl = {
-            "stats": 300,  # 5 minutes
-            "guild": 600,  # 10 minutes
-            "user": 300,   # 5 minutes
-            "analytics": 900  # 15 minutes
-        }
+            # Initialize chat history
+            self.chat_history = {}
 
-        # Initialize chat history
-        self.chat_history = {}
-
-        self.check_price_alerts.start()
+        except Exception as e:
+            logger.exception("Failed to initialize CoreCommands cog")
+            raise
 
     async def cog_load(self):
-        # Initialize web scraper after bot is ready and DB is connected
-        self.web_scraper = WebScraper(self.db)
-        logger.info("CoreCommands cog loaded successfully")
+        """Initialize tasks and services when cog is loaded"""
+        try:
+            # Initialize web scraper first
+            self.web_scraper = WebScraper(self.db)
+            logger.info("WebScraper initialized successfully")
+
+            # Initialize scheduler
+            self.scheduler = AsyncIOScheduler()
+            
+            # Wait for bot to be ready before scheduling tasks
+            await self.bot.wait_until_ready()
+            
+            # Schedule background tasks
+            self.scheduler.add_job(
+                self.update_status_task,
+                CronTrigger(minute="*/5"),  # Every 5 minutes
+                id="status_updater",
+                replace_existing=True
+            )
+            
+            self.scheduler.add_job(
+                self.cleanup_cache_task,
+                CronTrigger(hour="*/1"),  # Every hour
+                id="cache_cleanup",
+                replace_existing=True
+            )
+            
+            self.scheduler.add_job(
+                self.backup_stats_task,
+                CronTrigger(hour="0"),  # Daily at midnight
+                id="stats_backup",
+                replace_existing=True
+            )
+            
+            # Start the scheduler
+            self.scheduler.start()
+            logger.info("Background tasks scheduler started")
+
+            # Start price alerts task
+            self.check_price_alerts.start()
+            logger.info("Price alerts task started")
+
+            # Get application info once during load
+            self.bot_app_info = await self.bot.application_info()
+            
+            # Register app command error handler
+            self.tree.on_error = self.on_app_command_error
+
+        except Exception as e:
+            logger.exception("Failed to initialize CoreCommands tasks")
+            raise
 
     async def cog_unload(self):
-        """Cleanup when cog is unloaded"""
-        self.scheduler.shutdown()
-        logger.info("Background tasks scheduler shutdown")
-        self.check_price_alerts.cancel()
+        try:
+            self.scheduler.shutdown()
+            self.check_price_alerts.cancel()
+            logger.info("CoreCommands cog unloaded successfully")
+        except Exception as e:
+            logger.exception("Error during cog unload")
 
     async def update_status_task(self):
-        """Update bot status with current statistics"""
         try:
             total_members = sum(guild.member_count for guild in self.bot.guilds)
             status_text = f"with {total_members:,} users | /help"
@@ -149,21 +182,18 @@ class CoreCommands(commands.Cog):
             logger.debug("Bot status updated successfully")
             
         except Exception as e:
-            logger.error(f"Error in status update task: {str(e)}\n{traceback.format_exc()}")
+            logger.exception("Failed to update bot status")
 
     async def cleanup_cache_task(self):
-        """Clean up expired cache entries"""
         try:
-            # Get all keys
+            cleaned = 0
             async for key in self.redis.scan_iter("*"):
-                # Check if key is expired
-                ttl = await self.redis.ttl(key)
-                if ttl < 0:
+                if await self.redis.ttl(key) < 0:
                     await self.redis.delete(key)
-                    logger.debug(f"Cleaned up expired cache key: {key}")
-                    
+                    cleaned += 1
+            logger.debug(f"Cache cleanup completed: {cleaned} keys removed")
         except Exception as e:
-            logger.error(f"Error in cache cleanup task: {str(e)}\n{traceback.format_exc()}")
+            logger.exception("Failed to cleanup cache")
 
     async def backup_stats_task(self):
         """Backup daily statistics to database"""
@@ -194,18 +224,47 @@ class CoreCommands(commands.Cog):
         days, hours = divmod(hours, 24)
         return f"{days}d {hours}h {minutes}m {seconds}s"
 
-    @nextcord.slash_command(name="ping", description="Check bot latency")
-    async def ping(self, interaction: nextcord.Interaction):
-        try:
+    async def on_app_command_error(self, interaction: Interaction, error: Exception):
+        if isinstance(error, app_commands.CommandOnCooldown):
             await interaction.response.send_message(
-                f"🏓 Pong! Latency: {round(self.bot.latency * 1000)}ms"
-            )
-        except Exception as e:
-            logger.error(f"Error in ping command: {str(e)}\n{traceback.format_exc()}")
-            await interaction.response.send_message(
-                "❌ An error occurred while checking latency.", 
+                f"This command is on cooldown. Try again in {error.retry_after:.2f}s",
                 ephemeral=True
             )
+        elif isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "You don't have permission to use this command.",
+                ephemeral=True
+            )
+        else:
+            logger.exception("Unhandled application command error", exc_info=error)
+            await interaction.response.send_message(
+                "An error occurred while executing this command.",
+                ephemeral=True
+            )
+
+    @nextcord.slash_command(name="ping", description="Check bot latency")
+    async def ping(self, interaction: Interaction):
+        await interaction.response.send_message(
+            f"🏓 Pong! Latency: {round(self.bot.latency * 1000)}ms"
+        )
+
+    @nextcord.slash_command(name="info", description="Get bot information")
+    async def info(self, interaction: Interaction):
+        embed = nextcord.Embed(
+            title="VEKA Bot Info",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Version",
+            value="1.0.0",
+            inline=True
+        )
+        embed.add_field(
+            name="Library",
+            value=f"Nextcord {nextcord.__version__}",
+            inline=True
+        )
+        await interaction.response.send_message(embed=embed)
 
     @nextcord.slash_command(name="translate", description="Translate text to another language")
     async def translate(self, 
@@ -351,7 +410,6 @@ class CoreCommands(commands.Cog):
     @nextcord.slash_command(name="botinfo", description="View detailed bot information")
     async def botinfo(self, interaction: nextcord.Interaction):
         await interaction.response.defer()
-        
         try:
             # Fetch stats from database
             stats = await self.db.bot_stats.find_one({"_id": "global"}) or {}
@@ -389,9 +447,11 @@ class CoreCommands(commands.Cog):
             
             await interaction.followup.send(embed=embed)
             
+            logger.info(f"Botinfo command used by {interaction.user} in {interaction.guild}")
+            
         except Exception as e:
-            logger.error(f"Error in botinfo command: {str(e)}\n{traceback.format_exc()}")
-            await interaction.followup.send("❌ An error occurred while fetching bot information.", ephemeral=True)
+            logger.exception("Error in botinfo command")
+            await interaction.followup.send("An error occurred while fetching bot information.")
 
     @nextcord.slash_command(name="help", description="View all available commands")
     async def help(self, interaction: nextcord.Interaction, category: Optional[str] = None):
@@ -478,49 +538,6 @@ class CoreCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Error in nick command: {str(e)}\n{traceback.format_exc()}")
             await interaction.followup.send("❌ Failed to change nickname.")
-
-    @commands.hybrid_command(name="info", description="View bot information")
-    async def info(self, ctx):
-        try:
-            embed = nextcord.Embed(
-                title="VEKA Bot",
-                description="A versatile Discord bot for server management and analytics",
-                color=nextcord.Color.blue()
-            )
-            
-            if self.bot.user.avatar:
-                embed.set_thumbnail(url=self.bot.user.avatar.url)
-            
-            embed.add_field(
-                name="📊 Statistics",
-                value=f"```py\nServers: {len(self.bot.guilds)}\n"
-                      f"Users: {sum(g.member_count for g in self.bot.guilds)}\n"
-                      f"Latency: {round(self.bot.latency * 1000)}ms\n```",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="🔧 System",
-                value="```py\nPython: 3.10+\n"
-                      "Discord.py: 2.3.2\n"
-                      "Database: MongoDB```",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="🔗 Links",
-                value="[Support Server](https://discord.gg/vekabot) | "
-                      "[Documentation](https://docs.vekabot.com) | "
-                      "[GitHub](https://github.com/vekabot)",
-                inline=False
-            )
-            
-            embed.set_footer(text="Use 'v help' or /help for commands")
-            await ctx.send(embed=embed)
-            
-        except Exception as e:
-            logger.error(f"Error in info command: {str(e)}")
-            await ctx.send("An error occurred while fetching bot information.")
 
     @commands.hybrid_command(name="help", description="View all bot commands")
     async def help(self, ctx, category: str = None):
@@ -1113,5 +1130,10 @@ class CoreCommands(commands.Cog):
             logger.error(f"Error in analyze command: {str(e)}\n{traceback.format_exc()}")
             await interaction.followup.send("❌ An error occurred while analyzing the price trends.", ephemeral=True)
 
-def setup(bot):
-    bot.add_cog(CoreCommands(bot)) 
+async def setup(bot: commands.Bot):
+    try:
+        await bot.add_cog(CoreCommands(bot))
+        logger.info("CoreCommands cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load CoreCommands cog")
+        raise 

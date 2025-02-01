@@ -7,14 +7,16 @@ import platform
 import psutil
 import traceback
 from datetime import datetime, timezone
+import logging
 
-logger = setup_logger()
+logger = logging.getLogger('discord.core.information')
 
 class Information(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = Database.db
         self.start_time = datetime.now(timezone.utc)
+        logger.info("Information cog initialized")
 
     def get_uptime(self):
         delta = datetime.now(timezone.utc) - self.start_time
@@ -273,9 +275,17 @@ class Information(commands.Cog):
             
             await interaction.followup.send(embed=embed)
             
+        except nextcord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to view roles.", 
+                ephemeral=True
+            )
         except Exception as e:
-            logger.error(f"Error in roles command: {str(e)}")
-            await interaction.followup.send("❌ An error occurred while fetching roles.")
+            logger.exception("Error in roles command")
+            await interaction.followup.send(
+                "❌ An error occurred while fetching roles.", 
+                ephemeral=True
+            )
 
     @app_commands.command(name="userroles", description="View roles of a user")
     async def userroles(self, interaction: discord.Interaction, member: discord.Member = None):
@@ -421,5 +431,32 @@ class Information(commands.Cog):
             
             await message.channel.send(f"Welcome back {message.author.mention}! I've removed your AFK status.", delete_after=10)
 
+    async def cog_command_error(self, interaction: discord.Interaction, error: Exception):
+        """Global error handler for the cog"""
+        if isinstance(error, commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ You don't have permission to use this command.", 
+                ephemeral=True
+            )
+        elif isinstance(error, commands.BotMissingPermissions):
+            await interaction.response.send_message(
+                "❌ I don't have permission to execute this command.", 
+                ephemeral=True
+            )
+        else:
+            logger.exception("Unhandled command error", exc_info=error)
+            await interaction.response.send_message(
+                "❌ An unexpected error occurred.", 
+                ephemeral=True
+            )
+
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Information(bot)) 
+    if not isinstance(bot, commands.Bot):
+        raise TypeError("This cog requires a commands.Bot instance")
+        
+    try:
+        await bot.add_cog(Information(bot))
+        logger.info("Information cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load Information cog")
+        raise 

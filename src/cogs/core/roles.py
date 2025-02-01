@@ -1,11 +1,13 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
+import nextcord
+from nextcord import Interaction, SlashOption
+from nextcord.ext import commands
 from utils.database import Database
 from utils.logger import setup_logger
 from datetime import datetime, timedelta
+from typing import Optional, Literal
+import logging
 
-logger = setup_logger()
+logger = logging.getLogger('nextcord.core.roles')
 
 class Roles(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -29,64 +31,152 @@ class Roles(commands.Cog):
         ]
         self.activity_roles = {
             "games": {
-                "Rocket League": {"name": "Rocket League", "color": discord.Color.blue()},
-                "Minecraft": {"name": "Minecraft", "color": discord.Color.green()},
-                "Elite Dangerous": {"name": "Elite", "color": discord.Color.orange()},
-                "Forza Horizon": {"name": "Forza", "color": discord.Color.brand_red()},
-                "Assetto Corsa": {"name": "Racing", "color": discord.Color.dark_red()}
+                "Rocket League": {"name": "Rocket League", "color": nextcord.Color.blue()},
+                "Minecraft": {"name": "Minecraft", "color": nextcord.Color.green()},
+                "Elite Dangerous": {"name": "Elite", "color": nextcord.Color.orange()},
+                "Forza Horizon": {"name": "Forza", "color": nextcord.Color.brand_red()},
+                "Assetto Corsa": {"name": "Racing", "color": nextcord.Color.dark_red()}
             },
             "music": {
-                "Spotify": {"name": "Music", "color": discord.Color.green()},
-                "YouTube Music": {"name": "Music", "color": discord.Color.red()}
+                "Spotify": {"name": "Music", "color": nextcord.Color.green()},
+                "YouTube Music": {"name": "Music", "color": nextcord.Color.red()}
             },
             "anime": {
-                "Crunchyroll": {"name": "Anime Watcher", "color": discord.Color.orange()}
+                "Crunchyroll": {"name": "Anime Watcher", "color": nextcord.Color.orange()}
             },
             "creative": {
-                "Photoshop": {"name": "Artist", "color": discord.Color.blue()},
-                "Illustrator": {"name": "Artist", "color": discord.Color.orange()},
-                "Premiere Pro": {"name": "Artist", "color": discord.Color.purple()},
-                "After Effects": {"name": "Artist", "color": discord.Color.gold()}
+                "Photoshop": {"name": "Artist", "color": nextcord.Color.blue()},
+                "Illustrator": {"name": "Artist", "color": nextcord.Color.orange()},
+                "Premiere Pro": {"name": "Artist", "color": nextcord.Color.purple()},
+                "After Effects": {"name": "Artist", "color": nextcord.Color.gold()}
             }
         }
+        logger.info("Roles cog initialized")
+
+    async def cog_command_error(self, interaction: Interaction, error: Exception):
+        """Global error handler for the cog"""
+        if isinstance(error, commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ You don't have permission to manage roles.", 
+                ephemeral=True
+            )
+        elif isinstance(error, commands.BotMissingPermissions):
+            await interaction.response.send_message(
+                "❌ I don't have permission to manage roles.", 
+                ephemeral=True
+            )
+        elif isinstance(error, nextcord.Forbidden):
+            await interaction.response.send_message(
+                "❌ I don't have permission to perform this action.", 
+                ephemeral=True
+            )
+        elif isinstance(error, nextcord.HTTPException):
+            await interaction.response.send_message(
+                "❌ Failed to perform role action. Please try again.", 
+                ephemeral=True
+            )
+        else:
+            logger.exception("Unhandled command error", exc_info=error)
+            await interaction.response.send_message(
+                "❌ An unexpected error occurred.", 
+                ephemeral=True
+            )
 
     async def get_leveling_cog(self):
         if not self.leveling_cog:
             self.leveling_cog = self.bot.get_cog("Leveling")
         return self.leveling_cog
 
-    @commands.hybrid_group(name="roleconfig", description="Configure role settings")
-    @commands.has_permissions(manage_guild=True)
-    async def role_config(self, ctx):
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a subcommand: setrole, viewroles")
+    role_config = nextcord.SlashCommandGroup(
+        "roleconfig", 
+        "Configure role settings",
+        default_member_permissions=nextcord.Permissions(manage_guild=True)
+    )
 
-    @role_config.command(name="setrole", description="Set role for specific activities")
-    async def set_role(self, ctx, type: str, role: discord.Role):
+    @role_config.subcommand(name="set", description="Set role for specific activities")
+    async def set_role(
+        self, 
+        interaction: Interaction,
+        type: Literal["stream", "boost", "level"],
+        role: nextcord.Role
+    ):
+        await interaction.response.defer()
+        
         try:
-            valid_types = ["stream", "boost", "level"]
-            if type.lower() not in valid_types:
-                await ctx.send(f"Invalid type. Valid types: {', '.join(valid_types)}")
+            # Check role hierarchy
+            if role >= interaction.guild.me.top_role:
+                await interaction.followup.send(
+                    "❌ I can't manage this role as it's higher than my highest role.", 
+                    ephemeral=True
+                )
                 return
 
             await self.db.guild_settings.update_one(
-                {"guild_id": ctx.guild.id},
-                {"$set": {f"{type.lower()}_role_id": role.id}},
+                {"guild_id": interaction.guild_id},
+                {"$set": {f"{type}_role_id": role.id}},
                 upsert=True
             )
-            await ctx.send(f"✅ Set {role.mention} as the {type} role!")
+            
+            await interaction.followup.send(
+                f"✅ Set {role.mention} as the {type} role!"
+            )
+            logger.info(f"Role {role.id} set as {type} role in guild {interaction.guild_id}")
+            
+        except nextcord.Forbidden:
+            await interaction.followup.send(
+                "❌ I don't have permission to manage this role.", 
+                ephemeral=True
+            )
         except Exception as e:
-            logger.error(f"Error setting role: {str(e)}")
-            await ctx.send("❌ Failed to set role.")
+            logger.exception(
+                "Error in set_role command",
+                extra={
+                    "guild_id": interaction.guild_id,
+                    "role_id": role.id,
+                    "type": type
+                }
+            )
+            await interaction.followup.send(
+                "❌ Failed to set role configuration.", 
+                ephemeral=True
+            )
+
+    @role_config.subcommand(name="view", description="View current role settings")
+    async def view_roles(self, interaction: Interaction):
+        await interaction.response.defer()
+        
+        try:
+            settings = await self.db.guild_settings.find_one({"guild_id": interaction.guild_id})
+            
+            embed = nextcord.Embed(
+                title="Role Settings",
+                color=nextcord.Color.blue()
+            )
+            
+            role_types = ["stream", "boost", "level"]
+            for type in role_types:
+                role_id = settings.get(f"{type}_role_id") if settings else None
+                role = interaction.guild.get_role(role_id) if role_id else None
+                embed.add_field(
+                    name=type.title(),
+                    value=role.mention if role else "Not set",
+                    inline=True
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.exception(f"Error viewing roles")
+            await interaction.followup.send("❌ Failed to fetch role settings.", ephemeral=True)
 
     @commands.Cog.listener()
-    async def on_presence_update(self, before: discord.Member, after: discord.Member):
+    async def on_presence_update(self, before: nextcord.Member, after: nextcord.Member):
         if before.bot:
             return
             
         try:
             # Check for streaming status
-            was_streaming = any(activity.type == discord.ActivityType.streaming 
+            was_streaming = any(activity.type == nextcord.ActivityType.streaming 
                               for activity in before.activities if activity)
             is_streaming = any(activity.type == discord.ActivityType.streaming 
                              for activity in after.activities if activity)
@@ -260,4 +350,20 @@ class Roles(commands.Cog):
             logger.error(f"Error handling cake day: {str(e)}")
 
 async def setup(bot: commands.Bot):
-    await bot.add_cog(Roles(bot)) 
+    if not isinstance(bot, commands.Bot):
+        raise TypeError("This cog requires a commands.Bot instance")
+        
+    required_permissions = ["manage_roles"]
+    missing_permissions = [perm for perm in required_permissions 
+                         if not getattr(bot.user.guild_permissions, perm, False)]
+    
+    if missing_permissions:
+        logger.warning(f"Missing required permissions: {', '.join(missing_permissions)}")
+        logger.warning("Some features may not work as expected")
+    
+    try:
+        await bot.add_cog(Roles(bot))
+        logger.info("Roles cog loaded successfully")
+    except Exception as e:
+        logger.exception("Failed to load Roles cog")
+        raise 
