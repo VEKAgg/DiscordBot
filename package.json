@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@discordjs/rest": "^2.4.2",
     "@discordjs/voice": "^0.18.0",
     "axios": "^1.7.9",
     "canvas": "^3.0.1",
@@ -17,7 +18,7 @@
     "discord.js": "^14.17.3",
     "dotenv": "^16.4.7",
     "moment-timezone": "^0.5.46",
-    "mongoose": "^8.9.5",
+    "mongoose": "^8.9.6",
     "node-cache": "^5.1.2",
     "node-fetch": "^2.7.0",
     "node-schedule": "^2.1.1",

@@ -20,27 +20,35 @@ module.exports = {
             });
 
             // Register slash commands
-            const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+            const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
             
             logger.info(`Started refreshing ${commands.length} application (/) commands.`);
 
-            await rest.put(
-                Routes.applicationCommands(client.user.id),
-                { body: commands }
-            );
-
-            logger.info('Successfully reloaded application (/) commands.');
+            try {
+                await rest.put(
+                    Routes.applicationCommands(client.user.id),
+                    { body: commands }
+                );
+                logger.info('Successfully reloaded application (/) commands.');
+            } catch (error) {
+                logger.error('Failed to register slash commands:', error);
+            }
 
             // Join voice channel if configured
             if (process.env.HOME_VOICE_CHANNEL && process.env.HOME_GUILD_ID) {
                 try {
-                    joinVoiceChannel({
-                        channelId: process.env.HOME_VOICE_CHANNEL,
-                        guildId: process.env.HOME_GUILD_ID,
-                        adapterCreator: client.guilds.cache.get(process.env.HOME_GUILD_ID)?.voiceAdapterCreator,
-                        selfDeaf: true
-                    });
-                    logger.info('Successfully joined home voice channel');
+                    const guild = client.guilds.cache.get(process.env.HOME_GUILD_ID);
+                    if (guild) {
+                        joinVoiceChannel({
+                            channelId: process.env.HOME_VOICE_CHANNEL,
+                            guildId: process.env.HOME_GUILD_ID,
+                            adapterCreator: guild.voiceAdapterCreator,
+                            selfDeaf: true
+                        });
+                        logger.info('Successfully joined home voice channel');
+                    } else {
+                        logger.warn('Home guild not found');
+                    }
                 } catch (error) {
                     logger.error('Failed to join voice channel:', error);
                 }
@@ -55,7 +63,10 @@ module.exports = {
                     .replace('{serverCount}', client.guilds.cache.size)
                     .replace('{activeVoice}', client.voice.adapters.size);
 
-                client.user.setActivity(text, { type: status.type });
+                client.user.setPresence({
+                    activities: [{ name: text, type: status.type }],
+                    status: 'online'
+                });
                 statusIndex = (statusIndex + 1) % config.statuses.length;
             }, config.interval);
 

@@ -111,16 +111,28 @@ process.on('unhandledRejection', (error) => {
   logger.error('Unhandled rejection:', error);
 });
 
-// Connect to MongoDB before starting the bot
-connectDB(process.env.MONGODB_URI)
-    .then(() => {
-        // Start the bot only after DB connection is established
-        client.login(process.env.TOKEN);
-    })
-    .catch(error => {
+// Modified database connection and bot startup
+const startBot = async () => {
+    try {
+        // Try to connect to MongoDB first
+        await connectDB(process.env.MONGODB_URI);
+        
+        // Only start the bot if database connection is successful
+        await client.login(process.env.DISCORD_TOKEN);
+    } catch (error) {
         logger.error('Failed to start bot:', error);
-        process.exit(1);
-    });
+        
+        // If it's a database error, you might want to start the bot anyway
+        if (error.name === 'MongoParseError' || error.name === 'MongoError') {
+            logger.warn('Starting bot without database connection...');
+            await client.login(process.env.DISCORD_TOKEN);
+        } else {
+            process.exit(1);
+        }
+    }
+};
+
+startBot();
 
 client.points = new Map();
 

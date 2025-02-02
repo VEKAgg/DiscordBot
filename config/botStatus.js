@@ -1,8 +1,16 @@
 const { ActivityType } = require('discord.js');
 
 module.exports = {
-    interval: 15000, // 15 seconds
+    interval: 15000, // Change status every 15 seconds
     statuses: [
+        {
+            type: ActivityType.Watching,
+            text: '{memberCount} members'
+        },
+        {
+            type: ActivityType.Listening,
+            text: '{serverCount} servers'
+        },
         {
             type: ActivityType.Playing,
             text: 'with {memberCount} members'

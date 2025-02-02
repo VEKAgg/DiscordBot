@@ -1,29 +1,37 @@
 const mongoose = require('mongoose');
 const { logger } = require('../utils/logger');
 
-const connectDB = async (mongoURI) => {
+const connectDB = async (uri) => {
     try {
-        await mongoose.connect(mongoURI, {
-            autoIndex: true
-        });
-        
-        logger.info('MongoDB Connected Successfully');
-        
-        mongoose.connection.on('error', (err) => {
-            logger.error('MongoDB Error:', err);
+        if (!uri || typeof uri !== 'string') {
+            throw new Error('MongoDB URI is required');
+        }
+
+        const conn = await mongoose.connect(uri, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+            serverSelectionTimeoutMS: 5000,
+            family: 4
         });
 
+        logger.info('MongoDB Connected Successfully');
+        
         mongoose.connection.on('disconnected', () => {
-            logger.warn('MongoDB Disconnected. Attempting to reconnect...');
+            logger.warn('MongoDB disconnected. Attempting to reconnect...');
+        });
+
+        mongoose.connection.on('error', (err) => {
+            logger.error('MongoDB connection error:', err);
         });
 
         mongoose.connection.on('reconnected', () => {
-            logger.info('MongoDB Reconnected Successfully');
+            logger.info('MongoDB reconnected successfully');
         });
 
+        return conn;
     } catch (error) {
         logger.error('MongoDB Connection Error:', error);
-        process.exit(1);
+        throw error;
     }
 };
 

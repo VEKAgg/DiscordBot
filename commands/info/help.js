@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 
 module.exports = {
     name: 'help',
@@ -18,36 +18,87 @@ module.exports = {
                 )),
 
     async execute(interaction) {
-        const commands = interaction.client.commands;
-        const category = interaction.options.getString('category')?.toLowerCase();
-        
-        let filteredCommands = [...commands.values()];
-        if (category) {
-            filteredCommands = filteredCommands.filter(cmd => cmd.category?.toLowerCase() === category);
-        }
+        try {
+            const commands = interaction.client.commands;
+            const category = interaction.options?.getString('category')?.toLowerCase();
+            
+            let filteredCommands = [...commands.values()];
+            if (category) {
+                filteredCommands = filteredCommands.filter(cmd => cmd.category?.toLowerCase() === category);
+            }
 
-        const embed = {
-            title: '📚 Available Commands',
-            description: category ? `Showing ${category} commands` : 'All available commands',
-            fields: [],
-            color: 0x0099ff
-        };
+            // Split commands into multiple embeds if needed
+            const embedFields = [];
+            const categorizedCommands = {};
 
-        const categorizedCommands = filteredCommands.reduce((acc, cmd) => {
-            const cat = cmd.category || 'Uncategorized';
-            if (!acc[cat]) acc[cat] = [];
-            acc[cat].push(cmd);
-            return acc;
-        }, {});
-
-        for (const [category, cmds] of Object.entries(categorizedCommands)) {
-            embed.fields.push({
-                name: category.charAt(0).toUpperCase() + category.slice(1),
-                value: cmds.map(cmd => `\`/${cmd.name}\` - ${cmd.description}`).join('\n') || 'No commands available',
-                inline: false
+            // Group commands by category
+            filteredCommands.forEach(cmd => {
+                const cat = cmd.category || 'Uncategorized';
+                if (!categorizedCommands[cat]) categorizedCommands[cat] = [];
+                categorizedCommands[cat].push(cmd);
             });
-        }
 
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+            // Create fields with length checking
+            for (const [category, cmds] of Object.entries(categorizedCommands)) {
+                let fieldValue = '';
+                let currentField = {
+                    name: category.charAt(0).toUpperCase() + category.slice(1),
+                    value: '',
+                    inline: false
+                };
+
+                cmds.forEach(cmd => {
+                    const commandText = `\`/${cmd.name}\` - ${cmd.description}\n`;
+                    if (currentField.value.length + commandText.length > 1024) {
+                        // If adding this command would exceed limit, create new field
+                        embedFields.push({ ...currentField });
+                        currentField.name = `${category} (continued)`;
+                        currentField.value = '';
+                    }
+                    currentField.value += commandText;
+                });
+
+                if (currentField.value) {
+                    embedFields.push({ ...currentField });
+                }
+            }
+
+            // Create embed
+            const embed = new EmbedBuilder()
+                .setTitle('📚 Available Commands')
+                .setDescription(category ? `Showing ${category} commands` : 'All available commands')
+                .setColor(0x0099ff);
+
+            // Add fields to embed, creating new embeds if needed
+            const embeds = [];
+            let currentEmbed = embed;
+            let currentFieldCount = 0;
+
+            embedFields.forEach(field => {
+                if (currentFieldCount >= 25) { // Discord's limit is 25 fields per embed
+                    embeds.push(currentEmbed);
+                    currentEmbed = new EmbedBuilder()
+                        .setTitle('📚 Available Commands (Continued)')
+                        .setColor(0x0099ff);
+                    currentFieldCount = 0;
+                }
+                currentEmbed.addFields(field);
+                currentFieldCount++;
+            });
+
+            embeds.push(currentEmbed);
+
+            // Send response
+            await interaction.reply({
+                embeds: embeds,
+                ephemeral: true
+            });
+        } catch (error) {
+            console.error('Error in help command:', error);
+            await interaction.reply({
+                content: 'There was an error executing this command.',
+                ephemeral: true
+            }).catch(console.error);
+        }
     }
 }; 
