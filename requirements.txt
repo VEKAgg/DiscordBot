@@ -1,0 +1,17 @@
+nextcord
+python-dotenv
+pymongo
+motor
+python-dateutil
+aiohttp
+colorama
+feedparser
+beautifulsoup4
+aiocron
+python-leetcode
+aiofiles
+pytz
+validators
+SQLAlchemy
+aiosqlite
+apscheduler
