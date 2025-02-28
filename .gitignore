@@ -32,6 +32,8 @@ env/
 logs/
 *.log
 
+data/
+
 # IDE specific files
 .idea/
 .vscode/
