@@ -171,7 +171,7 @@ class Moderation(commands.Cog):
             logger.error(f"Error clearing messages: {str(e)}")
             await ctx.send("❌ Failed to clear messages. Please check my permissions.")
 
-def setup(bot):
+async def setup(bot):
     """Setup the Moderation cog"""
-    bot.add_cog(Moderation(bot))
+    await bot.add_cog(Moderation(bot))
     return True 

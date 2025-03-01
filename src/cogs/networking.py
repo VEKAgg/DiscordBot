@@ -2,13 +2,16 @@ import nextcord
 from nextcord.ext import commands
 import logging
 from datetime import datetime
+from src.database.mongodb import users, get_or_create_user
 
 logger = logging.getLogger('VEKA.networking')
 
 class Networking(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db = bot.db
+        self.profiles = bot.mongo.profiles
+        self.connections = bot.mongo.connections
+        self.connection_requests = bot.mongo.connection_requests
 
     @commands.command(
         name="profile",
@@ -18,7 +21,7 @@ class Networking(commands.Cog):
         """View your or someone else's professional profile"""
         target = member or ctx.author
         
-        profile = await self.db.profiles.find_one({"user_id": str(target.id)})
+        profile = await self.profiles.find_one({"user_id": str(target.id)})
         
         if not profile:
             if target == ctx.author:
@@ -62,7 +65,7 @@ class Networking(commands.Cog):
         """Interactive profile setup command"""
         try:
             # Check if profile exists
-            existing_profile = await self.db.profiles.find_one({"user_id": str(ctx.author.id)})
+            existing_profile = await self.profiles.find_one({"user_id": str(ctx.author.id)})
             
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
@@ -107,7 +110,7 @@ class Networking(commands.Cog):
             profile_data["last_updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
             # Update or insert profile
-            await self.db.profiles.update_one(
+            await self.profiles.update_one(
                 {"user_id": str(ctx.author.id)},
                 {"$set": profile_data},
                 upsert=True
@@ -136,7 +139,7 @@ class Networking(commands.Cog):
 
         try:
             # Check if connection already exists
-            existing_connection = await self.db.connections.find_one({
+            existing_connection = await self.connections.find_one({
                 "$or": [
                     {"user1_id": str(ctx.author.id), "user2_id": str(member.id)},
                     {"user1_id": str(member.id), "user2_id": str(ctx.author.id)}
@@ -179,7 +182,7 @@ class Networking(commands.Cog):
             logger.error(f"Error in connect: {str(e)}")
             await ctx.send("An error occurred while sending the connection request. Please try again later.")
 
-def setup(bot):
+async def setup(bot):
     """Setup the Networking cog"""
-    bot.add_cog(Networking(bot))
+    await bot.add_cog(Networking(bot))
     return True 
