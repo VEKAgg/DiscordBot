@@ -1,37 +1,35 @@
 import nextcord
 from nextcord.ext import commands
 import logging
-from src.services.quiz_service import QuizService
-from src.config.config import QUIZ_CATEGORIES, QUIZ_DIFFICULTY_LEVELS, QUIZ_TIMEOUT_SECONDS
-from src.database.sqlite_db import get_session
+from datetime import datetime, timedelta
 import asyncio
-import random
-from datetime import datetime
-import json
+from src.services.quiz_service import QuizService
+from src.config.config import QUIZ_CATEGORIES, QUIZ_DIFFICULTY_LEVELS
 
 logger = logging.getLogger('VEKA.quiz')
 
 class Quiz(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.quiz_service = QuizService(bot)
         self.active_quizzes = {}
 
     @commands.group(name="quiz", invoke_without_command=True)
     async def quiz(self, ctx):
-        """Quiz commands for learning and testing knowledge"""
+        """Quiz commands"""
         if ctx.invoked_subcommand is None:
             embed = nextcord.Embed(
                 title="Quiz Commands",
-                description="Test your knowledge with interactive quizzes!",
+                description="Test your knowledge with our quiz system!",
                 color=nextcord.Color.blue()
             )
             embed.add_field(
                 name="Available Commands",
                 value="""
+                `!quiz categories` - List available quiz categories
                 `!quiz start [category] [difficulty]` - Start a quiz
-                `!quiz categories` - List available categories
                 `!quiz stats` - View your quiz statistics
-                `!quiz leaderboard` - Show quiz leaderboard
+                `!quiz leaderboard` - View the quiz leaderboard
                 `!quiz daily` - Take the daily challenge
                 """,
                 inline=False
@@ -40,26 +38,27 @@ class Quiz(commands.Cog):
 
     @quiz.command(name="categories")
     async def quiz_categories(self, ctx):
-        """List available quiz categories"""
+        """List available quiz categories and their statistics"""
+        stats = await self.quiz_service.get_category_stats()
+        
         embed = nextcord.Embed(
             title="Quiz Categories",
-            description="Choose a category for your quiz!",
+            description="Here are all available quiz categories and their statistics:",
             color=nextcord.Color.blue()
         )
-
-        for category in QUIZ_CATEGORIES:
-            async for session in get_session():
-                quiz_service = QuizService(session)
-                stats = await quiz_service.get_category_stats()
-                category_stats = stats.get(category, {})
-                
-                value = f"Total questions: {category_stats.get('total_questions', 0)}\n"
-                value += "Difficulty distribution:\n"
-                for diff, count in category_stats.get('difficulty_distribution', {}).items():
-                    value += f"• {diff}: {count}\n"
-                
-                embed.add_field(name=category, value=value, inline=True)
-
+        
+        for category, data in stats.items():
+            value = f"Total Questions: {data['total_questions']}\n"
+            value += "Difficulty Distribution:\n"
+            for diff, count in data['difficulty_distribution'].items():
+                value += f"• {diff}: {count}\n"
+            
+            embed.add_field(
+                name=category,
+                value=value,
+                inline=False
+            )
+        
         await ctx.send(embed=embed)
 
     @quiz.command(name="start")
@@ -69,206 +68,195 @@ class Quiz(commands.Cog):
             categories = ", ".join(QUIZ_CATEGORIES)
             await ctx.send(f"❌ Invalid category. Available categories: {categories}")
             return
-
+            
         if difficulty and difficulty not in QUIZ_DIFFICULTY_LEVELS:
             difficulties = ", ".join(QUIZ_DIFFICULTY_LEVELS)
             await ctx.send(f"❌ Invalid difficulty. Available difficulties: {difficulties}")
             return
 
-        async for session in get_session():
-            quiz_service = QuizService(session)
-            quiz = await quiz_service.get_random_quiz(category, difficulty)
-            
-            if not quiz:
-                await ctx.send("❌ No quiz questions found with these criteria.")
-                return
+        quiz = await self.quiz_service.get_random_quiz(category, difficulty)
+        if not quiz:
+            await ctx.send("❌ No quiz questions found with these criteria.")
+            return
 
-            await self.send_quiz(ctx, quiz)
+        await self.send_quiz(ctx, quiz)
 
     @quiz.command(name="stats")
     async def quiz_stats(self, ctx):
         """View your quiz statistics"""
-        async for session in get_session():
-            quiz_service = QuizService(session)
-            stats = await quiz_service.get_user_stats(str(ctx.author.id))
-
-            embed = nextcord.Embed(
-                title=f"Quiz Statistics for {ctx.author.display_name}",
-                color=nextcord.Color.blue()
-            )
-            
-            embed.add_field(
-                name="Overall Stats",
-                value=f"""
-                Total Attempts: {stats['total_attempts']}
-                Correct Answers: {stats['correct_attempts']}
-                Accuracy: {stats['accuracy']:.1f}%
-                Average Time: {stats['average_time']}s
-                """,
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Points",
-                value=f"""
-                Total Points: {stats['total_points']}
-                Quiz Score: {stats['quiz_score']}
-                """,
-                inline=False
-            )
-
-            await ctx.send(embed=embed)
+        stats = await self.quiz_service.get_user_stats(str(ctx.author.id))
+        
+        embed = nextcord.Embed(
+            title=f"{ctx.author.display_name}'s Quiz Statistics",
+            color=nextcord.Color.blue()
+        )
+        
+        # Add stats fields
+        embed.add_field(
+            name="Total Attempts",
+            value=str(stats['total_attempts']),
+            inline=True
+        )
+        embed.add_field(
+            name="Correct Answers",
+            value=str(stats['correct_attempts']),
+            inline=True
+        )
+        embed.add_field(
+            name="Accuracy",
+            value=f"{stats['accuracy']:.1f}%",
+            inline=True
+        )
+        embed.add_field(
+            name="Average Time",
+            value=f"{stats['average_time']:.1f}s",
+            inline=True
+        )
+        embed.add_field(
+            name="Total Points",
+            value=str(stats['total_points']),
+            inline=True
+        )
+        embed.add_field(
+            name="Quiz Score",
+            value=str(stats['quiz_score']),
+            inline=True
+        )
+        
+        await ctx.send(embed=embed)
 
     @quiz.command(name="leaderboard")
     async def quiz_leaderboard(self, ctx):
-        """Show quiz leaderboard"""
-        async for session in get_session():
-            quiz_service = QuizService(session)
-            leaderboard = await quiz_service.get_leaderboard()
-
-            embed = nextcord.Embed(
-                title="Quiz Leaderboard",
-                description="Top quiz performers",
-                color=nextcord.Color.gold()
+        """View the quiz leaderboard"""
+        leaderboard = await self.quiz_service.get_leaderboard()
+        
+        embed = nextcord.Embed(
+            title="Quiz Leaderboard",
+            description="Top quiz performers:",
+            color=nextcord.Color.gold()
+        )
+        
+        for i, entry in enumerate(leaderboard, 1):
+            user = self.bot.get_user(int(entry['discord_id']))
+            name = user.display_name if user else f"User {entry['discord_id']}"
+            
+            embed.add_field(
+                name=f"{i}. {name}",
+                value=f"Score: {entry['quiz_score']} | Points: {entry['total_points']}",
+                inline=False
             )
-
-            for i, entry in enumerate(leaderboard, 1):
-                user = self.bot.get_user(int(entry['discord_id']))
-                name = user.display_name if user else f"User {entry['discord_id']}"
-                
-                embed.add_field(
-                    name=f"#{i} {name}",
-                    value=f"""
-                    Quiz Score: {entry['quiz_score']}
-                    Total Points: {entry['total_points']}
-                    """,
-                    inline=False
-                )
-
-            await ctx.send(embed=embed)
+        
+        await ctx.send(embed=embed)
 
     @quiz.command(name="daily")
     async def quiz_daily(self, ctx):
         """Take the daily challenge quiz"""
-        async for session in get_session():
-            quiz_service = QuizService(session)
-            quiz, is_new = await quiz_service.get_daily_challenge()
-
-            if not quiz:
-                await ctx.send("❌ No daily challenge available right now.")
-                return
-
-            embed = nextcord.Embed(
-                title="🌟 Daily Challenge 🌟",
-                description="Test your knowledge with today's challenge!",
-                color=nextcord.Color.gold()
-            )
-            await ctx.send(embed=embed)
-
-            await self.send_quiz(ctx, quiz, is_daily=True)
-
-    async def send_quiz(self, ctx, quiz, is_daily=False):
-        """Send a quiz question and handle responses"""
-        if str(ctx.author.id) in self.active_quizzes:
-            await ctx.send("❌ You already have an active quiz! Complete it first.")
+        quiz, is_new = await self.quiz_service.get_daily_challenge()
+        if not quiz:
+            await ctx.send("❌ No daily challenge available at the moment.")
             return
 
-        self.active_quizzes[str(ctx.author.id)] = quiz.id
-
-        # Prepare answers
-        wrong_answers = json.loads(quiz.wrong_answers)
-        all_answers = [quiz.correct_answer] + wrong_answers
-        random.shuffle(all_answers)
-        correct_index = all_answers.index(quiz.correct_answer)
-
-        # Create embed
         embed = nextcord.Embed(
-            title=f"Quiz Question - {quiz.category}",
-            description=quiz.question,
+            title="Daily Challenge",
+            description="This is today's challenge question!",
+            color=nextcord.Color.gold()
+        )
+        await ctx.send(embed=embed)
+        
+        await self.send_quiz(ctx, quiz, is_daily=True)
+
+    async def send_quiz(self, ctx, quiz, is_daily=False):
+        """Send a quiz question and handle the response"""
+        if str(ctx.author.id) in self.active_quizzes:
+            await ctx.send("❌ You already have an active quiz. Please finish it first.")
+            return
+
+        self.active_quizzes[str(ctx.author.id)] = quiz['_id']
+        
+        # Create quiz embed
+        embed = nextcord.Embed(
+            title=f"Quiz Question {'(Daily Challenge)' if is_daily else ''}",
+            description=quiz['question'],
             color=nextcord.Color.blue()
         )
-
-        # Add answers with letters
-        answer_text = ""
-        for i, answer in enumerate(all_answers):
-            letter = chr(65 + i)  # A, B, C, D...
-            answer_text += f"{letter}. {answer}\n"
-        embed.add_field(name="Answers", value=answer_text, inline=False)
-
-        if is_daily:
-            embed.set_footer(text="⭐ This is today's daily challenge! ⭐")
-
-        # Send question
+        
+        # Add category and difficulty fields
+        embed.add_field(name="Category", value=quiz['category'], inline=True)
+        embed.add_field(name="Difficulty", value=quiz['difficulty'], inline=True)
+        
+        # Prepare answer options
+        options = quiz['wrong_answers'] + [quiz['correct_answer']]
+        import random
+        random.shuffle(options)
+        
+        # Add options to embed
+        option_emojis = ['🇦', '🇧', '🇨', '🇩']
+        option_text = ""
+        for i, option in enumerate(options):
+            option_text += f"{option_emojis[i]} {option}\n"
+        embed.add_field(name="Options", value=option_text, inline=False)
+        
+        # Send quiz and add reactions
+        message = await ctx.send(embed=embed)
         start_time = datetime.utcnow()
-        question_msg = await ctx.send(embed=embed)
-
-        # Add reaction options
-        for i in range(len(all_answers)):
-            await question_msg.add_reaction(chr(127462 + i))  # 🇦, 🇧, 🇨, 🇩...
+        
+        for emoji in option_emojis[:len(options)]:
+            await message.add_reaction(emoji)
 
         def check(reaction, user):
-            return (user == ctx.author and
-                   str(reaction.emoji) in [chr(127462 + i) for i in range(len(all_answers))])
+            return (
+                user == ctx.author and
+                str(reaction.emoji) in option_emojis[:len(options)] and
+                reaction.message.id == message.id
+            )
 
         try:
-            reaction, user = await self.bot.wait_for(
-                'reaction_add',
-                timeout=QUIZ_TIMEOUT_SECONDS,
-                check=check
+            reaction, user = await self.bot.wait_for('reaction_add', timeout=30.0, check=check)
+            end_time = datetime.utcnow()
+            time_taken = (end_time - start_time).total_seconds()
+            
+            # Get selected answer
+            selected_index = option_emojis.index(str(reaction.emoji))
+            selected_answer = options[selected_index]
+            is_correct = selected_answer == quiz['correct_answer']
+            
+            # Record the attempt
+            await self.quiz_service.record_attempt(
+                str(ctx.author.id),
+                str(quiz['_id']),
+                is_correct,
+                time_taken
             )
-
-            # Calculate time taken
-            time_taken = (datetime.utcnow() - start_time).total_seconds()
-
-            # Check if answer is correct
-            user_answer_index = ord(str(reaction.emoji)[-1]) - 127462
-            is_correct = user_answer_index == correct_index
-
-            # Record attempt
-            async for session in get_session():
-                quiz_service = QuizService(session)
-                await quiz_service.record_attempt(
-                    str(ctx.author.id),
-                    quiz.id,
-                    is_correct,
-                    time_taken
-                )
-
-            # Send result
+            
+            # Create result embed
             result_embed = nextcord.Embed(
                 title="Quiz Result",
-                description="✅ Correct!" if is_correct else "❌ Wrong!",
                 color=nextcord.Color.green() if is_correct else nextcord.Color.red()
             )
-
-            result_embed.add_field(
-                name="Correct Answer",
-                value=f"{chr(65 + correct_index)}. {quiz.correct_answer}",
-                inline=False
-            )
-
-            if quiz.explanation:
-                result_embed.add_field(
-                    name="Explanation",
-                    value=quiz.explanation,
-                    inline=False
-                )
-
-            result_embed.add_field(
-                name="Time Taken",
-                value=f"{time_taken:.1f} seconds",
-                inline=True
-            )
-
+            
+            if is_correct:
+                result_embed.description = f"✅ Correct! You answered in {time_taken:.1f} seconds."
+            else:
+                result_embed.description = f"❌ Wrong! The correct answer was: {quiz['correct_answer']}"
+            
+            if quiz.get('explanation'):
+                result_embed.add_field(name="Explanation", value=quiz['explanation'], inline=False)
+            
             await ctx.send(embed=result_embed)
-
+            
         except asyncio.TimeoutError:
-            await ctx.send(f"⏰ Time's up! The correct answer was: {quiz.correct_answer}")
-
+            await ctx.send("❌ Time's up! You took too long to answer.")
+            await self.quiz_service.record_attempt(
+                str(ctx.author.id),
+                str(quiz['_id']),
+                False,
+                30.0
+            )
+        
         finally:
             del self.active_quizzes[str(ctx.author.id)]
 
 async def setup(bot):
     """Setup the Quiz cog"""
-    await bot.add_cog(Quiz(bot))
+    bot.add_cog(Quiz(bot))
     return True 
