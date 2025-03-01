@@ -141,10 +141,10 @@ class Fun(commands.Cog):
             logger.error(f"Error in choose command: {str(e)}")
             await ctx.send("❌ Error processing your choices. Make sure to separate them with commas!")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Fun cog"""
     if bot is not None:
-        await bot.add_cog(Fun(bot))
+        bot.add_cog(Fun(bot))
         logging.getLogger('VEKA').info("Fun cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Fun cog setup")

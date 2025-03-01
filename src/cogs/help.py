@@ -98,10 +98,10 @@ class Help(commands.Cog):
             logger.error(f"Error in help command: {str(e)}")
             await ctx.send("An error occurred while showing the help message. Please try again later.")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Help cog"""
     if bot is not None:
-        await bot.add_cog(Help(bot))
+        bot.add_cog(Help(bot))
         logging.getLogger('VEKA').info("Help cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Help cog setup")

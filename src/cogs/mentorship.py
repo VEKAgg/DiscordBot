@@ -294,10 +294,10 @@ class Mentorship(commands.Cog):
             logger.error(f"Error getting mentorship stats: {str(e)}")
             await ctx.send("❌ An error occurred while fetching mentorship statistics.")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Mentorship cog"""
     if bot is not None:
-        await bot.add_cog(Mentorship(bot))
+        bot.add_cog(Mentorship(bot))
         logging.getLogger('VEKA').info("Mentorship cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Mentorship cog setup")

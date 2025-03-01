@@ -5,7 +5,7 @@ import logging
 from dotenv import load_dotenv
 import motor.motor_asyncio
 from datetime import datetime
-import importlib.util
+import importlib
 import sys
 from src.database.mongodb import init_db
 
@@ -39,37 +39,54 @@ mongo_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI'))
 bot.mongo = mongo_client.veka_bot
 bot.db = bot.mongo  # Add this line to make db accessible to cogs
 
-def load_cog_directly(bot, file_path):
-    """Load a cog directly by importing its module and calling setup"""
+def load_cog(cog_path):
+    """Load a cog from a file path"""
     try:
-        # Get the module name from the file path
-        if file_path.startswith('./'):
-            file_path = file_path[2:]
-        
         # Convert path to module name
-        module_name = file_path.replace('/', '.').replace('\\', '.').replace('.py', '')
+        if cog_path.startswith('./'):
+            cog_path = cog_path[2:]
+        
+        module_name = cog_path.replace('/', '.').replace('\\', '.').replace('.py', '')
         
         # Import the module
-        spec = importlib.util.spec_from_file_location(module_name, file_path)
-        if spec is None:
-            logger.error(f"Could not find module spec for {file_path}")
-            return False
-        
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-        
-        # Call the setup function
-        if hasattr(module, 'setup'):
-            setup_func = getattr(module, 'setup')
-            setup_func(bot)
-            logger.info(f"Loaded cog from {file_path}")
-            return True
+        if module_name in sys.modules:
+            # Reload the module if it's already loaded
+            module = importlib.reload(sys.modules[module_name])
         else:
-            logger.error(f"No setup function found in {file_path}")
-            return False
+            # Import the module for the first time
+            module = importlib.import_module(module_name)
+        
+        # Try different class name formats
+        class_names = [
+            # Standard format: capitalize the last part of the module name
+            module_name.split('.')[-1].capitalize(),
+            
+            # CamelCase format: capitalize each word in the last part
+            ''.join(word.capitalize() for word in module_name.split('.')[-1].split('_')),
+            
+            # Specific names for known modules
+            'WorkshopManager' if 'workshop_manager' in module_name else None,
+            'PortfolioManager' if 'portfolio_manager' in module_name else None,
+            'GamificationManager' if 'gamification_manager' in module_name else None
+        ]
+        
+        # Filter out None values
+        class_names = [name for name in class_names if name]
+        
+        # Try each class name
+        for class_name in class_names:
+            if hasattr(module, class_name):
+                # Create an instance of the cog and add it to the bot
+                cog_class = getattr(module, class_name)
+                bot.add_cog(cog_class(bot))
+                logger.info(f"Loaded cog: {module_name}")
+                return True
+        
+        # If we get here, none of the class names worked
+        logger.error(f"Could not find a valid cog class in {module_name}. Tried: {', '.join(class_names)}")
+        return False
     except Exception as e:
-        logger.error(f"Failed to load cog from {file_path}: {str(e)}")
+        logger.error(f"Failed to load cog {cog_path}: {str(e)}")
         return False
 
 @bot.event
@@ -83,14 +100,14 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
     
-    # Load all cogs directly
+    # Load cogs
     cogs_loaded = 0
     
     # Load cogs from main directory
     for filename in os.listdir('./src/cogs'):
         if filename.endswith('.py') and not filename.startswith('__'):
-            file_path = os.path.join('./src/cogs', filename)
-            if load_cog_directly(bot, file_path):
+            cog_path = f'src.cogs.{filename[:-3]}'
+            if load_cog(cog_path):
                 cogs_loaded += 1
     
     # Load cogs from subdirectories
@@ -100,11 +117,9 @@ async def on_ready():
         if os.path.exists(subdir_path):
             for filename in os.listdir(subdir_path):
                 if filename.endswith('.py') and not filename.startswith('__'):
-                    file_path = os.path.join(subdir_path, filename)
-                    if load_cog_directly(bot, file_path):
+                    cog_path = f'src.cogs.{subdir}.{filename[:-3]}'
+                    if load_cog(cog_path):
                         cogs_loaded += 1
-    
-    logger.info(f"Loaded {cogs_loaded} cogs")
     
     # Set bot status
     await bot.change_presence(
@@ -113,6 +128,8 @@ async def on_ready():
             name="your career growth! | !help"
         )
     )
+    
+    logger.info(f"Loaded {cogs_loaded} cogs")
 
 @bot.event
 async def on_member_join(member):
@@ -168,13 +185,6 @@ async def on_command_error(ctx, error):
     else:
         logger.error(f'Error occurred: {str(error)}')
         await ctx.send("❌ An error occurred while processing your command.")
-
-# Basic utility commands
-@bot.command(name="ping", description="Check bot's latency")
-async def ping(ctx):
-    """Check the bot's response time"""
-    latency = round(bot.latency * 1000)
-    await ctx.send(f"🏓 Pong! Latency: {latency}ms")
 
 # Run the bot
 if __name__ == '__main__':

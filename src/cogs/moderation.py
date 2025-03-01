@@ -171,10 +171,10 @@ class Moderation(commands.Cog):
             logger.error(f"Error clearing messages: {str(e)}")
             await ctx.send("❌ Failed to clear messages. Please check my permissions.")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Moderation cog"""
     if bot is not None:
-        await bot.add_cog(Moderation(bot))
+        bot.add_cog(Moderation(bot))
         logging.getLogger('VEKA').info("Moderation cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Moderation cog setup")

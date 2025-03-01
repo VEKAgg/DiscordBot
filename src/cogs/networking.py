@@ -182,10 +182,10 @@ class Networking(commands.Cog):
             logger.error(f"Error in connect: {str(e)}")
             await ctx.send("An error occurred while sending the connection request. Please try again later.")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Networking cog"""
     if bot is not None:
-        await bot.add_cog(Networking(bot))
+        bot.add_cog(Networking(bot))
         logging.getLogger('VEKA').info("Networking cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Networking cog setup")
