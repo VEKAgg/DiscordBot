@@ -136,5 +136,8 @@ class Feeds(commands.Cog):
 
 async def setup(bot):
     """Setup the Feeds cog"""
-    await bot.add_cog(Feeds(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Feeds(bot))
+        logging.getLogger('VEKA').info("Feeds cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Feeds cog setup") 

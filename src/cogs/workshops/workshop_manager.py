@@ -210,5 +210,8 @@ class WorkshopManager(commands.Cog):
 
 async def setup(bot):
     """Setup the WorkshopManager cog"""
-    await bot.add_cog(WorkshopManager(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(WorkshopManager(bot))
+        logging.getLogger('VEKA').info("WorkshopManager cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in WorkshopManager cog setup")

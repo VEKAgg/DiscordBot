@@ -258,5 +258,8 @@ class Quiz(commands.Cog):
 
 async def setup(bot):
     """Setup the Quiz cog"""
-    bot.add_cog(Quiz(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Quiz(bot))
+        logging.getLogger('VEKA').info("Quiz cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Quiz cog setup")

@@ -173,5 +173,8 @@ class Moderation(commands.Cog):
 
 async def setup(bot):
     """Setup the Moderation cog"""
-    await bot.add_cog(Moderation(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Moderation(bot))
+        logging.getLogger('VEKA').info("Moderation cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Moderation cog setup")

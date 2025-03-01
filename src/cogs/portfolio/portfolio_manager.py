@@ -219,5 +219,8 @@ class PortfolioManager(commands.Cog):
 
 async def setup(bot):
     """Setup the PortfolioManager cog"""
-    await bot.add_cog(PortfolioManager(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(PortfolioManager(bot))
+        logging.getLogger('VEKA').info("PortfolioManager cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in PortfolioManager cog setup")
