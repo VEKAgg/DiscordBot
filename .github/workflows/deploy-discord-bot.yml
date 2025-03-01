@@ -106,39 +106,57 @@ jobs:
       - name: Health check
         shell: bash
         run: |
-          # Wait for the bot to start
-          sleep 60
+          # Define parameters for waiting loops
+          MAX_WAIT=60
+          INTERVAL=5
           
-          # Check if the bot container is running
-          if [ "${CONTAINER_CMD}" = "podman" ]; then
-            if podman ps | grep -q "veka-discord-bot"; then
-              echo "Health check passed - Bot container is running"
+          # Wait for the bot container to start
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              if podman ps | grep -q "veka-discord-bot"; then
+                echo "Health check passed - Bot container is running"
+                break
+              fi
             else
-              echo "Health check failed - Bot container is not running"
-              exit 1
+              if docker ps | grep -q "veka-discord-bot"; then
+                echo "Health check passed - Bot container is running"
+                break
+              fi
             fi
-          else
-            if docker ps | grep -q "veka-discord-bot"; then
-              echo "Health check passed - Bot container is running"
-            else
-              echo "Health check failed - Bot container is not running"
-              exit 1
-            fi
+            echo "Waiting for bot container to start... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+          
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "Health check failed - Bot container did not start within $MAX_WAIT seconds"
+            exit 1
           fi
           
-          # Check logs for successful connection
-          if [ "${CONTAINER_CMD}" = "podman" ]; then
-            if podman logs veka-discord-bot | grep -q "VEKA Bot#6885 has connected to Discord!"; then
-              echo "Health check passed - Bot connected to Discord"
+          # Wait for the bot to connect to Discord
+          ELAPSED=0
+          SUCCESS=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              if podman logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+                echo "Health check passed - Bot connected to Discord"
+                SUCCESS=1
+                break
+              fi
             else
-              echo "Health check failed - Bot did not connect to Discord"
-              exit 1
+              if docker logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+                echo "Health check passed - Bot connected to Discord"
+                SUCCESS=1
+                break
+              fi
             fi
-          else
-            if docker logs veka-discord-bot | grep -q "VEKA Bot#6885 has connected to Discord!"; then
-              echo "Health check passed - Bot connected to Discord"
-            else
-              echo "Health check failed - Bot did not connect to Discord"
-              exit 1
-            fi
-          fi 
+            echo "Waiting for bot to connect to Discord... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+          
+          if [ $SUCCESS -ne 1 ]; then
+            echo "Health check failed - Bot did not connect to Discord within $MAX_WAIT seconds"
+            exit 1
+          fi
