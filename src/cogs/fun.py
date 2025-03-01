@@ -141,7 +141,7 @@ class Fun(commands.Cog):
             logger.error(f"Error in choose command: {str(e)}")
             await ctx.send("❌ Error processing your choices. Make sure to separate them with commas!")
 
-async def setup(bot):
+def setup(bot):
     """Setup the Fun cog"""
-    await bot.add_cog(Fun(bot))
+    bot.add_cog(Fun(bot))
     return True 

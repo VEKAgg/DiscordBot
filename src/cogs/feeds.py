@@ -134,7 +134,7 @@ class Feeds(commands.Cog):
         
         return embed
 
-async def setup(bot):
+def setup(bot):
     """Setup the Feeds cog"""
-    await bot.add_cog(Feeds(bot))
+    bot.add_cog(Feeds(bot))
     return True 

@@ -10,7 +10,7 @@ class Networking(commands.Cog):
         self.bot = bot
         self.db = bot.db
 
-    @commands.hybrid_command(
+    @commands.command(
         name="profile",
         description="Set up or view your professional profile"
     )
@@ -54,7 +54,7 @@ class Networking(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="setupprofile",
         description="Set up your professional profile"
     )
@@ -124,7 +124,7 @@ class Networking(commands.Cog):
             logger.error(f"Error in setupprofile: {str(e)}")
             await ctx.send("An error occurred while setting up your profile. Please try again later.")
 
-    @commands.hybrid_command(
+    @commands.command(
         name="connect",
         description="Send a connection request to another member"
     )
