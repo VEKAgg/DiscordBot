@@ -107,7 +107,7 @@ jobs:
         shell: bash
         run: |
           # Wait for the bot to start
-          sleep 20
+          sleep 60
           
           # Check if the bot container is running
           if [ "${CONTAINER_CMD}" = "podman" ]; then
