@@ -143,5 +143,8 @@ class Fun(commands.Cog):
 
 async def setup(bot):
     """Setup the Fun cog"""
-    await bot.add_cog(Fun(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Fun(bot))
+        logging.getLogger('VEKA').info("Fun cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Fun cog setup")

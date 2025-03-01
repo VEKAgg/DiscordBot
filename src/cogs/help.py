@@ -100,5 +100,8 @@ class Help(commands.Cog):
 
 async def setup(bot):
     """Setup the Help cog"""
-    await bot.add_cog(Help(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Help(bot))
+        logging.getLogger('VEKA').info("Help cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Help cog setup")

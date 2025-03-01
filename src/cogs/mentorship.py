@@ -296,5 +296,8 @@ class Mentorship(commands.Cog):
 
 async def setup(bot):
     """Setup the Mentorship cog"""
-    await bot.add_cog(Mentorship(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Mentorship(bot))
+        logging.getLogger('VEKA').info("Mentorship cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Mentorship cog setup")

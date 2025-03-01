@@ -81,10 +81,10 @@ class GamificationManager(commands.Cog):
         return points, new_level > old_level
 
     @commands.command(
-        name="profile",
+        name="gameprofile",
         description="View your gamification profile"
     )
-    async def profile(self, ctx, member: nextcord.Member = None):
+    async def gameprofile(self, ctx, member: nextcord.Member = None):
         """View your or someone else's gamification profile"""
         target = member or ctx.author
         user = await self.get_or_create_user(str(target.id))
@@ -161,5 +161,8 @@ class GamificationManager(commands.Cog):
 
 async def setup(bot):
     """Setup the GamificationManager cog"""
-    await bot.add_cog(GamificationManager(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(GamificationManager(bot))
+        logging.getLogger('VEKA').info("GamificationManager cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in GamificationManager cog setup")

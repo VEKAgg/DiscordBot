@@ -184,5 +184,8 @@ class Networking(commands.Cog):
 
 async def setup(bot):
     """Setup the Networking cog"""
-    await bot.add_cog(Networking(bot))
-    return True 
+    if bot is not None:
+        await bot.add_cog(Networking(bot))
+        logging.getLogger('VEKA').info("Networking cog loaded successfully")
+    else:
+        logging.getLogger('VEKA').error("Bot is None in Networking cog setup")
