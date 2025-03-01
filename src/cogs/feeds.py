@@ -134,10 +134,10 @@ class Feeds(commands.Cog):
         
         return embed
 
-async def setup(bot):
+def setup(bot):
     """Setup the Feeds cog"""
     if bot is not None:
-        await bot.add_cog(Feeds(bot))
+        bot.add_cog(Feeds(bot))
         logging.getLogger('VEKA').info("Feeds cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in Feeds cog setup") 

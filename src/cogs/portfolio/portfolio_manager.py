@@ -217,10 +217,10 @@ class PortfolioManager(commands.Cog):
             logger.error(f"Error searching projects: {str(e)}")
             await ctx.send("❌ An error occurred while searching projects.")
 
-async def setup(bot):
+def setup(bot):
     """Setup the PortfolioManager cog"""
     if bot is not None:
-        await bot.add_cog(PortfolioManager(bot))
+        bot.add_cog(PortfolioManager(bot))
         logging.getLogger('VEKA').info("PortfolioManager cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in PortfolioManager cog setup")

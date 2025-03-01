@@ -159,10 +159,10 @@ class GamificationManager(commands.Cog):
         # Award points for daily activity (implement cooldown if needed)
         await self.award_points(str(message.author.id), 'daily_activity')
 
-async def setup(bot):
+def setup(bot):
     """Setup the GamificationManager cog"""
     if bot is not None:
-        await bot.add_cog(GamificationManager(bot))
+        bot.add_cog(GamificationManager(bot))
         logging.getLogger('VEKA').info("GamificationManager cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in GamificationManager cog setup")

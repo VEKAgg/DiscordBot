@@ -208,10 +208,10 @@ class WorkshopManager(commands.Cog):
             except Exception as e:
                 logger.error(f"Failed to send reminder to user {participant_id}: {str(e)}")
 
-async def setup(bot):
+def setup(bot):
     """Setup the WorkshopManager cog"""
     if bot is not None:
-        await bot.add_cog(WorkshopManager(bot))
+        bot.add_cog(WorkshopManager(bot))
         logging.getLogger('VEKA').info("WorkshopManager cog loaded successfully")
     else:
         logging.getLogger('VEKA').error("Bot is None in WorkshopManager cog setup")
