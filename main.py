@@ -32,6 +32,10 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
+# Initialize MongoDB client
+mongo_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI'))
+bot.mongo = mongo_client.veka_bot
+
 @bot.event
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
@@ -47,10 +51,25 @@ async def on_ready():
     for filename in os.listdir('./src/cogs'):
         if filename.endswith('.py'):
             try:
-                await bot.load_extension(f'src.cogs.{filename[:-3]}')
+                cog_name = f'src.cogs.{filename[:-3]}'
+                await bot.load_extension(cog_name)
                 logger.info(f'Loaded cog: {filename}')
             except Exception as e:
                 logger.error(f'Failed to load cog {filename}: {str(e)}')
+
+    # Also load cogs from subdirectories
+    cog_subdirs = ['workshops', 'portfolio', 'gamification']
+    for subdir in cog_subdirs:
+        subdir_path = f'./src/cogs/{subdir}'
+        if os.path.exists(subdir_path):
+            for filename in os.listdir(subdir_path):
+                if filename.endswith('.py'):
+                    try:
+                        cog_name = f'src.cogs.{subdir}.{filename[:-3]}'
+                        await bot.load_extension(cog_name)
+                        logger.info(f'Loaded cog: {subdir}/{filename}')
+                    except Exception as e:
+                        logger.error(f'Failed to load cog {subdir}/{filename}: {str(e)}')
 
     # Set bot status
     await bot.change_presence(

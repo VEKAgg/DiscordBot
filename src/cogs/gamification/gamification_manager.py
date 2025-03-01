@@ -159,7 +159,7 @@ class GamificationManager(commands.Cog):
         # Award points for daily activity (implement cooldown if needed)
         await self.award_points(str(message.author.id), 'daily_activity')
 
-def setup(bot):
+async def setup(bot):
     """Setup the GamificationManager cog"""
-    bot.add_cog(GamificationManager(bot))
+    await bot.add_cog(GamificationManager(bot))
     return True 

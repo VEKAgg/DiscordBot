@@ -98,7 +98,7 @@ class Help(commands.Cog):
             logger.error(f"Error in help command: {str(e)}")
             await ctx.send("An error occurred while showing the help message. Please try again later.")
 
-def setup(bot):
+async def setup(bot):
     """Setup the Help cog"""
-    bot.add_cog(Help(bot))
+    await bot.add_cog(Help(bot))
     return True 
