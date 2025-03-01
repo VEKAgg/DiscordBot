@@ -128,14 +128,14 @@ jobs:
           
           # Check logs for successful connection
           if [ "${CONTAINER_CMD}" = "podman" ]; then
-            if podman logs veka-discord-bot | grep -q "connected to Discord"; then
+            if podman logs veka-discord-bot | grep -q "VEKA Bot#6885 has connected to Discord!"; then
               echo "Health check passed - Bot connected to Discord"
             else
               echo "Health check failed - Bot did not connect to Discord"
               exit 1
             fi
           else
-            if docker logs veka-discord-bot | grep -q "connected to Discord"; then
+            if docker logs veka-discord-bot | grep -q "VEKA Bot#6885 has connected to Discord!"; then
               echo "Health check passed - Bot connected to Discord"
             else
               echo "Health check failed - Bot did not connect to Discord"
