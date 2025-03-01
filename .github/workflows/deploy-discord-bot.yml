@@ -13,68 +13,94 @@ jobs:
     env:
       DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      CONTAINER_ENGINE: ${{ secrets.CONTAINER_ENGINE || 'docker' }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-          cache: 'pip'
-
-      - name: Install dependencies
+      - name: Set up container engine
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          # Check which container engine to use (docker or podman)
+          CONTAINER_CMD="${CONTAINER_ENGINE}"
+          echo "Using container engine: ${CONTAINER_CMD}"
+          echo "CONTAINER_CMD=${CONTAINER_CMD}" >> $GITHUB_ENV
           
-      - name: Create logs directory
-        run: mkdir -p logs
-        
+          # Install container engine if not available
+          if ! command -v ${CONTAINER_CMD} &> /dev/null; then
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              echo "Installing Podman..."
+              sudo apt-get update
+              sudo apt-get install -y podman
+            else
+              echo "Installing Docker..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl enable --now docker
+            fi
+          fi
+          
+          # Install Docker Compose if using Docker and not installed
+          if [ "${CONTAINER_CMD}" = "docker" ] && ! command -v docker-compose &> /dev/null; then
+            echo "Installing Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+          fi
+        shell: bash
+
       - name: Create .env file
         run: |
           echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
           echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
-        
-      - name: Start or restart PM2 process
+          echo "REDIS_URL=redis://redis:6379" >> .env
+        shell: bash
+
+      - name: Build and deploy with Docker/Podman
         run: |
-          # Check if PM2 is installed globally; if not, install it
-          if ! command -v pm2 &> /dev/null; then
-            npm install -g pm2
-          fi
+          # Create logs directory if it doesn't exist
+          mkdir -p logs
           
-          # Create PM2 config file if it doesn't exist
-          if [ ! -f "discord-bot.json" ]; then
-            cat > discord-bot.json << EOF
-            {
-              "apps": [
-                {
-                  "name": "veka-discord-bot",
-                  "script": "main.py",
-                  "interpreter": "python",
-                  "instances": 1,
-                  "autorestart": true,
-                  "watch": false,
-                  "max_memory_restart": "1G",
-                  "env": {
-                    "NODE_ENV": "production"
-                  }
-                }
-              ]
-            }
-            EOF
-          fi
-          
-          # Use a direct check for process info instead of grep on pm2 list
-          if pm2 info veka-discord-bot > /dev/null 2>&1; then
-            pm2 restart veka-discord-bot --update-env
+          if [ "${CONTAINER_CMD}" = "podman" ]; then
+            # Using Podman
+            echo "Building and deploying with Podman..."
+            
+            # Check if pod exists and remove it if it does
+            if podman pod exists veka-bot-pod; then
+              podman pod rm -f veka-bot-pod
+            fi
+            
+            # Create pod
+            podman pod create --name veka-bot-pod
+            
+            # Build and run containers
+            podman build -t veka-discord-bot:latest .
+            
+            # Run Redis
+            podman run -d --pod veka-bot-pod \
+              --name veka-redis \
+              -v redis-data:/data \
+              redis:alpine
+            
+            # Run Discord Bot
+            podman run -d --pod veka-bot-pod \
+              --name veka-discord-bot \
+              -v ./logs:/app/logs \
+              -v ./.env:/app/.env:ro \
+              -e PYTHONUNBUFFERED=1 \
+              veka-discord-bot:latest
+            
           else
-            pm2 start discord-bot.json --update-env
+            # Using Docker
+            echo "Building and deploying with Docker..."
+            
+            # Check if containers are running and stop them
+            if docker-compose ps | grep -q "veka"; then
+              docker-compose down
+            fi
+            
+            # Build and start containers
+            docker-compose up -d --build
           fi
-          
-          # Save the PM2 process list
-          pm2 save
         shell: bash
 
       - name: Health check
@@ -83,18 +109,36 @@ jobs:
           # Wait for the bot to start
           sleep 10
           
-          # Check if the bot process is running
-          if pm2 info veka-discord-bot | grep -q "online"; then
-            echo "Health check passed - Bot is running"
+          # Check if the bot container is running
+          if [ "${CONTAINER_CMD}" = "podman" ]; then
+            if podman ps | grep -q "veka-discord-bot"; then
+              echo "Health check passed - Bot container is running"
+            else
+              echo "Health check failed - Bot container is not running"
+              exit 1
+            fi
           else
-            echo "Health check failed - Bot is not running"
-            exit 1
+            if docker ps | grep -q "veka-discord-bot"; then
+              echo "Health check passed - Bot container is running"
+            else
+              echo "Health check failed - Bot container is not running"
+              exit 1
+            fi
           fi
           
           # Check logs for successful connection
-          if grep -q "has connected to Discord" logs/bot.log; then
-            echo "Health check passed - Bot connected to Discord"
+          if [ "${CONTAINER_CMD}" = "podman" ]; then
+            if podman logs veka-discord-bot | grep -q "has connected to Discord"; then
+              echo "Health check passed - Bot connected to Discord"
+            else
+              echo "Health check failed - Bot did not connect to Discord"
+              exit 1
+            fi
           else
-            echo "Health check failed - Bot did not connect to Discord"
-            exit 1
+            if docker logs veka-discord-bot | grep -q "has connected to Discord"; then
+              echo "Health check passed - Bot connected to Discord"
+            else
+              echo "Health check failed - Bot did not connect to Discord"
+              exit 1
+            fi
           fi 
