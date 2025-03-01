@@ -27,6 +27,8 @@ A professional networking and community development Discord bot designed to crea
 
 ## Setup Instructions
 
+### Standard Setup
+
 1. **Clone the Repository**
    ```bash
    git clone <repository-url>
@@ -43,11 +45,82 @@ A professional networking and community development Discord bot designed to crea
    ```
    DISCORD_TOKEN=your_discord_bot_token
    MONGODB_URI=your_mongodb_connection_string
+   REDIS_URL=redis://127.0.0.1:6379
    ```
 
 4. **Run the Bot**
    ```bash
    python main.py
+   ```
+
+### Docker Setup
+
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd DiscordBot
+   ```
+
+2. **Environment Setup**
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   REDIS_URL=redis://redis:6379
+   ```
+
+3. **Build and Run with Docker Compose**
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Check Logs**
+   ```bash
+   docker logs veka-discord-bot
+   ```
+
+### Podman Setup
+
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd DiscordBot
+   ```
+
+2. **Environment Setup**
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   REDIS_URL=redis://localhost:6379
+   ```
+
+3. **Create Pod and Run Containers**
+   ```bash
+   # Create pod
+   podman pod create --name veka-bot-pod
+   
+   # Build bot image
+   podman build -t veka-discord-bot:latest .
+   
+   # Run Redis
+   podman run -d --pod veka-bot-pod \
+     --name veka-redis \
+     -v redis-data:/data \
+     redis:alpine
+   
+   # Run Discord Bot
+   podman run -d --pod veka-bot-pod \
+     --name veka-discord-bot \
+     -v ./logs:/app/logs \
+     -v ./.env:/app/.env:ro \
+     -e PYTHONUNBUFFERED=1 \
+     veka-discord-bot:latest
+   ```
+
+4. **Check Logs**
+   ```bash
+   podman logs veka-discord-bot
    ```
 
 ## Available Commands
