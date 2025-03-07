@@ -13,21 +13,48 @@ class Help(commands.Cog):
         """Shows help about commands and categories"""
         if command is None:
             embed = nextcord.Embed(
-                title="VEKA Bot Help",
+                title="🌟 VEKA Bot Help",
                 description="Here are all the available command categories. Use `!help <command>` for detailed information about a specific command.",
-                color=nextcord.Color.blue()
+                color=nextcord.Color.orange()
             )
 
-            # Moderation Commands
-            moderation = """
-            `!kick @user [reason]` - Kick a member
-            `!ban @user [reason]` - Ban a member
-            `!unban user_id` - Unban a member
-            `!mute @user [duration] [reason]` - Mute a member
-            `!unmute @user` - Unmute a member
-            `!clear amount` - Clear messages
+            # Quiz Commands
+            quiz = """
+            `!quiz categories` - List available quiz categories
+            `!quiz start [category] [difficulty]` - Start a quiz
+            `!quiz stats` - View your quiz statistics
+            `!quiz leaderboard` - View the quiz leaderboard
+            `!quiz daily` - Take the daily challenge
             """
-            embed.add_field(name="🛡️ Moderation", value=moderation.strip(), inline=False)
+            embed.add_field(name="🧠 Quiz", value=quiz.strip(), inline=False)
+
+            # Workshop Commands
+            workshop = """
+            `!workshop list` - List upcoming workshops
+            `!workshop info <id>` - Get workshop details
+            `!workshop signup <id>` - Sign up for a workshop
+            `!workshop cancel <id>` - Cancel workshop registration
+            `!workshop remind <id>` - Set a reminder for a workshop
+            """
+            embed.add_field(name="📚 Workshops", value=workshop.strip(), inline=False)
+
+            # Portfolio Commands
+            portfolio = """
+            `!portfolio add` - Add a new project
+            `!portfolio list [@user]` - List your or someone's projects
+            `!portfolio view <project_id>` - View project details
+            `!portfolio edit <project_id>` - Edit a project
+            `!portfolio delete <project_id>` - Delete a project
+            `!portfolio search <query>` - Search projects
+            """
+            embed.add_field(name="💼 Portfolio", value=portfolio.strip(), inline=False)
+
+            # Gamification Commands
+            gamification = """
+            `!gameprofile [@user]` - View your or someone's gamification profile
+            `!leaderboard` - View the points leaderboard
+            """
+            embed.add_field(name="🏆 Gamification", value=gamification.strip(), inline=False)
 
             # Fun Commands
             fun = """
@@ -66,9 +93,9 @@ class Help(commands.Cog):
                 return
 
             embed = nextcord.Embed(
-                title=f"Help: {cmd.name}",
+                title=f"📖 Help: {cmd.name}",
                 description=cmd.help or "No description available.",
-                color=nextcord.Color.blue()
+                color=nextcord.Color.orange()
             )
 
             if cmd.aliases:
@@ -85,8 +112,10 @@ class Help(commands.Cog):
                 "8ball": "`!8ball Will I have a good day?` - Ask the magic 8-ball a question",
                 "rps": "`!rps rock` - Play rock\n`!rps paper` - Play paper\n`!rps scissors` - Play scissors",
                 "choose": "`!choose pizza, burger, salad` - Choose between food options\n`!choose work, break` - Make a decision",
-                "mute": "`!mute @user 1h` - Mute for 1 hour\n`!mute @user 30m Bad behavior` - Mute for 30 minutes with reason",
-                "clear": "`!clear 10` - Delete last 10 messages\n`!clear 50` - Delete last 50 messages"
+                "quiz": "`!quiz start programming easy` - Start an easy programming quiz\n`!quiz daily` - Take the daily quiz challenge",
+                "workshop": "`!workshop list` - See all upcoming workshops\n`!workshop signup ws123` - Sign up for workshop with ID ws123",
+                "portfolio": "`!portfolio add` - Add a new project to your portfolio\n`!portfolio list @user` - View someone's portfolio",
+                "gameprofile": "`!gameprofile` - View your gamification profile\n`!gameprofile @user` - View someone else's profile"
             }
             
             if cmd.name in examples:
