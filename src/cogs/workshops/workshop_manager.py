@@ -25,9 +25,9 @@ class WorkshopManager(commands.Cog):
         """Workshop management commands"""
         if ctx.invoked_subcommand is None:
             embed = nextcord.Embed(
-                title="Workshop Commands",
+                title="📚 Workshop Commands",
                 description="Manage and participate in virtual workshops!",
-                color=nextcord.Color.blue()
+                color=nextcord.Color.orange()
             )
             embed.add_field(
                 name="Available Commands",
@@ -51,16 +51,18 @@ class WorkshopManager(commands.Cog):
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
 
-            # Get workshop details
-            await ctx.send("What's the title of the workshop?")
+            # Step 1: Title
+            await ctx.send("📝 What's the title of your workshop?")
             title_msg = await self.bot.wait_for('message', check=check, timeout=60)
             title = title_msg.content
 
-            await ctx.send("Provide a description of the workshop:")
+            # Step 2: Description
+            await ctx.send("📋 Please provide a description for your workshop:")
             desc_msg = await self.bot.wait_for('message', check=check, timeout=120)
             description = desc_msg.content
 
-            await ctx.send("When will the workshop be held? (Format: YYYY-MM-DD HH:MM)")
+            # Step 3: Date and Time
+            await ctx.send("🗓️ When will the workshop take place? (Format: YYYY-MM-DD HH:MM)")
             date_msg = await self.bot.wait_for('message', check=check, timeout=60)
             try:
                 workshop_date = datetime.strptime(date_msg.content, "%Y-%m-%d %H:%M")
@@ -68,142 +70,198 @@ class WorkshopManager(commands.Cog):
                 await ctx.send("❌ Invalid date format. Workshop creation cancelled.")
                 return
 
-            await ctx.send("What's the maximum number of participants? (Enter a number)")
-            max_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            # Step 4: Duration
+            await ctx.send("⏱️ How long will the workshop last? (in minutes)")
+            duration_msg = await self.bot.wait_for('message', check=check, timeout=60)
             try:
-                max_participants = int(max_msg.content)
+                duration = int(duration_msg.content)
+                if duration <= 0:
+                    raise ValueError
+            except ValueError:
+                await ctx.send("❌ Invalid duration. Workshop creation cancelled.")
+                return
+
+            # Step 5: Max Participants
+            await ctx.send("👥 What's the maximum number of participants? (Enter 0 for unlimited)")
+            max_participants_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            try:
+                max_participants = int(max_participants_msg.content)
+                if max_participants < 0:
+                    raise ValueError
             except ValueError:
                 await ctx.send("❌ Invalid number. Workshop creation cancelled.")
                 return
 
             # Create workshop
-            workshop_id = str(len(self.active_workshops) + 1)
+            workshop_id = f"ws-{int(datetime.utcnow().timestamp())}"
             workshop = {
-                'id': workshop_id,
-                'title': title,
-                'description': description,
-                'date': workshop_date,
-                'max_participants': max_participants,
-                'participants': [],
-                'creator': ctx.author.id,
-                'created_at': datetime.utcnow()
+                "id": workshop_id,
+                "title": title,
+                "description": description,
+                "date": workshop_date,
+                "duration": duration,
+                "max_participants": max_participants,
+                "participants": [],
+                "created_by": ctx.author.id,
+                "created_at": datetime.utcnow()
             }
-            self.active_workshops[workshop_id] = workshop
 
+            # Save workshop
+            self.active_workshops[workshop_id] = workshop
+            
             # Schedule reminders
             self.schedule_workshop_reminders(workshop)
 
-            # Create announcement
+            # Confirmation
             embed = nextcord.Embed(
-                title="🎓 New Workshop Announced!",
-                description=f"**{title}**\n\n{description}",
-                color=nextcord.Color.green()
+                title="✅ Workshop Created",
+                description=f"Your workshop has been scheduled!",
+                color=nextcord.Color.orange()
             )
-            embed.add_field(name="Date", value=workshop_date.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
-            embed.add_field(name="Spots Available", value=str(max_participants), inline=True)
-            embed.add_field(name="Workshop ID", value=workshop_id, inline=True)
-            embed.set_footer(text="Use !workshop signup <id> to register!")
-
+            embed.add_field(name="Title", value=title, inline=False)
+            embed.add_field(name="Date & Time", value=workshop_date.strftime("%Y-%m-%d %H:%M"), inline=True)
+            embed.add_field(name="Duration", value=f"{duration} minutes", inline=True)
+            embed.add_field(name="Workshop ID", value=f"`{workshop_id}`", inline=False)
+            embed.add_field(name="Sign Up Command", value=f"`!workshop signup {workshop_id}`", inline=False)
+            
             await ctx.send(embed=embed)
-
+            
         except asyncio.TimeoutError:
-            await ctx.send("❌ Workshop creation timed out. Please try again.")
+            await ctx.send("⏱️ Workshop creation timed out. Please try again.")
 
     @workshop.command(name="list")
     async def workshop_list(self, ctx):
         """List all upcoming workshops"""
-        if not self.active_workshops:
-            await ctx.send("No upcoming workshops scheduled.")
+        now = datetime.utcnow()
+        upcoming_workshops = [w for w in self.active_workshops.values() if w["date"] > now]
+        
+        if not upcoming_workshops:
+            await ctx.send("📅 No upcoming workshops scheduled.")
             return
-
+            
         embed = nextcord.Embed(
             title="📅 Upcoming Workshops",
-            color=nextcord.Color.blue()
+            description=f"Found {len(upcoming_workshops)} upcoming workshops",
+            color=nextcord.Color.orange()
         )
-
-        for w_id, workshop in self.active_workshops.items():
-            if workshop['date'] > datetime.utcnow():
-                spots_left = workshop['max_participants'] - len(workshop['participants'])
-                embed.add_field(
-                    name=f"{workshop['title']} (ID: {w_id})",
-                    value=f"""
-                    📆 {workshop['date'].strftime('%Y-%m-%d %H:%M UTC')}
-                    👥 {spots_left} spots remaining
-                    """,
-                    inline=False
-                )
-
+        
+        for workshop in sorted(upcoming_workshops, key=lambda w: w["date"]):
+            # Calculate time until workshop
+            time_until = workshop["date"] - now
+            days = time_until.days
+            hours, remainder = divmod(time_until.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            time_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m"
+            
+            # Get participant info
+            participant_count = len(workshop["participants"])
+            max_str = f"/{workshop['max_participants']}" if workshop["max_participants"] > 0 else ""
+            
+            embed.add_field(
+                name=f"📚 {workshop['title']}",
+                value=f"**ID:** `{workshop['id']}`\n"
+                      f"**When:** {workshop['date'].strftime('%Y-%m-%d %H:%M')} (in {time_str})\n"
+                      f"**Duration:** {workshop['duration']} minutes\n"
+                      f"**Participants:** {participant_count}{max_str}\n"
+                      f"**Sign up:** `!workshop signup {workshop['id']}`",
+                inline=False
+            )
+            
         await ctx.send(embed=embed)
 
     @workshop.command(name="signup")
     async def workshop_signup(self, ctx, workshop_id: str):
         """Sign up for a workshop"""
         if workshop_id not in self.active_workshops:
-            await ctx.send("❌ Workshop not found.")
+            await ctx.send("❌ Workshop not found. Use `!workshop list` to see available workshops.")
             return
-
+            
         workshop = self.active_workshops[workshop_id]
         
-        if ctx.author.id in workshop['participants']:
-            await ctx.send("❌ You're already registered for this workshop!")
+        # Check if workshop is in the future
+        if workshop["date"] < datetime.utcnow():
+            await ctx.send("❌ This workshop has already started or ended.")
             return
-
-        if len(workshop['participants']) >= workshop['max_participants']:
-            await ctx.send("❌ Sorry, this workshop is full!")
+            
+        # Check if user is already signed up
+        if ctx.author.id in workshop["participants"]:
+            await ctx.send("⚠️ You're already signed up for this workshop!")
             return
-
-        if workshop['date'] < datetime.utcnow():
-            await ctx.send("❌ This workshop has already started/ended.")
+            
+        # Check if workshop is full
+        if workshop["max_participants"] > 0 and len(workshop["participants"]) >= workshop["max_participants"]:
+            await ctx.send("❌ This workshop is already full.")
             return
-
-        workshop['participants'].append(ctx.author.id)
+            
+        # Add user to participants
+        workshop["participants"].append(ctx.author.id)
         
+        # Confirmation
         embed = nextcord.Embed(
-            title="✅ Workshop Registration Successful!",
-            description=f"You've been registered for: {workshop['title']}",
-            color=nextcord.Color.green()
+            title="✅ Workshop Registration Confirmed",
+            description=f"You've successfully signed up for **{workshop['title']}**!",
+            color=nextcord.Color.orange()
         )
-        embed.add_field(name="Date", value=workshop['date'].strftime("%Y-%m-%d %H:%M UTC"))
-        embed.add_field(name="Spots Left", value=str(workshop['max_participants'] - len(workshop['participants'])))
+        
+        embed.add_field(
+            name="📅 Workshop Details",
+            value=f"**Date:** {workshop['date'].strftime('%Y-%m-%d %H:%M')}\n"
+                  f"**Duration:** {workshop['duration']} minutes\n"
+                  f"**ID:** `{workshop_id}`",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📝 Next Steps",
+            value="• Add this to your calendar\n"
+                  "• Prepare any necessary materials\n"
+                  f"• Use `!workshop remind {workshop_id}` to set a reminder",
+            inline=False
+        )
         
         await ctx.send(embed=embed)
 
     def schedule_workshop_reminders(self, workshop):
         """Schedule reminders for a workshop"""
-        # 24 hour reminder
-        reminder_24h = workshop['date'] - timedelta(days=1)
-        if reminder_24h > datetime.utcnow():
+        workshop_date = workshop["date"]
+        
+        # Schedule 1-day reminder
+        if datetime.utcnow() < workshop_date - timedelta(days=1):
+            one_day_reminder = workshop_date - timedelta(days=1)
             self.scheduler.add_job(
                 self.send_reminder,
-                trigger=DateTrigger(reminder_24h),
-                args=[workshop, "24 hours"],
-                id=f"workshop_{workshop['id']}_24h"
+                trigger=DateTrigger(one_day_reminder),
+                args=[workshop, "1 day"],
+                id=f"{workshop['id']}_1day"
             )
-
-        # 1 hour reminder
-        reminder_1h = workshop['date'] - timedelta(hours=1)
-        if reminder_1h > datetime.utcnow():
+        
+        # Schedule 1-hour reminder
+        if datetime.utcnow() < workshop_date - timedelta(hours=1):
+            one_hour_reminder = workshop_date - timedelta(hours=1)
             self.scheduler.add_job(
                 self.send_reminder,
-                trigger=DateTrigger(reminder_1h),
+                trigger=DateTrigger(one_hour_reminder),
                 args=[workshop, "1 hour"],
-                id=f"workshop_{workshop['id']}_1h"
+                id=f"{workshop['id']}_1hour"
             )
 
     async def send_reminder(self, workshop: Dict, time_left: str):
         """Send a reminder to workshop participants"""
-        for participant_id in workshop['participants']:
+        for participant_id in workshop["participants"]:
             try:
                 user = await self.bot.fetch_user(participant_id)
                 if user:
                     embed = nextcord.Embed(
-                        title="🔔 Workshop Reminder",
-                        description=f"Your workshop starts in {time_left}!",
-                        color=nextcord.Color.gold()
+                        title="⏰ Workshop Reminder",
+                        description=f"Your workshop **{workshop['title']}** starts in **{time_left}**!",
+                        color=nextcord.Color.orange()
                     )
-                    embed.add_field(name="Workshop", value=workshop['title'])
-                    embed.add_field(name="Date", value=workshop['date'].strftime("%Y-%m-%d %H:%M UTC"))
-                    
+                    embed.add_field(
+                        name="📅 Details",
+                        value=f"**Date:** {workshop['date'].strftime('%Y-%m-%d %H:%M')}\n"
+                              f"**Duration:** {workshop['duration']} minutes",
+                        inline=False
+                    )
                     await user.send(embed=embed)
             except Exception as e:
                 logger.error(f"Failed to send reminder to user {participant_id}: {str(e)}")
@@ -212,6 +270,6 @@ def setup(bot):
     """Setup the WorkshopManager cog"""
     if bot is not None:
         bot.add_cog(WorkshopManager(bot))
-        logging.getLogger('VEKA').info("WorkshopManager cog loaded successfully")
+        logging.getLogger('VEKA').info("Loaded cog: src.cogs.workshops.workshop_manager")
     else:
         logging.getLogger('VEKA').error("Bot is None in WorkshopManager cog setup")
