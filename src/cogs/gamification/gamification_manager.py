@@ -49,10 +49,11 @@ class GamificationManager(commands.Cog):
         new_points = user.get('points', 0) + points
         new_exp = user.get('experience', 0) + points
         
-        # Calculate new level (using a logarithmic progression)
-        new_level = math.floor(1 + math.log(new_exp / 100 + 1, 2))
+        # Calculate new level (logarithmic progression)
+        # Level formula: level = 1 + sqrt(experience / 100)
+        new_level = 1 + math.floor(math.sqrt(new_exp / 100))
         
-        # Update user in database
+        # Update user record
         await users.update_one(
             {"discord_id": str(user_id)},
             {
@@ -65,20 +66,14 @@ class GamificationManager(commands.Cog):
             }
         )
         
-        if new_level > old_level:
-            # Notify user of level up
-            discord_user = self.bot.get_user(int(user_id))
-            if discord_user:
-                embed = nextcord.Embed(
-                    title="🎉 Level Up!",
-                    description=f"Congratulations! You've reached level {new_level}!",
-                    color=nextcord.Color.gold()
-                )
-                embed.add_field(name="Points Earned", value=str(points))
-                embed.add_field(name="Total Points", value=str(new_points))
-                await discord_user.send(embed=embed)
-        
-        return points, new_level > old_level
+        # Return level up information if level changed
+        return {
+            "points_earned": points,
+            "new_points": new_points,
+            "new_level": new_level,
+            "leveled_up": new_level > old_level,
+            "levels_gained": new_level - old_level if new_level > old_level else 0
+        }
 
     @commands.command(
         name="gameprofile",
@@ -91,31 +86,42 @@ class GamificationManager(commands.Cog):
         
         # Calculate progress to next level
         current_level = user.get('level', 1)
-        current_level_exp = 100 * (pow(2, current_level - 1) - 1)
-        next_level_exp = 100 * (pow(2, current_level) - 1)
-        exp_progress = user.get('experience', 0) - current_level_exp
-        exp_needed = next_level_exp - current_level_exp
-        progress_percent = (exp_progress / exp_needed) * 100
+        current_exp = user.get('experience', 0)
+        exp_for_current = 100 * (current_level - 1) ** 2
+        exp_for_next = 100 * current_level ** 2
+        exp_needed = exp_for_next - exp_for_current
+        exp_progress = current_exp - exp_for_current
+        progress_percent = min(100, max(0, (exp_progress / exp_needed) * 100))
+        
+        # Create progress bar
+        progress_bar = self.create_progress_bar(progress_percent)
         
         embed = nextcord.Embed(
-            title=f"{target.display_name}'s Profile",
-            color=nextcord.Color.blue()
+            title=f"🏆 {target.display_name}'s Profile",
+            color=nextcord.Color.orange()
         )
-        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         
-        # Add profile fields
-        embed.add_field(name="Level", value=str(current_level), inline=True)
-        embed.add_field(name="Total Points", value=str(user.get('points', 0)), inline=True)
-        embed.add_field(name="Experience", value=f"{user.get('experience', 0):,}", inline=True)
-        
-        # Add progress bar
-        progress_bar = self.create_progress_bar(progress_percent)
         embed.add_field(
-            name="Progress to Next Level",
-            value=f"{progress_bar} {progress_percent:.1f}%",
+            name="📊 Stats",
+            value=f"**Level:** {current_level}\n"
+                  f"**Experience:** {current_exp:,}\n"
+                  f"**Points:** {user.get('points', 0):,}\n"
+                  f"**Member Since:** {user.get('created_at').strftime('%Y-%m-%d')}",
             inline=False
         )
         
+        embed.add_field(
+            name=f"📈 Level Progress ({progress_percent:.1f}%)",
+            value=f"`{progress_bar}` {exp_progress:,}/{exp_needed:,} XP to Level {current_level+1}",
+            inline=False
+        )
+        
+        # Add achievements if any
+        if user.get('achievements'):
+            achievements = "\n".join([f"• {a}" for a in user.get('achievements', [])])
+            embed.add_field(name="🏅 Achievements", value=achievements, inline=False)
+        
+        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         await ctx.send(embed=embed)
 
     @commands.command(
@@ -123,46 +129,58 @@ class GamificationManager(commands.Cog):
         description="View the points leaderboard"
     )
     async def leaderboard(self, ctx):
-        """Display the points leaderboard"""
+        """View the server's points leaderboard"""
         # Get top 10 users by points
-        cursor = users.find().sort("points", -1).limit(10)
-        top_users = await cursor.to_list(length=10)
+        top_users = await users.find().sort("points", -1).limit(10).to_list(length=None)
+        
+        if not top_users:
+            await ctx.send("No users found in the leaderboard yet!")
+            return
         
         embed = nextcord.Embed(
-            title="🏆 Points Leaderboard",
-            color=nextcord.Color.gold()
+            title="🏆 Server Leaderboard",
+            description="Top members by points",
+            color=nextcord.Color.orange()
         )
         
-        for i, user in enumerate(top_users, 1):
-            discord_user = self.bot.get_user(int(user['discord_id']))
-            name = discord_user.display_name if discord_user else f"User {user['discord_id']}"
+        leaderboard_text = ""
+        for i, user_data in enumerate(top_users):
+            # Get medal emoji based on position
+            medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i+1}."
             
-            embed.add_field(
-                name=f"{i}. {name}",
-                value=f"Level {user.get('level', 1)} | {user.get('points', 0):,} points",
-                inline=False
-            )
+            # Get Discord user
+            discord_id = user_data.get('discord_id')
+            member = ctx.guild.get_member(int(discord_id)) if discord_id else None
+            name = member.display_name if member else f"User {discord_id}"
+            
+            # Add to leaderboard text
+            leaderboard_text += f"{medal} **{name}** - Level {user_data.get('level', 1)} | {user_data.get('points', 0):,} points\n"
+        
+        embed.add_field(name="Top Members", value=leaderboard_text, inline=False)
+        embed.set_footer(text="Keep participating to climb the ranks!")
         
         await ctx.send(embed=embed)
 
     def create_progress_bar(self, percent: float, length: int = 20) -> str:
         """Create a text-based progress bar"""
-        filled = int((percent / 100.0) * length)
-        return '█' * filled + '░' * (length - filled)
+        filled = int(length * percent / 100)
+        return "█" * filled + "░" * (length - filled)
 
     @commands.Cog.listener()
     async def on_message(self, message):
         """Award points for daily activity"""
         if message.author.bot:
             return
-        
-        # Award points for daily activity (implement cooldown if needed)
+            
+        # Award points for daily activity (once per day)
+        # Implementation would track last activity date and award points accordingly
+        # This is a simplified version
         await self.award_points(str(message.author.id), 'daily_activity')
 
 def setup(bot):
     """Setup the GamificationManager cog"""
     if bot is not None:
         bot.add_cog(GamificationManager(bot))
-        logging.getLogger('VEKA').info("GamificationManager cog loaded successfully")
+        logging.getLogger('VEKA').info("Loaded cog: src.cogs.gamification.gamification_manager")
     else:
         logging.getLogger('VEKA').error("Bot is None in GamificationManager cog setup")
