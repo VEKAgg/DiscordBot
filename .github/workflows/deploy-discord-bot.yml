@@ -1,0 +1,162 @@
+name: Deploy Discord Bot
+
+on:
+  push:
+    branches:
+      - main
+      - production
+
+jobs:
+  deploy:
+    if: startsWith(github.event.head_commit.message, 'Merge pull request')
+    runs-on: [self-hosted, X64, AtlasOS, Linux]
+    env:
+      DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      CONTAINER_ENGINE: ${{ secrets.CONTAINER_ENGINE || 'docker' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up container engine
+        run: |
+          # Check which container engine to use (docker or podman)
+          CONTAINER_CMD="${CONTAINER_ENGINE}"
+          echo "Using container engine: ${CONTAINER_CMD}"
+          echo "CONTAINER_CMD=${CONTAINER_CMD}" >> $GITHUB_ENV
+          
+          # Install container engine if not available
+          if ! command -v ${CONTAINER_CMD} &> /dev/null; then
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              echo "Installing Podman..."
+              sudo apt-get update
+              sudo apt-get install -y podman
+            else
+              echo "Installing Docker..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl enable --now docker
+            fi
+          fi
+          
+          # Install Docker Compose if using Docker and not installed
+          if [ "${CONTAINER_CMD}" = "docker" ] && ! command -v docker-compose &> /dev/null; then
+            echo "Installing Docker Compose..."
+            sudo curl -L "https://github.com/docker/compose/releases/download/v2.20.3/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+            sudo chmod +x /usr/local/bin/docker-compose
+          fi
+        shell: bash
+
+      - name: Create .env file
+        run: |
+          echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
+          echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
+          echo "REDIS_URL=redis://redis:6379" >> .env
+        shell: bash
+
+      - name: Build and deploy with Docker/Podman
+        run: |
+          # Create logs directory if it doesn't exist
+          mkdir -p logs
+          
+          if [ "${CONTAINER_CMD}" = "podman" ]; then
+            # Using Podman
+            echo "Building and deploying with Podman..."
+            
+            # Check if pod exists and remove it if it does
+            if podman pod exists veka-bot-pod; then
+              podman pod rm -f veka-bot-pod
+            fi
+            
+            # Create pod
+            podman pod create --name veka-bot-pod
+            
+            # Build and run containers
+            podman build -t veka-discord-bot:latest .
+            
+            # Run Redis
+            podman run -d --pod veka-bot-pod \
+              --name veka-redis \
+              -v redis-data:/data \
+              redis:alpine
+            
+            # Run Discord Bot
+            podman run -d --pod veka-bot-pod \
+              --name veka-discord-bot \
+              -v ./logs:/app/logs \
+              -v ./.env:/app/.env:ro \
+              -e PYTHONUNBUFFERED=1 \
+              veka-discord-bot:latest
+            
+          else
+            # Using Docker
+            echo "Building and deploying with Docker..."
+            
+            # Check if containers are running and stop them
+            if docker-compose ps | grep -q "veka"; then
+              docker-compose down
+            fi
+            
+            # Build and start containers
+            docker-compose up -d --build
+          fi
+        shell: bash
+
+      - name: Health check
+        shell: bash
+        run: |
+          # Define parameters for waiting loops
+          MAX_WAIT=60
+          INTERVAL=5
+          
+          # Wait for the bot container to start
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              if podman ps | grep -q "veka-discord-bot"; then
+                echo "Health check passed - Bot container is running"
+                break
+              fi
+            else
+              if docker ps | grep -q "veka-discord-bot"; then
+                echo "Health check passed - Bot container is running"
+                break
+              fi
+            fi
+            echo "Waiting for bot container to start... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+          
+          if [ $ELAPSED -ge $MAX_WAIT ]; then
+            echo "Health check failed - Bot container did not start within $MAX_WAIT seconds"
+            exit 1
+          fi
+          
+          # Wait for the bot to connect to Discord
+          ELAPSED=0
+          SUCCESS=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if [ "${CONTAINER_CMD}" = "podman" ]; then
+              if podman logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+                echo "Health check passed - Bot connected to Discord"
+                SUCCESS=1
+                break
+              fi
+            else
+              if docker logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+                echo "Health check passed - Bot connected to Discord"
+                SUCCESS=1
+                break
+              fi
+            fi
+            echo "Waiting for bot to connect to Discord... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+          
+          if [ $SUCCESS -ne 1 ]; then
+            echo "Health check failed - Bot did not connect to Discord within $MAX_WAIT seconds"
+            exit 1
+          fi

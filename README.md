@@ -1,70 +1,146 @@
-# VEKA Bot
+# VEKA Discord Bot
 
-VEKA Bot is a multi-purpose Discord bot designed to enhance your server with utility, fun, and informational commands. It uses advanced algorithms to create an engaging and dynamic server environment.
+A professional networking and community development Discord bot designed to create a vibrant community by providing tools for career development, networking, and entertainment.
 
-## 🌟 Key Features
-- **Smart Role Management:** Automatic role assignment based on user activity and engagement
-- **Advanced Analytics:** Track server growth and member engagement
-- **Intelligent Moderation:** Automated content filtering and user monitoring
-- **Activity Rewards:** Dynamic point system for active members
-- **Real-time Updates:** GitHub repository and social media integration
-- **Custom Embeds:** Beautiful message formatting for all commands
-- **Smart Caching:** Optimized performance for faster response times
-- **Background Tasks:** Automated server maintenance and updates
+## Features
 
-## 🤖 Commands
-### 🛠️ Utility
-`#afk` `#ban` `#banner` `#botinfo` `#channelinfo` `#emojiinfo` `#help` `#invite` `#invites` `#leaderboard` `#logging` `#nick` `#poll` `#report` `#roles` `#serverbanner` `#serverinfo` `#stats` `#time` `#uptime` `#userinfo`
+### Currently Implemented
+- 🤝 **Professional Networking**
+  - Profile Management
+  - Connection System
+  - Professional Networking Features
 
-### 🎮 Fun
-`#8ball` `#animalfact` `#avatar` `#cakeday` `#catfact` `#coinflip` `#dadjoke` `#dogfact` `#fact` `#gif` `#hack` `#horoscope` `#howgay` `#lmgtfy` `#meme` `#mock` `#ping` `#quote` `#randomcolor` `#remindme` `#reverse` `#roll` `#rps` `#ship` `#simp`
+### Coming Soon
+- 📚 **Career Development**
+  - Skill Development
+  - Mentoring System
+  - Career Guidance
 
-### 📊 Informational
-`#botupdates` `#commands` `#crypto` `#gamingLeaderboard` `#news` `#schedule` `#stock` `#weather` `#wiki`
+- 🎯 **Events & Activities**
+  - Professional Events
+  - Workshops
+  - Networking Sessions
 
-> **Tip**: Use `#help <command>` for detailed information about any command
+- 🎮 **Community Fun**
+  - Interactive Games
+  - Community Building Activities
 
-## 🚀 Self-Hosting Instructions
-1. **Prerequisites**
-   - Node.js 16.x or higher
-   - MongoDB database
-   - Discord Bot Token
+## Setup Instructions
 
-2. **Setup**
-```bash
-npm install
-```
+### Standard Setup
 
-2. **Clone repository**
-```
-git clone https://github.com/VEKAgg/DiscordBot.git
-cd DiscordBot
-```
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd DiscordBot
+   ```
 
-2. **Create .env file**
-```
-echo "TOKEN=your_discord_bot_token
-MONGODB_URI=your_mongodb_uri" > .env
-```
+2. **Install Dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-3. **Run the bot**
-```
-npm start
-```
+3. **Environment Setup**
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token
+   MONGODB_URI=your_mongodb_connection_string
+   REDIS_URL=redis://127.0.0.1:6379
+   ```
 
-## 👥 Contributors
-<a href="https://github.com/VEKAgg/DiscordBot/graphs/contributors">
-  <img src="https://contributors-img.web.app/image?repo=VEKAgg/DiscordBot" />
-</a>
+4. **Run the Bot**
+   ```bash
+   python main.py
+   ```
 
-## 📝 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Docker Setup
 
-## 🔗 Links
-- [Invite Bot](https://discord.com/oauth2/authorize)
-- [GitHub Repository](https://github.com/VEKAgg/DiscordBot)
-- [Support Server](https://discord.gg/vekagg)
-- [Documentation](https://github.com/VEKAgg/DiscordBot/wiki)
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd DiscordBot
+   ```
 
-## Contact
-Feel free to reach out for support or suggestions via GitHub Issues.
+2. **Environment Setup**
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   REDIS_URL=redis://redis:6379
+   ```
+
+3. **Build and Run with Docker Compose**
+   ```bash
+   docker-compose up -d
+   ```
+
+4. **Check Logs**
+   ```bash
+   docker logs veka-discord-bot
+   ```
+
+### Podman Setup
+
+1. **Clone the Repository**
+   ```bash
+   git clone <repository-url>
+   cd DiscordBot
+   ```
+
+2. **Environment Setup**
+   Create a `.env` file in the root directory with the following variables:
+   ```
+   DISCORD_TOKEN=your_discord_bot_token
+   MONGODB_URI=your_mongodb_atlas_connection_string
+   REDIS_URL=redis://localhost:6379
+   ```
+
+3. **Create Pod and Run Containers**
+   ```bash
+   # Create pod
+   podman pod create --name veka-bot-pod
+   
+   # Build bot image
+   podman build -t veka-discord-bot:latest .
+   
+   # Run Redis
+   podman run -d --pod veka-bot-pod \
+     --name veka-redis \
+     -v redis-data:/data \
+     redis:alpine
+   
+   # Run Discord Bot
+   podman run -d --pod veka-bot-pod \
+     --name veka-discord-bot \
+     -v ./logs:/app/logs \
+     -v ./.env:/app/.env:ro \
+     -e PYTHONUNBUFFERED=1 \
+     veka-discord-bot:latest
+   ```
+
+4. **Check Logs**
+   ```bash
+   podman logs veka-discord-bot
+   ```
+
+## Available Commands
+
+### Professional Networking
+- `!profile [@user]` - View your or someone else's professional profile
+- `!setupprofile` - Set up your professional profile
+- `!connect @user [message]` - Send a connection request to another member
+
+### Help
+- `!help` - Show all available commands
+- `!help <command>` - Show detailed information about a specific command
+
+## Contributing
+
+Feel free to contribute to this project by:
+1. Forking the repository
+2. Creating a new branch for your feature
+3. Submitting a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 
