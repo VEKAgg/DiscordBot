@@ -9,7 +9,7 @@ on:
 jobs:
   deploy:
     if: startsWith(github.event.head_commit.message, 'Merge pull request')
-    runs-on: [self-hosted, X64, AtlasOS, Linux]
+    runs-on: [self-hosted, X64, Linux, Veka]
     env:
       DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
       MONGODB_URI: ${{ secrets.MONGODB_URI }}
