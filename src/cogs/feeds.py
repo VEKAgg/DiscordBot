@@ -38,28 +38,27 @@ class Feeds(commands.Cog):
     async def before_feed_update(self):
         await self.bot.wait_until_ready()
 
-    @commands.group(name="feed", invoke_without_command=True)
-    async def feed(self, ctx):
+    @nextcord.slash_command(name="feed", description="RSS feed commands")
+    async def feed(self, interaction: nextcord.Interaction):
         """RSS feed commands"""
-        if ctx.invoked_subcommand is None:
-            embed = nextcord.Embed(
-                title="RSS Feed Commands",
-                description="Use these commands to interact with RSS feeds",
-                color=nextcord.Color.blue()
-            )
-            embed.add_field(
-                name="Available Commands",
-                value="""
-                `!feed list` - List available feed categories
-                `!feed show <category>` - Show latest entries from a category
-                `!feed search <query>` - Search across all feeds
-                """,
-                inline=False
-            )
-            await ctx.send(embed=embed)
+        embed = nextcord.Embed(
+            title="RSS Feed Commands",
+            description="Use these commands to interact with RSS feeds",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Commands",
+            value="""
+            `/feed list` - List available feed categories
+            `/feed show <category>` - Show latest entries from a category
+            `/feed search <query>` - Search across all feeds
+            """,
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed)
 
-    @feed.command(name="list")
-    async def feed_list(self, ctx):
+    @feed.subcommand(name="list", description="List available feed categories")
+    async def feed_list(self, interaction: nextcord.Interaction):
         """List available feed categories"""
         categories = self.rss_service.get_available_categories()
         
@@ -76,48 +75,87 @@ class Feeds(commands.Cog):
                 inline=True
             )
             
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @feed.command(name="show")
-    async def feed_show(self, ctx, category: str, limit: int = 5):
+    @feed.subcommand(name="show", description="Show latest entries from a category")
+    async def feed_show(
+        self,
+        interaction: nextcord.Interaction,
+        category: str = nextcord.SlashOption(
+            name="category",
+            description="The category of the feed to show",
+            required=True,
+            choices=[{"name": cat.replace('_', ' ').title(), "value": cat} for cat in RSS_FEEDS.keys()]
+        ),
+        limit: int = nextcord.SlashOption(
+            name="limit",
+            description="The number of entries to show (default: 5)",
+            required=False,
+            default=5,
+            min_value=1,
+            max_value=10
+        )
+    ):
         """Show latest entries from a category"""
         if category not in RSS_FEEDS:
             categories = ", ".join(RSS_FEEDS.keys())
-            await ctx.send(f"❌ Invalid category. Available categories: {categories}")
+            await interaction.response.send_message(f"❌ Invalid category. Available categories: {categories}", ephemeral=True)
             return
 
         try:
             entries = await self.rss_service.get_latest_entries(category, limit=limit)
             
             if not entries:
-                await ctx.send(f"No entries found for category: {category}")
+                await interaction.response.send_message(f"No entries found for category: {category}", ephemeral=True)
                 return
 
-            for entry in entries:
-                embed = self.create_feed_embed(entry, category)
-                await ctx.send(embed=embed)
+            # Send the first embed as the initial response, then use followup for the rest
+            if entries:
+                first_embed = self.create_feed_embed(entries[0], category)
+                await interaction.response.send_message(embed=first_embed)
+                for entry in entries[1:]:
+                    embed = self.create_feed_embed(entry, category)
+                    await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(f"No entries found for category: {category}", ephemeral=True)
+
 
         except Exception as e:
             logger.error(f"Error showing feed entries: {str(e)}")
-            await ctx.send("❌ An error occurred while fetching feed entries.")
+            await interaction.response.send_message("❌ An error occurred while fetching feed entries.", ephemeral=True)
 
-    @feed.command(name="search")
-    async def feed_search(self, ctx, *, query: str):
+    @feed.subcommand(name="search", description="Search across all feeds")
+    async def feed_search(
+        self,
+        interaction: nextcord.Interaction,
+        query: str = nextcord.SlashOption(
+            name="query",
+            description="The search query",
+            required=True
+        )
+    ):
         """Search across all feeds"""
         try:
             results = await self.rss_service.search_feeds(query)
             
             if not results:
-                await ctx.send(f"No results found for query: {query}")
+                await interaction.response.send_message(f"No results found for query: {query}", ephemeral=True)
                 return
 
-            for entry in results[:5]:  # Limit to 5 results
-                embed = self.create_feed_embed(entry, "Search Results")
-                await ctx.send(embed=embed)
+            # Send the first embed as the initial response, then use followup for the rest
+            if results:
+                first_embed = self.create_feed_embed(results[0], "Search Results")
+                await interaction.response.send_message(embed=first_embed)
+                for entry in results[1:5]:  # Limit to 5 results
+                    embed = self.create_feed_embed(entry, "Search Results")
+                    await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(f"No results found for query: {query}", ephemeral=True)
+
 
         except Exception as e:
             logger.error(f"Error searching feeds: {str(e)}")
-            await ctx.send("❌ An error occurred while searching feeds.")
+            await interaction.response.send_message("❌ An error occurred while searching feeds.", ephemeral=True)
 
     def create_feed_embed(self, entry: dict, category: str) -> nextcord.Embed:
         """Create an embed for a feed entry"""

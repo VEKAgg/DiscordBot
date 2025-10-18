@@ -20,143 +20,226 @@ class WorkshopManager(commands.Cog):
     def cog_unload(self):
         self.scheduler.shutdown()
 
-    @commands.group(name="workshop", invoke_without_command=True)
-    async def workshop(self, ctx):
+    @nextcord.slash_command(name="workshop", description="Workshop management commands")
+    async def workshop(self, interaction: nextcord.Interaction):
         """Workshop management commands"""
-        if ctx.invoked_subcommand is None:
-            embed = nextcord.Embed(
-                title="Workshop Commands",
-                description="Manage and participate in virtual workshops!",
-                color=nextcord.Color.blue()
-            )
-            embed.add_field(
-                name="Available Commands",
-                value="""
-                `!workshop create` - Create a new workshop
-                `!workshop list` - List upcoming workshops
-                `!workshop info <id>` - Get workshop details
-                `!workshop signup <id>` - Sign up for a workshop
-                `!workshop cancel <id>` - Cancel workshop registration
-                `!workshop remind <id>` - Set a reminder for a workshop
-                """,
-                inline=False
-            )
-            await ctx.send(embed=embed)
+        embed = nextcord.Embed(
+            title="Workshop Commands",
+            description="Manage and participate in workshops!",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Commands",
+            value="""
+            `/workshop create` - Create a new workshop
+            `/workshop list [category]` - List upcoming workshops
+            `/workshop view <workshop_id>` - View workshop details
+            `/workshop register <workshop_id>` - Register for a workshop
+            `/workshop unregister <workshop_id>` - Unregister from a workshop
+            `/workshop complete <workshop_id>` - Mark a workshop as complete (host only)
+            `/workshop cancel <workshop_id>` - Cancel a workshop (host only)
+            """,
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @workshop.command(name="create")
-    @commands.has_permissions(manage_events=True)
-    async def workshop_create(self, ctx):
-        """Create a new workshop through an interactive process"""
+    @workshop.subcommand(name="create", description="Create a new workshop")
+    async def workshop_create(self, interaction: nextcord.Interaction):
+        """Create a new workshop"""
         try:
             def check(m):
-                return m.author == ctx.author and m.channel == ctx.channel
+                return m.author == interaction.user and m.channel == interaction.channel
+
+            await interaction.response.send_message("Let's create a new workshop! I'll ask you a few questions.", ephemeral=True)
 
             # Get workshop details
-            await ctx.send("What's the title of the workshop?")
+            await interaction.followup.send("What's the title of your workshop?", ephemeral=True)
             title_msg = await self.bot.wait_for('message', check=check, timeout=60)
             title = title_msg.content
 
-            await ctx.send("Provide a description of the workshop:")
-            desc_msg = await self.bot.wait_for('message', check=check, timeout=120)
+            await interaction.followup.send("Provide a brief description of your workshop:", ephemeral=True)
+            desc_msg = await self.bot.wait_for('message', check=check, timeout=300)
             description = desc_msg.content
 
-            await ctx.send("When will the workshop be held? (Format: YYYY-MM-DD HH:MM)")
-            date_msg = await self.bot.wait_for('message', check=check, timeout=60)
-            try:
-                workshop_date = datetime.strptime(date_msg.content, "%Y-%m-%d %H:%M")
-            except ValueError:
-                await ctx.send("❌ Invalid date format. Workshop creation cancelled.")
-                return
+            await interaction.followup.send("What category does your workshop belong to? (e.g., 'Programming', 'Design', 'Marketing')", ephemeral=True)
+            category_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            category = category_msg.content
 
-            await ctx.send("What's the maximum number of participants? (Enter a number)")
-            max_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            await interaction.followup.send("When will the workshop take place? (e.g., '2023-12-25 14:00 UTC')", ephemeral=True)
+            date_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            date_time_str = date_msg.content
+
+            await interaction.followup.send("What is the duration of the workshop in minutes? (e.g., '60', '90')", ephemeral=True)
+            duration_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            duration = int(duration_msg.content)
+
+            await interaction.followup.send("What is the maximum number of attendees? (e.g., '20', '50')", ephemeral=True)
+            max_attendees_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            max_attendees = int(max_attendees_msg.content)
+
+            # Validate date and time
             try:
-                max_participants = int(max_msg.content)
+                scheduled_time = datetime.strptime(date_time_str, "%Y-%m-%d %H:%M %Z")
             except ValueError:
-                await ctx.send("❌ Invalid number. Workshop creation cancelled.")
+                await interaction.followup.send("❌ Invalid date/time format. Please use YYYY-MM-DD HH:MM UTC. Workshop creation cancelled.", ephemeral=True)
                 return
 
             # Create workshop
-            workshop_id = str(len(self.active_workshops) + 1)
-            workshop = {
-                'id': workshop_id,
+            workshop_data = {
+                'host_id': str(interaction.user.id),
                 'title': title,
                 'description': description,
-                'date': workshop_date,
-                'max_participants': max_participants,
-                'participants': [],
-                'creator': ctx.author.id,
-                'created_at': datetime.utcnow()
+                'category': category,
+                'scheduled_time': scheduled_time,
+                'duration_minutes': duration,
+                'max_attendees': max_attendees,
+                'attendees': [],
+                'status': 'scheduled',
+                'created_at': datetime.utcnow(),
+                'updated_at': datetime.utcnow()
             }
-            self.active_workshops[workshop_id] = workshop
 
-            # Schedule reminders
-            self.schedule_workshop_reminders(workshop)
+            result = await self.db.insert_one(workshop_data)
+            workshop_data['_id'] = result.inserted_id
 
-            # Create announcement
             embed = nextcord.Embed(
-                title="🎓 New Workshop Announced!",
-                description=f"**{title}**\n\n{description}",
+                title="✅ Workshop Created Successfully!",
+                description=f"**{title}** has been scheduled.",
                 color=nextcord.Color.green()
             )
-            embed.add_field(name="Date", value=workshop_date.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
-            embed.add_field(name="Spots Available", value=str(max_participants), inline=True)
-            embed.add_field(name="Workshop ID", value=workshop_id, inline=True)
-            embed.set_footer(text="Use !workshop signup <id> to register!")
+            embed.add_field(name="Category", value=category, inline=True)
+            embed.add_field(name="Scheduled For", value=scheduled_time.strftime("%Y-%m-%d %H:%M UTC"), inline=True)
+            embed.add_field(name="Duration", value=f"{duration} minutes", inline=True)
+            embed.add_field(name="Max Attendees", value=str(max_attendees), inline=True)
+            embed.set_footer(text=f"Workshop ID: {result.inserted_id}")
 
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
 
         except asyncio.TimeoutError:
-            await ctx.send("❌ Workshop creation timed out. Please try again.")
+            await interaction.followup.send("❌ Workshop creation timed out. Please try again.", ephemeral=True)
+        except ValueError:
+            await interaction.followup.send("❌ Invalid input for duration or max attendees. Please enter numbers. Workshop creation cancelled.", ephemeral=True)
+        except Exception as e:
+            logger.error(f"Error in workshop_create: {str(e)}")
+            await interaction.followup.send("An error occurred while creating the workshop. Please try again later.", ephemeral=True)
 
-    @workshop.command(name="list")
-    async def workshop_list(self, ctx):
-        """List all upcoming workshops"""
-        if not self.active_workshops:
-            await ctx.send("No upcoming workshops scheduled.")
+    @workshop.subcommand(name="list", description="List upcoming workshops")
+    async def workshop_list(
+        self,
+        interaction: nextcord.Interaction,
+        category: Optional[str] = nextcord.SlashOption(
+            name="category",
+            description="Filter workshops by category",
+            required=False,
+            choices=[{"name": cat.title(), "value": cat} for cat in WORKSHOP_CATEGORIES]
+        )
+    ):
+        """List upcoming workshops"""
+        if category and category not in WORKSHOP_CATEGORIES:
+            categories = ", ".join(WORKSHOP_CATEGORIES)
+            await interaction.response.send_message(f"❌ Invalid category. Available categories: {categories}", ephemeral=True)
+            return
+
+        workshops = await self.db.find({'status': 'scheduled'}).to_list(length=None)
+        if category:
+            workshops = [w for w in workshops if w['category'].lower() == category.lower()]
+
+        if not workshops:
+            await interaction.response.send_message("No upcoming workshops found." + (f" for category: {category}" if category else ""), ephemeral=True)
             return
 
         embed = nextcord.Embed(
-            title="📅 Upcoming Workshops",
+            title=f"Upcoming Workshops{f' - {category}' if category else ''}",
             color=nextcord.Color.blue()
         )
 
-        for w_id, workshop in self.active_workshops.items():
-            if workshop['date'] > datetime.utcnow():
-                spots_left = workshop['max_participants'] - len(workshop['participants'])
-                embed.add_field(
-                    name=f"{workshop['title']} (ID: {w_id})",
-                    value=f"""
-                    📆 {workshop['date'].strftime('%Y-%m-%d %H:%M UTC')}
-                    👥 {spots_left} spots remaining
-                    """,
-                    inline=False
-                )
+        for workshop_data in workshops:
+            host = await self.bot.fetch_user(int(workshop_data['host_id']))
+            host_name = host.display_name if host else "Unknown User"
+            
+            embed.add_field(
+                name=f"🗓️ {workshop_data['title']}",
+                value=f"""
+                Host: {host_name}
+                Category: {workshop_data['category']}
+                Time: {workshop_data['scheduled_time'].strftime("%Y-%m-%d %H:%M UTC")}
+                Attendees: {len(workshop_data['attendees'])}/{workshop_data['max_attendees']}
+                ID: {workshop_data['_id']}
+                """,
+                inline=False
+            )
 
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @workshop.command(name="signup")
-    async def workshop_signup(self, ctx, workshop_id: str):
+    @workshop.subcommand(name="view", description="View workshop details")
+    async def workshop_view(
+        self,
+        interaction: nextcord.Interaction,
+        workshop_id: str = nextcord.SlashOption(
+            name="workshop_id",
+            description="The ID of the workshop to view",
+            required=True
+        )
+    ):
+        """View workshop details"""
+        try:
+            workshop_data = await self.db.find_one({'_id': workshop_id})
+            if not workshop_data:
+                await interaction.response.send_message("❌ Workshop not found.", ephemeral=True)
+                return
+
+            host = await self.bot.fetch_user(int(workshop_data['host_id']))
+            host_name = host.display_name if host else "Unknown User"
+
+            embed = nextcord.Embed(
+                title=workshop_data['title'],
+                description=workshop_data['description'],
+                color=nextcord.Color.blue()
+            )
+            embed.set_author(name=f"Hosted by {host_name}")
+            embed.add_field(name="Category", value=workshop_data['category'], inline=True)
+            embed.add_field(name="Scheduled Time", value=workshop_data['scheduled_time'].strftime("%Y-%m-%d %H:%M UTC"), inline=True)
+            embed.add_field(name="Duration", value=f"{workshop_data['duration_minutes']} minutes", inline=True)
+            embed.add_field(name="Max Attendees", value=str(workshop_data['max_attendees']), inline=True)
+            embed.add_field(name="Current Attendees", value=str(len(workshop_data['attendees']))), inline=True)
+            embed.add_field(name="Status", value=workshop_data['status'].capitalize(), inline=True)
+            embed.set_footer(text=f"Workshop ID: {workshop_data['_id']}")
+
+            await interaction.response.send_message(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error viewing workshop: {str(e)}")
+            await interaction.response.send_message("❌ An error occurred while viewing the workshop.", ephemeral=True)
+    @workshop.subcommand(name="signup", description="Sign up for a workshop")
+    async def workshop_signup(
+        self,
+        interaction: nextcord.Interaction,
+        workshop_id: str = nextcord.SlashOption(
+            name="workshop_id",
+            description="The ID of the workshop to sign up for",
+            required=True
+        )
+    ):
         """Sign up for a workshop"""
         if workshop_id not in self.active_workshops:
-            await ctx.send("❌ Workshop not found.")
+            await interaction.response.send_message("❌ Workshop not found.", ephemeral=True)
             return
 
         workshop = self.active_workshops[workshop_id]
         
-        if ctx.author.id in workshop['participants']:
-            await ctx.send("❌ You're already registered for this workshop!")
+        if interaction.user.id in workshop['participants']:
+            await interaction.response.send_message("❌ You're already registered for this workshop!", ephemeral=True)
             return
 
         if len(workshop['participants']) >= workshop['max_participants']:
-            await ctx.send("❌ Sorry, this workshop is full!")
+            await interaction.response.send_message("❌ Sorry, this workshop is full!", ephemeral=True)
             return
 
         if workshop['date'] < datetime.utcnow():
-            await ctx.send("❌ This workshop has already started/ended.")
+            await interaction.response.send_message("❌ This workshop has already started/ended.", ephemeral=True)
             return
 
-        workshop['participants'].append(ctx.author.id)
+        workshop['participants'].append(interaction.user.id)
         
         embed = nextcord.Embed(
             title="✅ Workshop Registration Successful!",
@@ -166,7 +249,7 @@ class WorkshopManager(commands.Cog):
         embed.add_field(name="Date", value=workshop['date'].strftime("%Y-%m-%d %H:%M UTC"))
         embed.add_field(name="Spots Left", value=str(workshop['max_participants'] - len(workshop['participants'])))
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
     def schedule_workshop_reminders(self, workshop):
         """Schedule reminders for a workshop"""

@@ -13,21 +13,29 @@ class Networking(commands.Cog):
         self.connections = bot.mongo.connections
         self.connection_requests = bot.mongo.connection_requests
 
-    @commands.command(
+    @nextcord.slash_command(
         name="profile",
         description="Set up or view your professional profile"
     )
-    async def profile(self, ctx, member: nextcord.Member = None):
+    async def profile_slash(
+        self,
+        interaction: nextcord.Interaction,
+        member: nextcord.Member = nextcord.SlashOption(
+            name="member",
+            description="The member whose profile to view (defaults to yourself)",
+            required=False
+        )
+    ):
         """View your or someone else's professional profile"""
-        target = member or ctx.author
+        target = member or interaction.user
         
         profile = await self.profiles.find_one({"user_id": str(target.id)})
         
         if not profile:
-            if target == ctx.author:
+            if target == interaction.user:
                 embed = nextcord.Embed(
                     title="Profile Not Found",
-                    description="You haven't set up your profile yet! Use `!setupprofile` to create one.",
+                    description="You haven't set up your profile yet! Use `/setupprofile` to create one.",
                     color=nextcord.Color.orange()
                 )
             else:
@@ -55,20 +63,20 @@ class Networking(commands.Cog):
             
             embed.set_footer(text=f"Profile last updated: {profile.get('last_updated', 'Never')}")
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @commands.command(
+    @nextcord.slash_command(
         name="setupprofile",
         description="Set up your professional profile"
     )
-    async def setupprofile(self, ctx):
+    async def setupprofile_slash(self, interaction: nextcord.Interaction):
         """Interactive profile setup command"""
         try:
             # Check if profile exists
-            existing_profile = await self.profiles.find_one({"user_id": str(ctx.author.id)})
+            existing_profile = await self.profiles.find_one({"user_id": str(interaction.user.id)})
             
             def check(m):
-                return m.author == ctx.author and m.channel == ctx.channel
+                return m.author == interaction.user and m.channel == interaction.channel
 
             # Start profile setup
             embed = nextcord.Embed(
@@ -78,7 +86,7 @@ class Networking(commands.Cog):
                           "Type 'cancel' to cancel the setup.",
                 color=nextcord.Color.blue()
             )
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True) # Send initial response ephemerally
 
             # Questions and their corresponding database fields
             questions = {
@@ -88,71 +96,84 @@ class Networking(commands.Cog):
                 "What opportunities are you looking for? (e.g., 'Remote Python Developer position')": "looking_for"
             }
 
-            profile_data = {"user_id": str(ctx.author.id)}
+            profile_data = {"user_id": str(interaction.user.id)}
 
             for question, field in questions.items():
-                await ctx.send(question)
+                await interaction.followup.send(question, ephemeral=True) # Use followup for subsequent questions
                 
                 try:
                     response = await self.bot.wait_for('message', check=check, timeout=300.0)
                     
                     if response.content.lower() == 'cancel':
-                        await ctx.send("Profile setup cancelled.")
+                        await interaction.followup.send("Profile setup cancelled.", ephemeral=True)
                         return
                     
                     if response.content.lower() != 'skip':
                         profile_data[field] = response.content
                         
                 except TimeoutError:
-                    await ctx.send("Profile setup timed out. Please try again.")
+                    await interaction.followup.send("Profile setup timed out. Please try again.", ephemeral=True)
                     return
 
             profile_data["last_updated"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
             # Update or insert profile
             await self.profiles.update_one(
-                {"user_id": str(ctx.author.id)},
+                {"user_id": str(interaction.user.id)},
                 {"$set": profile_data},
                 upsert=True
             )
 
             embed = nextcord.Embed(
                 title="Profile Setup Complete!",
-                description="Your professional profile has been updated. Use `!profile` to view it!",
+                description="Your professional profile has been updated. Use `/profile` to view it!",
                 color=nextcord.Color.green()
             )
-            await ctx.send(embed=embed)
-
+            await interaction.followup.send(embed=embed) # Final confirmation can be public or ephemeral
+            
         except Exception as e:
             logger.error(f"Error in setupprofile: {str(e)}")
-            await ctx.send("An error occurred while setting up your profile. Please try again later.")
+            await interaction.followup.send("An error occurred while setting up your profile. Please try again later.", ephemeral=True)
 
-    @commands.command(
+    @nextcord.slash_command(
         name="connect",
         description="Send a connection request to another member"
     )
-    async def connect(self, ctx, member: nextcord.Member, *, message: str = None):
+    async def connect_slash(
+        self,
+        interaction: nextcord.Interaction,
+        member: nextcord.Member = nextcord.SlashOption(
+            name="member",
+            description="The member you want to connect with",
+            required=True
+        ),
+        message: str = nextcord.SlashOption(
+            name="message",
+            description="An optional message to send with the request",
+            required=False
+        )
+    ):
         """Send a connection request to another member"""
-        if member == ctx.author:
-            await ctx.send("You can't connect with yourself!")
+        if member == interaction.user:
+            await interaction.response.send_message("You can't connect with yourself!", ephemeral=True)
             return
 
         try:
             # Check if connection already exists
             existing_connection = await self.connections.find_one({
                 "$or": [
-                    {"user1_id": str(ctx.author.id), "user2_id": str(member.id)},
-                    {"user1_id": str(member.id), "user2_id": str(ctx.author.id)}
+                    {"user1_id": str(interaction.user.id), "user2_id": str(member.id)},
+                    {"user1_id": str(member.id), "user2_id": str(interaction.user.id)}
                 ]
             })
 
             if existing_connection:
-                await ctx.send("You're already connected with this member!")
+                await interaction.response.send_message("You're already connected with this member!", ephemeral=True)
                 return
 
             # Create connection request
             connection_data = {
-                "user1_id": str(ctx.author.id),
+                "user1_id": str(interaction.user.id),
                 "user2_id": str(member.id),
                 "status": "pending",
                 "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -164,23 +185,23 @@ class Networking(commands.Cog):
             # Send notification to the target member
             embed = nextcord.Embed(
                 title="New Connection Request!",
-                description=f"{ctx.author.mention} would like to connect with you!",
+                description=f"{interaction.user.mention} would like to connect with you!",
                 color=nextcord.Color.blue()
             )
             if message:
                 embed.add_field(name="Message", value=message)
             embed.add_field(
                 name="How to respond",
-                value="Use `!accept @user` to accept or `!decline @user` to decline",
+                value="Use `/accept @user` to accept or `/decline @user` to decline",
                 inline=False
             )
 
             await member.send(embed=embed)
-            await ctx.send(f"Connection request sent to {member.mention}!")
+            await interaction.response.send_message(f"Connection request sent to {member.mention}!")
 
         except Exception as e:
             logger.error(f"Error in connect: {str(e)}")
-            await ctx.send("An error occurred while sending the connection request. Please try again later.")
+            await interaction.response.send_message("An error occurred while sending the connection request. Please try again later.", ephemeral=True)
 
 def setup(bot):
     """Setup the Networking cog"""

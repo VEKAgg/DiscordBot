@@ -80,13 +80,21 @@ class GamificationManager(commands.Cog):
         
         return points, new_level > old_level
 
-    @commands.command(
+    @nextcord.slash_command(
         name="gameprofile",
         description="View your gamification profile"
     )
-    async def gameprofile(self, ctx, member: nextcord.Member = None):
+    async def gameprofile_slash(
+        self,
+        interaction: nextcord.Interaction,
+        member: nextcord.Member = nextcord.SlashOption(
+            name="member",
+            description="The member whose profile to view (defaults to yourself)",
+            required=False
+        )
+    ):
         """View your or someone else's gamification profile"""
-        target = member or ctx.author
+        target = member or interaction.user
         user = await self.get_or_create_user(str(target.id))
         
         # Calculate progress to next level
@@ -116,13 +124,13 @@ class GamificationManager(commands.Cog):
             inline=False
         )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @commands.command(
+    @nextcord.slash_command(
         name="leaderboard",
         description="View the points leaderboard"
     )
-    async def leaderboard(self, ctx):
+    async def leaderboard_slash(self, interaction: nextcord.Interaction):
         """Display the points leaderboard"""
         # Get top 10 users by points
         cursor = users.find().sort("points", -1).limit(10)
@@ -143,7 +151,7 @@ class GamificationManager(commands.Cog):
                 inline=False
             )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
     def create_progress_bar(self, percent: float, length: int = 20) -> str:
         """Create a text-based progress bar"""

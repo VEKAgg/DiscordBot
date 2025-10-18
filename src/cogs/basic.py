@@ -9,16 +9,13 @@ class Basic(commands.Cog):
         self.bot = bot
         logger.info("Basic cog initialized")
 
-    @commands.command(name="hello")
-    async def hello(self, ctx):
-        """Send a hello message"""
-        await ctx.send(f"👋 Hello, {ctx.author.mention}!")
 
-    @commands.command(name="ping")
-    async def ping(self, ctx):
-        """Check the bot's response time"""
+
+    @nextcord.slash_command(name="ping", description="Check the bot's response time")
+    async def ping_slash(self, interaction: nextcord.Interaction):
+        """Check the bot's response time using slash command"""
         latency = round(self.bot.latency * 1000)
-        await ctx.send(f"🏓 Pong! Latency: {latency}ms")
+        await interaction.response.send_message(f"🏓 Pong! Latency: {latency}ms")
 
     @nextcord.slash_command(name="hello", description="Get a greeting from the bot")
     async def hello_slash(self, interaction: nextcord.Interaction):

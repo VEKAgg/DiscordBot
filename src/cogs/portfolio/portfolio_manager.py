@@ -15,60 +15,61 @@ class PortfolioManager(commands.Cog):
         self.bot = bot
         self.db = bot.db.portfolios
 
-    @commands.group(name="portfolio", invoke_without_command=True)
-    async def portfolio(self, ctx):
+    @nextcord.slash_command(name="portfolio", description="Portfolio management commands")
+    async def portfolio(self, interaction: nextcord.Interaction):
         """Portfolio management commands"""
-        if ctx.invoked_subcommand is None:
-            embed = nextcord.Embed(
-                title="Portfolio Commands",
-                description="Showcase your projects and view others' work!",
-                color=nextcord.Color.blue()
-            )
-            embed.add_field(
-                name="Available Commands",
-                value="""
-                `!portfolio add` - Add a new project
-                `!portfolio list [@user]` - List your or someone's projects
-                `!portfolio view <project_id>` - View project details
-                `!portfolio edit <project_id>` - Edit a project
-                `!portfolio delete <project_id>` - Delete a project
-                `!portfolio search <query>` - Search projects
-                """,
-                inline=False
-            )
-            await ctx.send(embed=embed)
+        embed = nextcord.Embed(
+            title="Portfolio Commands",
+            description="Showcase your projects and view others' work!",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Commands",
+            value="""
+            `/portfolio add` - Add a new project
+            `/portfolio list [@user]` - List your or someone's projects
+            `/portfolio view <project_id>` - View project details
+            `/portfolio edit <project_id>` - Edit a project
+            `/portfolio delete <project_id>` - Delete a project
+            `/portfolio search <query>` - Search projects
+            """,
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @portfolio.command(name="add")
-    async def portfolio_add(self, ctx):
+    @portfolio.subcommand(name="add", description="Add a new project to your portfolio")
+    async def portfolio_add(self, interaction: nextcord.Interaction):
         """Add a new project to your portfolio"""
         try:
             def check(m):
-                return m.author == ctx.author and m.channel == ctx.channel
+                return m.author == interaction.user and m.channel == interaction.channel
+
+            await interaction.response.send_message("Let's add a new project to your portfolio! I'll ask you a few questions.", ephemeral=True)
 
             # Get project details
-            await ctx.send("What's the title of your project?")
+            await interaction.followup.send("What's the title of your project?", ephemeral=True)
             title_msg = await self.bot.wait_for('message', check=check, timeout=60)
             title = title_msg.content
 
-            await ctx.send("Provide a description of your project:")
+            await interaction.followup.send("Provide a description of your project:", ephemeral=True)
             desc_msg = await self.bot.wait_for('message', check=check, timeout=300)
             description = desc_msg.content
 
-            await ctx.send("What technologies/tools did you use? (comma-separated)")
+            await interaction.followup.send("What technologies/tools did you use? (comma-separated)", ephemeral=True)
             tech_msg = await self.bot.wait_for('message', check=check, timeout=60)
             technologies = [tech.strip() for tech in tech_msg.content.split(',')]
 
-            await ctx.send("Enter the project URL (optional, type 'skip' to skip):")
+            await interaction.followup.send("Enter the project URL (optional, type 'skip' to skip):", ephemeral=True)
             url_msg = await self.bot.wait_for('message', check=check, timeout=60)
             url = None if url_msg.content.lower() == 'skip' else url_msg.content
 
             if url and not validators.url(url):
-                await ctx.send("❌ Invalid URL provided. Project will be created without a URL.")
+                await interaction.followup.send("❌ Invalid URL provided. Project will be created without a URL.", ephemeral=True)
                 url = None
 
             # Create project
             project = {
-                'user_id': str(ctx.author.id),
+                'user_id': str(interaction.user.id),
                 'title': title,
                 'description': description,
                 'technologies': technologies,
@@ -93,23 +94,31 @@ class PortfolioManager(commands.Cog):
                 embed.add_field(name="URL", value=url, inline=False)
             embed.set_footer(text=f"Project ID: {result.inserted_id}")
 
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
 
         except asyncio.TimeoutError:
-            await ctx.send("❌ Project creation timed out. Please try again.")
+            await interaction.followup.send("❌ Project creation timed out. Please try again.", ephemeral=True)
 
-    @portfolio.command(name="list")
-    async def portfolio_list(self, ctx, member: nextcord.Member = None):
+    @portfolio.subcommand(name="list", description="List projects in a user's portfolio")
+    async def portfolio_list(
+        self,
+        interaction: nextcord.Interaction,
+        member: nextcord.Member = nextcord.SlashOption(
+            name="member",
+            description="The member whose portfolio to view (defaults to yourself)",
+            required=False
+        )
+    ):
         """List projects in a user's portfolio"""
-        target = member or ctx.author
+        target = member or interaction.user
         
         projects = await self.db.find({'user_id': str(target.id)}).to_list(length=None)
         
         if not projects:
-            if target == ctx.author:
-                await ctx.send("You haven't added any projects yet! Use `!portfolio add` to add one.")
+            if target == interaction.user:
+                await interaction.response.send_message("You haven't added any projects yet! Use `/portfolio add` to add one.", ephemeral=True)
             else:
-                await ctx.send(f"{target.display_name} hasn't added any projects yet.")
+                await interaction.response.send_message(f"{target.display_name} hasn't added any projects yet.", ephemeral=True)
             return
 
         embed = nextcord.Embed(
@@ -130,15 +139,23 @@ class PortfolioManager(commands.Cog):
                 inline=False
             )
 
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @portfolio.command(name="view")
-    async def portfolio_view(self, ctx, project_id: str):
+    @portfolio.subcommand(name="view", description="View detailed information about a project")
+    async def portfolio_view(
+        self,
+        interaction: nextcord.Interaction,
+        project_id: str = nextcord.SlashOption(
+            name="project_id",
+            description="The ID of the project to view",
+            required=True
+        )
+    ):
         """View detailed information about a project"""
         try:
             project = await self.db.find_one({'_id': project_id})
             if not project:
-                await ctx.send("❌ Project not found.")
+                await interaction.response.send_message("❌ Project not found.", ephemeral=True)
                 return
 
             # Increment view count
@@ -163,14 +180,22 @@ class PortfolioManager(commands.Cog):
             embed.add_field(name="Stats", value=f"❤️ {project['likes']} likes | 👀 {project['views']} views")
             embed.set_footer(text=f"Created: {project['created_at'].strftime('%Y-%m-%d')}")
 
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
         except Exception as e:
             logger.error(f"Error viewing project: {str(e)}")
-            await ctx.send("❌ An error occurred while viewing the project.")
+            await interaction.response.send_message("❌ An error occurred while viewing the project.", ephemeral=True)
 
-    @portfolio.command(name="search")
-    async def portfolio_search(self, ctx, *, query: str):
+    @portfolio.subcommand(name="search", description="Search for projects by title, description, or technologies")
+    async def portfolio_search(
+        self,
+        interaction: nextcord.Interaction,
+        query: str = nextcord.SlashOption(
+            name="query",
+            description="The search query",
+            required=True
+        )
+    ):
         """Search for projects by title, description, or technologies"""
         try:
             # Create text index if it doesn't exist
@@ -187,7 +212,7 @@ class PortfolioManager(commands.Cog):
             ).sort([('score', {'$meta': 'textScore'})]).limit(5).to_list(length=None)
 
             if not projects:
-                await ctx.send("No projects found matching your search.")
+                await interaction.response.send_message("No projects found matching your search.", ephemeral=True)
                 return
 
             embed = nextcord.Embed(
@@ -211,11 +236,11 @@ class PortfolioManager(commands.Cog):
                     inline=False
                 )
 
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed)
 
         except Exception as e:
             logger.error(f"Error searching projects: {str(e)}")
-            await ctx.send("❌ An error occurred while searching projects.")
+            await interaction.response.send_message("❌ An error occurred while searching projects.", ephemeral=True)
 
 def setup(bot):
     """Setup the PortfolioManager cog"""

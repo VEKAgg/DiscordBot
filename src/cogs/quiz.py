@@ -14,30 +14,29 @@ class Quiz(commands.Cog):
         self.quiz_service = QuizService(bot)
         self.active_quizzes = {}
 
-    @commands.group(name="quiz", invoke_without_command=True)
-    async def quiz(self, ctx):
+    @nextcord.slash_command(name="quiz", description="Quiz commands")
+    async def quiz(self, interaction: nextcord.Interaction):
         """Quiz commands"""
-        if ctx.invoked_subcommand is None:
-            embed = nextcord.Embed(
-                title="Quiz Commands",
-                description="Test your knowledge with our quiz system!",
-                color=nextcord.Color.blue()
-            )
-            embed.add_field(
-                name="Available Commands",
-                value="""
-                `!quiz categories` - List available quiz categories
-                `!quiz start [category] [difficulty]` - Start a quiz
-                `!quiz stats` - View your quiz statistics
-                `!quiz leaderboard` - View the quiz leaderboard
-                `!quiz daily` - Take the daily challenge
-                """,
-                inline=False
-            )
-            await ctx.send(embed=embed)
+        embed = nextcord.Embed(
+            title="Quiz Commands",
+            description="Test your knowledge with our quiz system!",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Commands",
+            value="""
+            `/quiz categories` - List available quiz categories
+            `/quiz start [category] [difficulty]` - Start a quiz
+            `/quiz stats` - View your quiz statistics
+            `/quiz leaderboard` - View the quiz leaderboard
+            `/quiz daily` - Take the daily challenge
+            """,
+            inline=False
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @quiz.command(name="categories")
-    async def quiz_categories(self, ctx):
+    @quiz.subcommand(name="categories", description="List available quiz categories and their statistics")
+    async def quiz_categories(self, interaction: nextcord.Interaction):
         """List available quiz categories and their statistics"""
         stats = await self.quiz_service.get_category_stats()
         
@@ -59,35 +58,50 @@ class Quiz(commands.Cog):
                 inline=False
             )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @quiz.command(name="start")
-    async def quiz_start(self, ctx, category: str = None, difficulty: str = None):
+    @quiz.subcommand(name="start", description="Start a quiz with optional category and difficulty")
+    async def quiz_start(
+        self,
+        interaction: nextcord.Interaction,
+        category: str = nextcord.SlashOption(
+            name="category",
+            description="The category of the quiz",
+            required=False,
+            choices=[{"name": cat.title(), "value": cat} for cat in QUIZ_CATEGORIES]
+        ),
+        difficulty: str = nextcord.SlashOption(
+            name="difficulty",
+            description="The difficulty level of the quiz",
+            required=False,
+            choices=[{"name": diff.title(), "value": diff} for diff in QUIZ_DIFFICULTY_LEVELS]
+        )
+    ):
         """Start a quiz with optional category and difficulty"""
         if category and category not in QUIZ_CATEGORIES:
             categories = ", ".join(QUIZ_CATEGORIES)
-            await ctx.send(f"❌ Invalid category. Available categories: {categories}")
+            await interaction.response.send_message(f"❌ Invalid category. Available categories: {categories}", ephemeral=True)
             return
             
         if difficulty and difficulty not in QUIZ_DIFFICULTY_LEVELS:
             difficulties = ", ".join(QUIZ_DIFFICULTY_LEVELS)
-            await ctx.send(f"❌ Invalid difficulty. Available difficulties: {difficulties}")
+            await interaction.response.send_message(f"❌ Invalid difficulty. Available difficulties: {difficulties}", ephemeral=True)
             return
 
         quiz = await self.quiz_service.get_random_quiz(category, difficulty)
         if not quiz:
-            await ctx.send("❌ No quiz questions found with these criteria.")
+            await interaction.response.send_message("❌ No quiz questions found with these criteria.", ephemeral=True)
             return
 
-        await self.send_quiz(ctx, quiz)
+        await self.send_quiz(interaction, quiz)
 
-    @quiz.command(name="stats")
-    async def quiz_stats(self, ctx):
+    @quiz.subcommand(name="stats", description="View your quiz statistics")
+    async def quiz_stats(self, interaction: nextcord.Interaction):
         """View your quiz statistics"""
-        stats = await self.quiz_service.get_user_stats(str(ctx.author.id))
+        stats = await self.quiz_service.get_user_stats(str(interaction.user.id))
         
         embed = nextcord.Embed(
-            title=f"{ctx.author.display_name}'s Quiz Statistics",
+            title=f"{interaction.user.display_name}'s Quiz Statistics",
             color=nextcord.Color.blue()
         )
         
@@ -123,10 +137,10 @@ class Quiz(commands.Cog):
             inline=True
         )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @quiz.command(name="leaderboard")
-    async def quiz_leaderboard(self, ctx):
+    @quiz.subcommand(name="leaderboard", description="View the quiz leaderboard")
+    async def quiz_leaderboard(self, interaction: nextcord.Interaction):
         """View the quiz leaderboard"""
         leaderboard = await self.quiz_service.get_leaderboard()
         
@@ -146,14 +160,14 @@ class Quiz(commands.Cog):
                 inline=False
             )
         
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
 
-    @quiz.command(name="daily")
-    async def quiz_daily(self, ctx):
+    @quiz.subcommand(name="daily", description="Take the daily challenge quiz")
+    async def quiz_daily(self, interaction: nextcord.Interaction):
         """Take the daily challenge quiz"""
         quiz, is_new = await self.quiz_service.get_daily_challenge()
         if not quiz:
-            await ctx.send("❌ No daily challenge available at the moment.")
+            await interaction.response.send_message("❌ No daily challenge available at the moment.", ephemeral=True)
             return
 
         embed = nextcord.Embed(
@@ -161,17 +175,17 @@ class Quiz(commands.Cog):
             description="This is today's challenge question!",
             color=nextcord.Color.gold()
         )
-        await ctx.send(embed=embed)
+        await interaction.response.send_message(embed=embed)
         
-        await self.send_quiz(ctx, quiz, is_daily=True)
+        await self.send_quiz(interaction, quiz, is_daily=True)
 
-    async def send_quiz(self, ctx, quiz, is_daily=False):
+    async def send_quiz(self, interaction: nextcord.Interaction, quiz, is_daily=False):
         """Send a quiz question and handle the response"""
-        if str(ctx.author.id) in self.active_quizzes:
-            await ctx.send("❌ You already have an active quiz. Please finish it first.")
+        if str(interaction.user.id) in self.active_quizzes:
+            await interaction.followup.send("❌ You already have an active quiz. Please finish it first.", ephemeral=True)
             return
 
-        self.active_quizzes[str(ctx.author.id)] = quiz['_id']
+        self.active_quizzes[str(interaction.user.id)] = quiz['_id']
         
         # Create quiz embed
         embed = nextcord.Embed(
@@ -197,7 +211,7 @@ class Quiz(commands.Cog):
         embed.add_field(name="Options", value=option_text, inline=False)
         
         # Send quiz and add reactions
-        message = await ctx.send(embed=embed)
+        message = await interaction.followup.send(embed=embed) # Use followup.send
         start_time = datetime.utcnow()
         
         for emoji in option_emojis[:len(options)]:
@@ -205,7 +219,7 @@ class Quiz(commands.Cog):
 
         def check(reaction, user):
             return (
-                user == ctx.author and
+                user == interaction.user and
                 str(reaction.emoji) in option_emojis[:len(options)] and
                 reaction.message.id == message.id
             )
@@ -222,7 +236,7 @@ class Quiz(commands.Cog):
             
             # Record the attempt
             await self.quiz_service.record_attempt(
-                str(ctx.author.id),
+                str(interaction.user.id),
                 str(quiz['_id']),
                 is_correct,
                 time_taken
@@ -242,19 +256,19 @@ class Quiz(commands.Cog):
             if quiz.get('explanation'):
                 result_embed.add_field(name="Explanation", value=quiz['explanation'], inline=False)
             
-            await ctx.send(embed=result_embed)
+            await interaction.followup.send(embed=result_embed) # Use followup.send
             
         except asyncio.TimeoutError:
-            await ctx.send("❌ Time's up! You took too long to answer.")
+            await interaction.followup.send("❌ Time's up! You took too long to answer.", ephemeral=True) # Use followup.send
             await self.quiz_service.record_attempt(
-                str(ctx.author.id),
+                str(interaction.user.id),
                 str(quiz['_id']),
                 False,
                 30.0
             )
         
         finally:
-            del self.active_quizzes[str(ctx.author.id)]
+            del self.active_quizzes[str(interaction.user.id)]
 
 def setup(bot):
     """Setup the Quiz cog"""

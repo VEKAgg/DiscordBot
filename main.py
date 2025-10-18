@@ -33,6 +33,7 @@ intents.members = True
 intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+bot.sync_commands_on_ready = True
 
 # Initialize MongoDB client
 mongo_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI'))
@@ -111,7 +112,7 @@ async def on_ready():
                 cogs_loaded += 1
     
     # Load cogs from subdirectories
-    cog_subdirs = ['workshops', 'portfolio', 'gamification']
+    cog_subdirs = ['workshops', 'portfolio', 'gamification', 'system']
     for subdir in cog_subdirs:
         subdir_path = f'./src/cogs/{subdir}'
         if os.path.exists(subdir_path):
@@ -125,7 +126,7 @@ async def on_ready():
     await bot.change_presence(
         activity=nextcord.Activity(
             type=nextcord.ActivityType.watching,
-            name="your career growth! | !help"
+            name="your career growth! | /help"
         )
     )
     
@@ -146,7 +147,7 @@ async def on_member_join(member):
                 title=f"Welcome to {member.guild.name}! 🎉",
                 description=f"Hey {member.mention}, welcome to our community! 🌟\n\n"
                           f"Here's how to get started:\n"
-                          f"• Use `!help` to see all available commands\n"
+                          f"• Use `/help` to see all available commands\n"
                           f"• Check out our rules and guidelines\n"
                           f"• Introduce yourself in the community\n"
                           f"• Have fun and engage with others!\n\n"
@@ -162,7 +163,7 @@ async def on_member_join(member):
                     f"Welcome to {member.guild.name}! 🎉\n\n"
                     f"We're excited to have you here! To help you get started:\n"
                     f"1. Read the server rules\n"
-                    f"2. Set up your profile with `!setupprofile`\n"
+                    f"2. Set up your profile with `/setupprofile`\n"
                     f"3. Introduce yourself to the community\n\n"
                     f"If you need any help, feel free to ask the moderators!"
                 )
