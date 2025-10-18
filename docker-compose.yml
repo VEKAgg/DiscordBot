@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build: .
+    image: veka-discord-bot:latest
+    container_name: veka-discord-bot
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - veka-network
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    container_name: veka-redis
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - veka-network
+    ports:
+      - "6379:6379"
+
+networks:
+  veka-network:
+    driver: bridge
+
+volumes:
+  redis-data: 
