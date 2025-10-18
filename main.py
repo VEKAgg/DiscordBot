@@ -1,13 +1,22 @@
 import os
+import sys
+import logging
+import asyncio
+import importlib
+from datetime import datetime
+from typing import Optional, List
+
 import nextcord
 from nextcord.ext import commands
-import logging
 from dotenv import load_dotenv
 import motor.motor_asyncio
-from datetime import datetime
-import importlib
-import sys
+import redis.asyncio as redis
+
 from src.database.mongodb import init_db
+from src.services.redis_service import RedisService
+from src.services.github_service import GitHubService
+from src.services.leetcode_service import LeetCodeService
+from src.services.calendar_service import CalendarService
 
 # Configure logging
 if not os.path.exists('logs'):
@@ -31,13 +40,140 @@ intents = nextcord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
+intents.presences = True
+intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+class VEKABot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix='!',
+            intents=intents,
+            help_command=None
+        )
+        
+        # Initialize database connections
+        self.mongo = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI')).veka_bot
+        self.redis = RedisService()
+        
+        # Initialize services
+        self.github = GitHubService()
+        self.leetcode = LeetCodeService()
+        self.calendar = CalendarService()
+        
+        # Track active voice channels for cleanup
+        self.active_voice_channels = {}
+        
+        # Store command cooldowns
+        self.command_cooldowns = {}
 
-# Initialize MongoDB client
-mongo_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI'))
-bot.mongo = mongo_client.veka_bot
-bot.db = bot.mongo  # Add this line to make db accessible to cogs
+    async def setup_hook(self):
+        """Setup function that is called when the bot starts"""
+        # Initialize databases
+        await init_db(self.mongo)
+        
+        # Load all cogs
+        await self.load_all_cogs()
+        
+        # Start background tasks
+        self.loop.create_task(self.cleanup_inactive_channels())
+        self.loop.create_task(self.update_presence())
+
+    async def load_all_cogs(self):
+        """Load all cogs from the cogs directory"""
+        cog_count = 0
+        for root, _, files in os.walk("src/cogs"):
+            for file in files:
+                if file.endswith(".py") and not file.startswith("_"):
+                    try:
+                        cog_path = os.path.join(root, file)
+                        await self.load_cog(cog_path)
+                        cog_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to load cog {file}: {e}")
+        
+        logger.info(f"Successfully loaded {cog_count} cogs")
+
+    async def load_cog(self, cog_path: str):
+        """Load a cog from a file path"""
+        try:
+            # Convert path to module name
+            if cog_path.startswith('./'):
+                cog_path = cog_path[2:]
+            
+            module_name = cog_path.replace('/', '.').replace('\\', '.').replace('.py', '')
+            
+            # Import or reload the module
+            if module_name in sys.modules:
+                module = importlib.reload(sys.modules[module_name])
+            else:
+                module = importlib.import_module(module_name)
+            
+            # Find and load the cog class
+            for item_name in dir(module):
+                item = getattr(module, item_name)
+                if isinstance(item, type) and issubclass(item, commands.Cog) and item != commands.Cog:
+                    await self.add_cog(item(self))
+                    logger.info(f"Loaded cog: {item_name}")
+                    break
+            
+        except Exception as e:
+            logger.error(f"Error loading cog {cog_path}: {e}")
+            raise e
+
+    async def cleanup_inactive_channels(self):
+        """Clean up inactive voice channels periodically"""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                current_time = datetime.utcnow()
+                channels_to_remove = []
+                
+                for channel_id, data in self.active_voice_channels.items():
+                    if (current_time - data["last_active"]).total_seconds() > 3600:  # 1 hour
+                        channel = self.get_channel(channel_id)
+                        if channel and len(channel.members) == 0:
+                            await channel.delete()
+                            channels_to_remove.append(channel_id)
+                
+                for channel_id in channels_to_remove:
+                    del self.active_voice_channels[channel_id]
+                    
+            except Exception as e:
+                logger.error(f"Error in channel cleanup: {e}")
+            
+            await asyncio.sleep(300)  # Check every 5 minutes
+
+    async def update_presence(self):
+        """Update bot presence periodically"""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                guild_count = len(self.guilds)
+                user_count = sum(g.member_count for g in self.guilds)
+                
+                activities = [
+                    nextcord.Game(name=f"with {user_count} professionals"),
+                    nextcord.Activity(
+                        type=nextcord.ActivityType.watching,
+                        name=f"{guild_count} communities"
+                    ),
+                    nextcord.Activity(
+                        type=nextcord.ActivityType.listening,
+                        name="professional networking"
+                    )
+                ]
+                
+                for activity in activities:
+                    await self.change_presence(activity=activity)
+                    await asyncio.sleep(60)
+                    
+            except Exception as e:
+                logger.error(f"Error updating presence: {e}")
+            
+            await asyncio.sleep(180)  # Update every 3 minutes
+
+# Initialize bot
+bot = VEKABot()
 
 def load_cog(cog_path):
     """Load a cog from a file path"""

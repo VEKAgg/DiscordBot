@@ -4,11 +4,9 @@ import logging
 from datetime import datetime, timedelta
 import asyncio
 from typing import List, Dict, Optional
-import matplotlib.pyplot as plt
-import io
 import pandas as pd
-import seaborn as sns
 from collections import Counter, defaultdict
+import json
 
 logger = logging.getLogger('VEKA.analytics')
 
@@ -35,16 +33,40 @@ class Analytics(commands.Cog):
                     "guild_id": str(guild.id),
                     "timestamp": now,
                     "member_count": guild.member_count,
-                    "online_count": len([m for m in guild.members if m.status != nextcord.Status.offline]),
-                    "channel_counts": {
-                        "text": len([c for c in guild.channels if isinstance(c, nextcord.TextChannel)]),
-                        "voice": len([c for c in guild.channels if isinstance(c, nextcord.VoiceChannel)]),
+                    "presence_stats": {
+                        "online": len([m for m in guild.members if m.status == nextcord.Status.online]),
+                        "idle": len([m for m in guild.members if m.status == nextcord.Status.idle]),
+                        "dnd": len([m for m in guild.members if m.status == nextcord.Status.dnd]),
+                        "offline": len([m for m in guild.members if m.status == nextcord.Status.offline])
+                    },
+                    "channel_stats": {
+                        "text": {
+                            "count": len([c for c in guild.channels if isinstance(c, nextcord.TextChannel)]),
+                            "active": len([c for c in guild.channels if isinstance(c, nextcord.TextChannel) and 
+                                        hasattr(c, 'last_message_id') and c.last_message_id])
+                        },
+                        "voice": {
+                            "count": len([c for c in guild.channels if isinstance(c, nextcord.VoiceChannel)]),
+                            "active": len([c for c in guild.channels if isinstance(c, nextcord.VoiceChannel) and len(c.members) > 0])
+                        },
+                        "categories": Counter(c.category.name if c.category else "None" for c in guild.channels)
+                    },
+                    "activity": {
+                        "playing": Counter(str(m.activity.name) for m in guild.members if m.activity and m.activity.type == nextcord.ActivityType.playing),
+                        "streaming": Counter(str(m.activity.name) for m in guild.members if m.activity and m.activity.type == nextcord.ActivityType.streaming),
+                        "listening": Counter(str(m.activity.name) for m in guild.members if m.activity and m.activity.type == nextcord.ActivityType.listening),
+                        "watching": Counter(str(m.activity.name) for m in guild.members if m.activity and m.activity.type == nextcord.ActivityType.watching),
+                        "custom": Counter(str(m.activity) for m in guild.members if m.activity and m.activity.type == nextcord.ActivityType.custom)
+                    },
+                    "member_stats": {
+                        "total": guild.member_count,
+                        "humans": len([m for m in guild.members if not m.bot]),
+                        "bots": len([m for m in guild.members if m.bot]),
+                        "verified": len([m for m in guild.members if m.public_flags.verified_bot]),
+                        "boosters": len(guild.premium_subscribers),
+                        "roles": dict(Counter(role.name for member in guild.members for role in member.roles)),
+                        "join_ages": self.calculate_join_ages(guild.members)
                     }
-                }
-
-                # Add role distribution
-                role_counts = Counter(role.name for member in guild.members for role in member.roles)
-                metrics["role_distribution"] = dict(role_counts)
 
                 await self.metrics.insert_one(metrics)
 

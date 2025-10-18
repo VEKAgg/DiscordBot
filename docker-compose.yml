@@ -8,13 +8,45 @@ services:
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
       - ./.env:/app/.env:ro
     environment:
       - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
     networks:
       - veka-network
     depends_on:
+      - mongo
       - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  mongo:
+    image: mongo:5
+    container_name: veka-mongo
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - veka-network
+    ports:
+      - "27017:27017"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
 
   redis:
     image: redis:alpine
@@ -26,10 +58,45 @@ services:
       - veka-network
     ports:
       - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+  dashboard:
+    image: node:18-alpine
+    container_name: veka-dashboard
+    restart: unless-stopped
+    volumes:
+      - ./dashboard:/app
+    working_dir: /app
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    networks:
+      - veka-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+    depends_on:
+      - discord-bot
 
 networks:
   veka-network:
     driver: bridge
 
 volumes:
-  redis-data: 
+  mongo-data:
+  redis-data:
