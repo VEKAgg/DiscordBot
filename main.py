@@ -128,7 +128,7 @@ async def on_ready():
             name="your career growth! | !help"
         )
     )
-    
+    bot.add_all_application_commands()
     logger.info(f"Loaded {cogs_loaded} cogs")
 
 @bot.event
