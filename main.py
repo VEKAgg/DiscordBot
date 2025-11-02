@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional, List
 
 import nextcord
+from src.utils.slash_utils import add_slash_command
 from nextcord.ext import commands
 from dotenv import load_dotenv
 import motor.motor_asyncio
@@ -65,6 +66,28 @@ class VEKABot(commands.Bot):
         
         # Store command cooldowns
         self.command_cooldowns = {}
+        
+        # Store guild configurations
+        self.guild_configs = {}
+        
+        # Register global error handler
+        self.tree.error(self.on_app_command_error)
+
+    async def on_app_command_error(self, interaction: nextcord.Interaction, error: Exception):
+        """Global error handler for application commands"""
+        error_embed = nextcord.Embed(
+            title="❌ Command Error",
+            description=str(error),
+            color=nextcord.Color.red()
+        )
+        
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=error_embed, ephemeral=True)
+            
+        # Log the error
+        logger.error(f"Error in command {interaction.application_command.name}: {error}", exc_info=error)
 
     async def setup_hook(self):
         """Setup function that is called when the bot starts"""
