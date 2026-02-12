@@ -51,31 +51,35 @@ class QuizService:
         
         return random_quiz[0] if random_quiz else None
 
-    async def record_attempt(self, user_id: str, quiz_id: str,
-                           correct: bool, time_taken: float) -> Dict:
-        """Record a quiz attempt"""
+    async def record_quiz_attempt(self, user_id: str, quiz_id: str,
+                           correct: bool, is_daily: bool = False) -> int:
+        """Record a quiz attempt and return points earned"""
         attempt = {
             "user_id": user_id,
             "quiz_id": quiz_id,
             "correct": correct,
-            "time_taken": time_taken,
+            "is_daily": is_daily,
             "created_at": datetime.utcnow()
         }
         await quiz_attempts.insert_one(attempt)
 
         # Update user points if correct
+        points_earned = 0
         if correct:
+            points_earned = POINTS_CONFIG['quiz_correct']
+            if is_daily:
+                points_earned += POINTS_CONFIG['daily_streak']
             await users.update_one(
                 {"discord_id": user_id},
                 {
                     "$inc": {
-                        "points": POINTS_CONFIG['quiz_correct'],
+                        "points": points_earned,
                         "quiz_score": 1
                     }
                 }
             )
 
-        return attempt
+        return points_earned
 
     async def get_user_stats(self, user_id: str) -> Dict:
         """Get quiz statistics for a user"""
@@ -90,22 +94,94 @@ class QuizService:
             "correct": True
         })
         
-        # Get average time
-        pipeline = [
+        # Get category breakdown
+        category_pipeline = [
             {"$match": {"user_id": user_id}},
-            {"$group": {"_id": None, "avg_time": {"$avg": "$time_taken"}}}
+            {"$lookup": {
+                "from": "quizzes",
+                "localField": "quiz_id",
+                "foreignField": "_id",
+                "as": "quiz"
+            }},
+            {"$unwind": "$quiz"},
+            {"$group": {
+                "_id": "$quiz.category",
+                "total": {"$sum": 1},
+                "correct": {"$sum": {"$cond": ["$correct", 1, 0]}}
+            }}
         ]
-        avg_result = await quiz_attempts.aggregate(pipeline).to_list(length=1)
-        avg_time = avg_result[0]["avg_time"] if avg_result else 0
+        category_stats = await quiz_attempts.aggregate(category_pipeline).to_list(length=None)
+        categories = {}
+        for stat in category_stats:
+            cat = stat['_id']
+            categories[cat] = {
+                'total': stat['total'],
+                'correct': stat['correct'],
+                'percentage': round((stat['correct'] / stat['total']) * 100, 1) if stat['total'] > 0 else 0
+            }
+        
+        # Get recent quizzes (last 5)
+        recent_pipeline = [
+            {"$match": {"user_id": user_id}},
+            {"$sort": {"created_at": -1}},
+            {"$limit": 5},
+            {"$lookup": {
+                "from": "quizzes",
+                "localField": "quiz_id",
+                "foreignField": "_id",
+                "as": "quiz"
+            }},
+            {"$unwind": "$quiz"},
+            {"$project": {
+                "category": "$quiz.category",
+                "difficulty": "$quiz.difficulty",
+                "correct": 1,
+                "created_at": 1
+            }}
+        ]
+        recent_quizzes = await quiz_attempts.aggregate(recent_pipeline).to_list(length=None)
 
         return {
-            'total_attempts': total_attempts,
-            'correct_attempts': correct_attempts,
-            'accuracy': (correct_attempts / total_attempts * 100) if total_attempts else 0,
-            'average_time': round(avg_time, 2),
-            'total_points': user.get('points', 0),
-            'quiz_score': user.get('quiz_score', 0)
+            'total_quizzes': total_attempts,
+            'correct_answers': correct_attempts,
+            'accuracy': round((correct_attempts / total_attempts * 100), 1) if total_attempts > 0 else 0,
+            'points': user.get('points', 0),
+            'categories': categories,
+            'recent_quizzes': recent_quizzes
         }
+
+    async def check_daily_taken(self, user_id: str) -> bool:
+        """Check if user has taken today's daily quiz"""
+        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+        
+        daily_attempt = await quiz_attempts.find_one({
+            "user_id": user_id,
+            "is_daily": True,
+            "created_at": {"$gte": today_start, "$lt": today_end}
+        })
+        
+        return daily_attempt is not None
+
+    async def get_time_until_next_daily(self) -> str:
+        """Get formatted time until next daily quiz is available"""
+        now = datetime.utcnow()
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        time_diff = tomorrow - now
+        
+        hours = time_diff.seconds // 3600
+        minutes = (time_diff.seconds % 3600) // 60
+        
+        if hours > 0:
+            return f"{hours}h {minutes}m"
+        else:
+            return f"{minutes}m"
+
+    async def get_daily_quiz(self) -> Optional[Dict]:
+        """Get the daily quiz for today"""
+        # Use the existing get_daily_challenge method but with better return
+        quiz, is_new = await self.get_daily_challenge()
+        return quiz
 
     async def get_leaderboard(self, limit: int = 10) -> List[Dict]:
         """Get the quiz leaderboard"""

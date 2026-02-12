@@ -3,11 +3,10 @@ import nextcord
 from nextcord.ext import commands
 import logging
 from dotenv import load_dotenv
-import motor.motor_asyncio
 from datetime import datetime
 import importlib
 import sys
-from src.database.mongodb import init_db
+from src.database.database import db
 
 # Configure logging
 if not os.path.exists('logs'):
@@ -34,10 +33,7 @@ intents.guilds = True
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
-# Initialize MongoDB client
-mongo_client = motor.motor_asyncio.AsyncIOMotorClient(os.getenv('MONGODB_URI'))
-bot.mongo = mongo_client.veka_bot
-bot.db = bot.mongo  # Add this line to make db accessible to cogs
+# PostgreSQL database will be initialized in on_ready
 
 def load_cog(cog_path):
     """Load a cog from a file path"""
@@ -93,10 +89,10 @@ def load_cog(cog_path):
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
     
-    # Initialize database
+    # Initialize PostgreSQL database
     try:
-        await init_db()
-        logger.info("Database initialized successfully")
+        await db.connect()
+        logger.info("PostgreSQL database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {str(e)}")
     
@@ -187,5 +183,14 @@ async def on_command_error(ctx, error):
         await ctx.send("❌ An error occurred while processing your command.")
 
 # Run the bot
+@bot.event
+async def on_disconnect():
+    """Clean up database connection on shutdown"""
+    try:
+        await db.close()
+        logger.info("Database connection closed")
+    except Exception as e:
+        logger.error(f"Error closing database: {str(e)}")
+
 if __name__ == '__main__':
     bot.run(os.getenv('DISCORD_TOKEN'))

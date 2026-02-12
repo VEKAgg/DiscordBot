@@ -1,7 +1,6 @@
 nextcord
 python-dotenv
-pymongo
-motor
+asyncpg>=0.29.0
 python-dateutil
 aiohttp
 colorama
