@@ -273,6 +273,113 @@ class Quiz(commands.Cog):
             except:
                 pass
 
+    @quiz.command(name="add")
+    @commands.has_permissions(administrator=True)
+    async def quiz_add(self, ctx):
+        """Add a new quiz question (Admin only)"""
+        try:
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel
+
+            # Get category
+            categories_list = ", ".join([f"`{c}`" for c in QUIZ_CATEGORIES])
+            await ctx.send(f"📚 Select a category ({categories_list}):")
+            cat_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            category = cat_msg.content
+            if category not in QUIZ_CATEGORIES:
+                await ctx.send(f"❌ Invalid category. Must be one of: {categories_list}")
+                return
+
+            # Get difficulty
+            difficulties_list = ", ".join([f"`{d}`" for d in QUIZ_DIFFICULTY_LEVELS])
+            await ctx.send(f"📊 Select difficulty ({difficulties_list}):")
+            diff_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            difficulty = diff_msg.content
+            if difficulty not in QUIZ_DIFFICULTY_LEVELS:
+                await ctx.send(f"❌ Invalid difficulty. Must be one of: {difficulties_list}")
+                return
+
+            # Get question
+            await ctx.send("❓ Enter the quiz question:")
+            q_msg = await self.bot.wait_for('message', check=check, timeout=120)
+            question = q_msg.content
+
+            # Get correct answer
+            await ctx.send("✅ Enter the correct answer:")
+            ans_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            correct_answer = ans_msg.content
+
+            # Get wrong answers
+            await ctx.send("❌ Enter wrong answers (comma-separated):")
+            wrong_msg = await self.bot.wait_for('message', check=check, timeout=120)
+            wrong_answers = [a.strip() for a in wrong_msg.content.split(",") if a.strip()]
+            if len(wrong_answers) < 1:
+                await ctx.send("❌ Need at least 1 wrong answer.")
+                return
+
+            # Get explanation (optional)
+            await ctx.send("📝 Enter explanation (optional, type 'skip' to skip):")
+            exp_msg = await self.bot.wait_for('message', check=check, timeout=120)
+            explanation = None if exp_msg.content.lower() == 'skip' else exp_msg.content
+
+            # Create quiz
+            quiz = await self.quiz_service.create_quiz(
+                category, difficulty, question, correct_answer, wrong_answers, explanation
+            )
+
+            embed = nextcord.Embed(
+                title="✅ Quiz Added",
+                description="New quiz question has been added successfully!",
+                color=nextcord.Color.green()
+            )
+            embed.add_field(name="Category", value=category, inline=True)
+            embed.add_field(name="Difficulty", value=difficulty, inline=True)
+            embed.add_field(name="Question", value=question[:100] + "..." if len(question) > 100 else question, inline=False)
+            await ctx.send(embed=embed)
+
+        except asyncio.TimeoutError:
+            await ctx.send("⏱️ Quiz creation timed out.")
+        except Exception as e:
+            logger.error(f"Error adding quiz: {str(e)}")
+            await ctx.send("❌ An error occurred while adding the quiz.")
+
+    @quiz.command(name="delete")
+    @commands.has_permissions(administrator=True)
+    async def quiz_delete(self, ctx, quiz_id: str):
+        """Delete a quiz question (Admin only)"""
+        try:
+            from bson import ObjectId
+            from src.database.mongodb import quizzes
+            
+            result = await quizzes.delete_one({"_id": ObjectId(quiz_id)})
+            
+            if result.deleted_count > 0:
+                await ctx.send(f"✅ Quiz `{quiz_id}` has been deleted.")
+            else:
+                await ctx.send(f"❌ Quiz `{quiz_id}` not found.")
+        except Exception as e:
+            logger.error(f"Error deleting quiz: {str(e)}")
+            await ctx.send("❌ An error occurred while deleting the quiz.")
+
+    @quiz.command(name="admin")
+    @commands.has_permissions(administrator=True)
+    async def quiz_admin(self, ctx):
+        """Show admin quiz commands"""
+        embed = nextcord.Embed(
+            title="🔧 Quiz Admin Commands",
+            description="Admin-only commands for managing quizzes",
+            color=nextcord.Color.blue()
+        )
+        embed.add_field(
+            name="Available Commands",
+            value="""
+            `!quiz add` - Add a new quiz question
+            `!quiz delete <quiz_id>` - Delete a quiz by ID
+            """,
+            inline=False
+        )
+        await ctx.send(embed=embed)
+
 def setup(bot):
     """Setup the Quiz cog"""
     if bot is not None:

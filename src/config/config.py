@@ -7,7 +7,9 @@ load_dotenv()
 # Bot Configuration
 BOT_PREFIX = "!"
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MONGODB_URI = os.getenv("MONGODB_URI")
+
+# PostgreSQL Configuration
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # RSS Feed Configuration
 RSS_FEEDS = {

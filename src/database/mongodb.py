@@ -18,6 +18,8 @@ resources = db.resources
 mentorships = db.mentorships
 challenges = db.challenges
 challenge_attempts = db.challenge_attempts
+workshops = db.workshops
+workshop_participants = db.workshop_participants
 
 async def init_db():
     """Initialize database indexes"""
@@ -40,6 +42,11 @@ async def init_db():
         
         # Challenges indexes
         await challenges.create_index([("category", 1), ("difficulty", 1)])
+        
+        # Workshops indexes
+        await workshops.create_index([("date", 1)])
+        await workshops.create_index([("created_by", 1)])
+        await workshop_participants.create_index([("workshop_id", 1), ("user_id", 1)], unique=True)
         
         logger.info("Database indexes created successfully")
     except Exception as e:
