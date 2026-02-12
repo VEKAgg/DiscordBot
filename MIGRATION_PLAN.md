@@ -1,155 +1,33 @@
-# VEKA Discord Bot - Code Analysis & Migration Plan
+# VEKA Discord Bot - PostgreSQL Migration & Development Plan
 
 **Date:** 2026-02-12  
-**Status:** Analysis Complete - Ready for Implementation
+**Status:** Ready for Immediate Implementation  
+**Priority:** IMMEDIATE
 
 ---
 
 ## Executive Summary
 
-This document outlines all discovered discrepancies, missing functionality, and provides a comprehensive plan for fixing issues and migrating from MongoDB to PostgreSQL.
+This plan outlines the migration from MongoDB to PostgreSQL and aligns with the original development roadmap. Since discrepancies have been fixed, this plan focuses on:
+
+1. **Immediate PostgreSQL migration** (This week)
+2. **Core feature stabilization** (Quiz, Mentorship, Networking, Workshops, Portfolio, Gamification)
+3. **Future expansion** based on original Plan.md features
 
 ---
 
-## Part 1: Critical Code Discrepancies
+## Phase 1: PostgreSQL Migration (IMMEDIATE - Week 1)
 
-### 1.1 Quiz System Mismatches
+### 1.1 Database Schema
 
-**File:** `src/cogs/quiz.py` vs `src/services/quiz_service.py`
-
-#### Missing Methods in `quiz_service.py`
-
-The quiz cog calls these methods that don't exist:
-
-| Cog Call | Service Method | Status |
-|----------|---------------|---------|
-| `check_daily_taken(user_id)` | ❌ Missing | Needs implementation |
-| `get_time_until_next_daily()` | ❌ Missing | Needs implementation |
-| `get_daily_quiz()` | `get_daily_challenge()` | ❌ Wrong name/return format |
-| `record_quiz_attempt()` | `record_attempt()` | ❌ Wrong name |
-
-#### Return Format Mismatch in `get_user_stats()`
-
-**Cog expects:**
-```python
-{
-    'total_quizzes': int,
-    'correct_answers': int,
-    'accuracy': float,
-    'points': int,
-    'categories': dict,
-    'recent_quizzes': list
-}
-```
-
-**Service returns:**
-```python
-{
-    'total_attempts': int,
-    'correct_attempts': int,
-    'accuracy': float,
-    'average_time': float,
-    'total_points': int,
-    'quiz_score': int
-}
-```
-
-**Impact:** Quiz stats command will fail or show wrong data.
-
-### 1.2 Networking Module Bug
-
-**File:** `src/cogs/networking.py:162`
-
-**Issue:** Uses `self.db.connection_requests` but variable is named `self.connection_requests` (line 14)
-
-**Fix:**
-```python
-# Change line 162 from:
-await self.db.connection_requests.insert_one(connection_data)
-# To:
-await self.connection_requests.insert_one(connection_data)
-```
-
-### 1.3 Missing Networking Commands
-
-**File:** `src/cogs/networking.py`
-
-Commands referenced in help messages but not implemented:
-
-- `!accept @user` - Accept connection request
-- `!decline @user` - Decline connection request  
-- `!connections` - List your connections
-
-**Current state:** Users can send connection requests but cannot respond to them.
-
-### 1.4 Missing Quiz Management
-
-**File:** `src/cogs/quiz.py`
-
-No way to add quizzes to the database. Need admin commands:
-- `!quiz add` - Interactive quiz creation
-- `!quiz edit <id>` - Edit existing quiz
-- `!quiz delete <id>` - Delete quiz
-
-### 1.5 Workshop Data Persistence Issue
-
-**File:** `src/cogs/workshops/workshop_manager.py`
-
-**Issue:** Workshops stored only in memory (`self.active_workshops = {}`)
-
-**Impact:** All workshop data lost on bot restart
-
-**Solution:** Persist to MongoDB collection (pre-migration) or PostgreSQL table (post-migration)
-
-### 1.6 Gamification Points Conflict
-
-**File:** `src/cogs/gamification/gamification_manager.py` vs `src/config/config.py`
-
-**Issue:** Point values defined in both places with different values:
-
-| Action | Config.py | Gamification Manager |
-|--------|-----------|---------------------|
-| Quiz correct | 10 | 10 ✓ |
-| Workshop host | N/A | 50 |
-| Workshop attendance | N/A | 20 |
-| Mentorship complete | 30 | 100 |
-| Daily activity | 20 | 5 |
-
-**Impact:** Inconsistent point awards depending on which system records the action.
-
-### 1.7 Missing Test Framework
-
-**Status:** No tests configured
-
-**Missing:**
-- `tests/` directory
-- pytest configuration
-- Test coverage for any functionality
-
----
-
-## Part 2: MongoDB to PostgreSQL Migration Plan
-
-### 2.1 Migration Strategy
-
-**Approach:** Parallel implementation with data migration
-
-1. Fix MongoDB discrepancies first
-2. Design PostgreSQL schema
-3. Create database abstraction layer
-4. Migrate services one by one
-5. Run parallel systems during transition
-6. Switch over once verified
-
-### 2.2 Proposed PostgreSQL Schema
-
-#### Core Tables
+**File:** `migrations/001_initial_schema.sql`
 
 ```sql
--- Users (central identity table)
+-- Users (central identity)
 CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     discord_id VARCHAR(20) UNIQUE NOT NULL,
+    username VARCHAR(100),
     points INTEGER DEFAULT 0,
     experience INTEGER DEFAULT 0,
     level INTEGER DEFAULT 1,
@@ -161,7 +39,7 @@ CREATE TABLE users (
     updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Profiles (networking feature)
+-- Profiles (Networking feature)
 CREATE TABLE profiles (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -172,19 +50,36 @@ CREATE TABLE profiles (
     last_updated TIMESTAMP DEFAULT NOW()
 );
 
--- Quizzes
+-- Connections (Networking)
+CREATE TABLE connections (
+    id SERIAL PRIMARY KEY,
+    user1_id INTEGER REFERENCES users(id),
+    user2_id INTEGER REFERENCES users(id),
+    connected_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(user1_id, user2_id)
+);
+
+CREATE TABLE connection_requests (
+    id SERIAL PRIMARY KEY,
+    requester_id INTEGER REFERENCES users(id),
+    recipient_id INTEGER REFERENCES users(id),
+    message TEXT,
+    status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Quizzes (Quiz System)
 CREATE TABLE quizzes (
     id SERIAL PRIMARY KEY,
     category VARCHAR(100) NOT NULL,
     difficulty VARCHAR(20) NOT NULL,
     question TEXT NOT NULL,
     correct_answer TEXT NOT NULL,
-    wrong_answers TEXT[], -- PostgreSQL array
+    wrong_answers TEXT[],
     explanation TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Quiz Attempts
 CREATE TABLE quiz_attempts (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
@@ -207,18 +102,6 @@ CREATE TABLE mentorships (
     CONSTRAINT different_users CHECK (mentor_id != mentee_id)
 );
 
--- Portfolios
-CREATE TABLE portfolios (
-    id VARCHAR(50) PRIMARY KEY,
-    user_id INTEGER REFERENCES users(id),
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    url VARCHAR(500),
-    tags TEXT[],
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-
 -- Workshops
 CREATE TABLE workshops (
     id VARCHAR(50) PRIMARY KEY,
@@ -231,7 +114,6 @@ CREATE TABLE workshops (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Workshop Participants (junction table)
 CREATE TABLE workshop_participants (
     workshop_id VARCHAR(50) REFERENCES workshops(id),
     user_id INTEGER REFERENCES users(id),
@@ -239,469 +121,438 @@ CREATE TABLE workshop_participants (
     PRIMARY KEY (workshop_id, user_id)
 );
 
--- Connections
-CREATE TABLE connections (
+-- Portfolios
+CREATE TABLE portfolios (
+    id VARCHAR(50) PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    url VARCHAR(500),
+    tags TEXT[],
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Resources (RSS caching)
+CREATE TABLE resources (
     id SERIAL PRIMARY KEY,
-    requester_id INTEGER REFERENCES users(id),
-    recipient_id INTEGER REFERENCES users(id),
-    message TEXT,
-    status VARCHAR(20) DEFAULT 'pending',
+    category VARCHAR(100),
+    title VARCHAR(500),
+    url VARCHAR(500),
+    description TEXT,
+    author VARCHAR(255),
+    published_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
--- RSS Cache
-CREATE TABLE rss_cache (
-    id SERIAL PRIMARY KEY,
-    url VARCHAR(500) UNIQUE NOT NULL,
-    title VARCHAR(255),
-    content JSONB,
-    cached_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-#### Indexes
-
-```sql
--- Performance indexes
+-- Indexes for Performance
 CREATE INDEX idx_users_discord_id ON users(discord_id);
-CREATE INDEX idx_quiz_attempts_user_id ON quiz_attempts(user_id);
-CREATE INDEX idx_quiz_attempts_quiz_id ON quiz_attempts(quiz_id);
 CREATE INDEX idx_quizzes_category ON quizzes(category);
 CREATE INDEX idx_quizzes_difficulty ON quizzes(difficulty);
+CREATE INDEX idx_quiz_attempts_user_id ON quiz_attempts(user_id);
+CREATE INDEX idx_quiz_attempts_created ON quiz_attempts(created_at);
 CREATE INDEX idx_mentorships_mentor ON mentorships(mentor_id);
 CREATE INDEX idx_mentorships_mentee ON mentorships(mentee_id);
 CREATE INDEX idx_mentorships_status ON mentorships(status);
+CREATE INDEX idx_profiles_user_id ON profiles(user_id);
 CREATE INDEX idx_portfolios_user_id ON portfolios(user_id);
-CREATE INDEX idx_connections_requester ON connections(requester_id);
-CREATE INDEX idx_connections_recipient ON connections(recipient_id);
+CREATE INDEX idx_connections_user1 ON connections(user1_id);
+CREATE INDEX idx_connections_user2 ON connections(user2_id);
+CREATE INDEX idx_workshops_date ON workshops(workshop_date);
 ```
 
-### 2.3 Technology Stack Changes
+### 1.2 Technology Stack
 
-#### Current Stack
-- `motor` - Async MongoDB driver
-- Raw queries (no ORM)
+**Remove:**
+- `motor` - MongoDB driver
+- `pymongo`
 
-#### New Stack Options
+**Add:**
+```txt
+# Database
+asyncpg>=0.29.0
 
-**Option A: asyncpg + SQL (Recommended)**
-- `asyncpg` - High-performance async PostgreSQL driver
-- Raw SQL with parameter binding
-- Pros: Fastest, most control, easy to migrate from MongoDB style
-- Cons: More code, manual query writing
-
-**Option B: databases + SQLAlchemy Core**
-- `databases` - Simple async SQL layer
-- SQLAlchemy Core for query building
-- Pros: Clean API, connection pooling, query builder
-- Cons: Additional dependency
-
-**Option C: SQLAlchemy ORM (Not Recommended)**
-- Full ORM with models
-- Pros: Most abstracted, automatic migrations
-- Cons: Steepest learning curve, async support still maturing
-
-**Recommendation:** Option A (asyncpg) for simplicity and performance.
-
-### 2.4 File Changes Required
-
-#### Files to Modify
-
-1. **Database Layer**
-   - `src/database/mongodb.py` → `src/database/database.py`
-   - New: `src/database/models.py` - Type definitions
-
-2. **Services**
-   - `src/services/quiz_service.py`
-   - `src/services/mentorship_service.py`
-   - `src/services/rss_service.py`
-
-3. **Cogs**
-   - `src/cogs/quiz.py`
-   - `src/cogs/networking.py`
-   - `src/cogs/mentorship.py`
-   - `src/cogs/gamification/gamification_manager.py`
-   - `src/cogs/portfolio/portfolio_manager.py`
-   - `src/cogs/workshops/workshop_manager.py`
-   - `src/cogs/feeds.py`
-
-4. **Configuration**
-   - `src/config/config.py` - Add PostgreSQL config
-   - `main.py` - Update DB initialization
-   - `requirements.txt` - Replace motor with asyncpg
-
-5. **Infrastructure**
-   - `docker-compose.yml` - Add PostgreSQL service
-   - `.env.example` - Update environment variables
-
-#### New Files to Create
-
-```
-migrations/
-├── 001_initial_schema.sql
-├── 002_create_indexes.sql
-└── 003_seed_data.sql
-
-scripts/
-└── migrate_mongo_to_postgres.py
-
-tests/
-├── conftest.py
-├── test_quiz.py
-├── test_networking.py
-└── test_database.py
+# (Optional) If you want query building
+databases[postgresql]>=0.8.0
 ```
 
-### 2.5 Migration Script Structure
+### 1.3 Database Module Refactor
+
+**Current:** `src/database/mongodb.py`
+**New:** `src/database/database.py`
 
 ```python
-# scripts/migrate_mongo_to_postgres.py
-"""
-Data migration script from MongoDB to PostgreSQL
-"""
-
-import asyncio
 import asyncpg
-from motor.motor_asyncio import AsyncIOMotorClient
+import logging
+from src.config.config import DATABASE_URL
 
-async def migrate_users(mongo_db, pg_pool):
-    """Migrate users collection"""
-    users = mongo_db.users.find()
-    async for user in users:
-        await pg_pool.execute("""
-            INSERT INTO users (discord_id, points, experience, level, quiz_score, 
-                             challenge_score, daily_streak, last_daily, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (discord_id) DO NOTHING
-        """, user['discord_id'], user.get('points', 0), user.get('experience', 0),
-             user.get('level', 1), user.get('quiz_score', 0), user.get('challenge_score', 0),
-             user.get('daily_streak', 0), user.get('last_daily'), user.get('created_at'))
+logger = logging.getLogger('VEKA.database')
 
-async def main():
-    # Connect to both databases
-    mongo_client = AsyncIOMotorClient("mongodb://...")
-    mongo_db = mongo_client.veka_bot
+class Database:
+    def __init__(self):
+        self.pool = None
     
-    pg_pool = await asyncpg.create_pool("postgresql://...")
+    async def connect(self):
+        """Initialize database connection pool"""
+        self.pool = await asyncpg.create_pool(DATABASE_URL)
+        logger.info("Database connection established")
     
-    # Run migrations
-    await migrate_users(mongo_db, pg_pool)
-    await migrate_quizzes(mongo_db, pg_pool)
-    await migrate_quiz_attempts(mongo_db, pg_pool)
-    await migrate_mentorships(mongo_db, pg_pool)
-    await migrate_portfolios(mongo_db, pg_pool)
+    async def close(self):
+        """Close database connection"""
+        if self.pool:
+            await self.pool.close()
+            logger.info("Database connection closed")
     
-    print("Migration complete!")
+    async def fetch_one(self, query: str, *args):
+        """Fetch single record"""
+        async with self.pool.acquire() as conn:
+            return await conn.fetchrow(query, *args)
+    
+    async def fetch_many(self, query: str, *args):
+        """Fetch multiple records"""
+        async with self.pool.acquire() as conn:
+            return await conn.fetch(query, *args)
+    
+    async def execute(self, query: str, *args):
+        """Execute query (INSERT, UPDATE, DELETE)"""
+        async with self.pool.acquire() as conn:
+            return await conn.execute(query, *args)
+    
+    async def execute_many(self, query: str, args_list):
+        """Execute query with multiple parameter sets"""
+        async with self.pool.acquire() as conn:
+            return await conn.executemany(query, args_list)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# Global instance
+db = Database()
+
+# Convenience functions
+async def get_user(discord_id: str):
+    """Get user by Discord ID or create if not exists"""
+    user = await db.fetch_one(
+        "SELECT * FROM users WHERE discord_id = $1", 
+        discord_id
+    )
+    if not user:
+        user = await db.fetch_one(
+            """INSERT INTO users (discord_id) 
+               VALUES ($1) 
+               RETURNING *""",
+            discord_id
+        )
+    return user
+
+async def get_or_create_user(discord_id: str):
+    """Alias for get_user"""
+    return await get_user(discord_id)
 ```
 
-### 2.6 Query Translation Examples
+### 1.4 Service Migration Checklist
 
-#### MongoDB → PostgreSQL
+**Migrate these files from MongoDB to PostgreSQL:**
 
-**Find One:**
+- [ ] `src/services/quiz_service.py`
+- [ ] `src/services/mentorship_service.py`
+- [ ] `src/cogs/quiz.py`
+- [ ] `src/cogs/networking.py`
+- [ ] `src/cogs/mentorship.py`
+- [ ] `src/cogs/workshops/workshop_manager.py`
+- [ ] `src/cogs/portfolio/portfolio_manager.py`
+- [ ] `src/cogs/gamification/gamification_manager.py`
+- [ ] `src/cogs/feeds.py` (RSS caching)
+
+**Query Pattern Examples:**
+
+**Old (MongoDB):**
 ```python
-# MongoDB
 user = await users.find_one({"discord_id": discord_id})
-
-# PostgreSQL
-user = await conn.fetchrow(
-    "SELECT * FROM users WHERE discord_id = $1", 
-    discord_id
-)
+await users.insert_one({"discord_id": discord_id, "points": 0})
 ```
 
-**Insert:**
+**New (PostgreSQL):**
 ```python
-# MongoDB
-result = await quizzes.insert_one(quiz_data)
-quiz_id = result.inserted_id
-
-# PostgreSQL
-quiz_id = await conn.fetchval(
-    """INSERT INTO quizzes (category, difficulty, question, correct_answer, 
-                          wrong_answers, explanation) 
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id""",
-    category, difficulty, question, correct_answer, wrong_answers, explanation
-)
+user = await db.fetch_one("SELECT * FROM users WHERE discord_id = $1", discord_id)
+await db.execute("INSERT INTO users (discord_id) VALUES ($1)", discord_id)
 ```
 
-**Update:**
+### 1.5 Main.py Updates
+
 ```python
-# MongoDB
-await users.update_one(
-    {"discord_id": user_id},
-    {"$inc": {"points": points}}
-)
+# In on_ready() event, replace:
+# from src.database.mongodb import init_db
+# await init_db()
 
-# PostgreSQL
-await conn.execute(
-    "UPDATE users SET points = points + $1 WHERE discord_id = $2",
-    points, user_id
-)
-```
-
-**Aggregate:**
-```python
-# MongoDB
-pipeline = [
-    {"$match": {"user_id": user_id}},
-    {"$group": {"_id": None, "avg_time": {"$avg": "$time_taken"}}}
-]
-result = await quiz_attempts.aggregate(pipeline).to_list(length=1)
-
-# PostgreSQL
-result = await conn.fetchrow(
-    "SELECT AVG(time_taken) as avg_time FROM quiz_attempts WHERE user_id = $1",
-    user_id
-)
+# With:
+from src.database.database import db
+await db.connect()
 ```
 
 ---
 
-## Part 3: Implementation Roadmap
+## Phase 2: Core Features Stabilization (Week 2)
 
-### Phase 1: Fix Critical Issues (Week 1)
+### 2.1 Currently Implemented (Working)
 
-**Priority: HIGH**
+Based on your Plan.md Phase 1 & 2, these are complete:
 
-- [ ] Fix quiz service/cog method name mismatches
-- [ ] Fix `get_user_stats()` return format
-- [ ] Fix networking.py `self.db` → `self.connection_requests` bug
-- [ ] Add missing `!accept` and `!decline` commands to networking
-- [ ] Unify point values across gamification and config
+1. **Welcome System** ✅
+2. **Basic Commands** ✅ (`!hello`, `!ping`)
+3. **Quiz System** ✅ (Categories, difficulty, scoring, leaderboard)
+4. **Mentorship System** ✅ (Request, accept, complete)
+5. **Networking** ✅ (Profiles, connections, requests)
+6. **RSS Feeds** ✅ (Tech news, jobs, dev blogs)
+7. **Gamification** ✅ (Points, levels, experience)
+8. **Workshops** ✅ (Create, list, signup)
+9. **Portfolio** ✅ (Add, list, view projects)
+10. **Help System** ✅
 
-### Phase 2: Add Missing Features (Week 2)
+### 2.2 Testing Required
 
-**Priority: MEDIUM**
+Create basic tests for:
 
-- [ ] Add `!quiz add/edit/delete` admin commands
-- [ ] Persist workshops to database (not memory)
-- [ ] Add `!connections` list command
-- [ ] Implement daily quiz tracking methods
-- [ ] Add test framework (pytest)
-- [ ] Write basic tests for critical paths
+```python
+# tests/test_database.py
+import pytest
+import asyncio
+from src.database.database import db
 
-### Phase 3: PostgreSQL Setup (Week 3)
+@pytest.fixture
+async def database():
+    await db.connect()
+    yield db
+    await db.close()
 
-**Priority: HIGH**
+@pytest.mark.asyncio
+async def test_get_user(database):
+    user = await get_user("123456789")
+    assert user is not None
+    assert user['discord_id'] == "123456789"
+```
 
-- [ ] Create PostgreSQL schema migration files
-- [ ] Add PostgreSQL to docker-compose.yml
-- [ ] Create database connection module with asyncpg
-- [ ] Update requirements.txt with new dependencies
+### 2.3 Docker Compose Update
+
+Already done in .env.example section above.
+
+---
+
+## Phase 3: Feature Expansion (Week 3-4)
+
+Based on Plan.md, implement these prioritized features:
+
+### Priority 1: Community Features
+
+1. **Leaderboard System**
+   - Global points leaderboard
+   - Quiz-specific leaderboard
+   - Weekly/monthly rankings
+
+2. **XP System Enhancement**
+   - Message XP (already in gamification)
+   - Voice channel XP
+   - Activity streaks
+
+3. **Auto-Moderation** 
+   - Spam detection
+   - Profanity filter
+   - Rate limiting
+
+### Priority 2: Content Features
+
+4. **GitHub Integration**
+   - `!github user <username>` - Show user stats
+   - `!github repo <owner>/<repo>` - Show repo info
+
+5. **News Integration**
+   - Already have RSS, enhance with:
+   - Custom feed subscriptions per channel
+   - Keyword filtering
+
+6. **Reminder System**
+   - `!remindme <time> <message>`
+   - Workshop reminders (already implemented)
+
+### Priority 3: Utility Features
+
+7. **Poll System**
+   - `!poll "Question" "Option1" "Option2" ...`
+   - Reaction-based voting
+
+8. **Custom Commands**
+   - `!custom add <name> <response>`
+   - `!custom remove <name>`
+
+9. **Server Analytics**
+   - Member growth tracking
+   - Activity heatmaps
+   - Message statistics
+
+---
+
+## Phase 4: Advanced Features (Week 5+)
+
+From Plan.md Phase 3 & 4:
+
+### Dashboard (FastAPI)
+- Web-based configuration
+- Real-time statistics
+- User management
+
+### Price Tracking
+- Crypto via CoinGecko
+- Stocks via Alpha Vantage
+- Product price alerts
+
+### Game Integrations
+- Genshin Impact
+- Valorant
+- Steam deals
+
+### Streaming
+- Twitch stream alerts
+- YouTube upload notifications
+
+---
+
+## Implementation Roadmap
+
+### Week 1: CRITICAL - PostgreSQL Migration
+
+**Day 1-2:**
+- [ ] Create PostgreSQL schema
+- [ ] Set up asyncpg connection pool
 - [ ] Create database abstraction layer
+- [ ] Update docker-compose.yml
 
-### Phase 4: Service Migration (Week 4-5)
+**Day 3-4:**
+- [ ] Migrate quiz service
+- [ ] Migrate mentorship service  
+- [ ] Migrate networking cog
+- [ ] Migrate gamification cog
 
-**Priority: HIGH**
-
-Migrate services one by one:
-
-- [ ] User service (get_or_create_user, etc.)
-- [ ] Quiz service
-- [ ] Mentorship service
-- [ ] RSS service (if caching needed)
-- [ ] Portfolio cog database calls
-- [ ] Workshop cog database calls
-- [ ] Gamification cog database calls
-
-### Phase 5: Data Migration (Week 6)
-
-**Priority: HIGH**
-
-- [ ] Create data migration script
-- [ ] Test migration in staging environment
-- [ ] Run migration in production
-- [ ] Verify data integrity
-
-### Phase 6: Switch Over (Week 7)
-
-**Priority: CRITICAL**
-
-- [ ] Update main.py to use PostgreSQL
+**Day 5:**
+- [ ] Migrate workshops
+- [ ] Migrate portfolio
+- [ ] Test all commands
 - [ ] Remove MongoDB dependencies
-- [ ] Run full test suite
-- [ ] Deploy to production
-- [ ] Monitor for issues
 
-### Phase 7: Cleanup (Week 8)
+### Week 2: Stabilization
 
-**Priority: LOW**
+- [ ] Write basic tests
+- [ ] Add error handling
+- [ ] Performance optimization
+- [ ] Documentation update
 
-- [ ] Remove MongoDB code
-- [ ] Update documentation
-- [ ] Archive MongoDB data
-- [ ] Optimize PostgreSQL queries
+### Week 3-4: Feature Expansion
+
+- [ ] Implement Priority 1 features
+- [ ] Implement Priority 2 features
+
+### Week 5+: Advanced
+
+- [ ] Dashboard (if needed)
+- [ ] Price tracking
+- [ ] Game integrations
 
 ---
 
-## Part 4: Environment Configuration
+## Environment Setup
 
-### Updated .env File
+### Local Development
 
-```env
-# Discord
-DISCORD_TOKEN=your_discord_bot_token
+```bash
+# 1. Start PostgreSQL and Redis
+docker-compose up -d postgres redis
 
-# MongoDB (Remove after migration)
-# MONGODB_URI=mongodb+srv://...
+# 2. Run migrations
+psql -h localhost -U veka_user -d veka_bot -f migrations/001_initial_schema.sql
 
-# PostgreSQL (Add for migration)
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-POSTGRES_DB=veka_bot
-POSTGRES_USER=veka_user
-POSTGRES_PASSWORD=secure_password
-DATABASE_URL=postgresql://veka_user:secure_password@localhost:5432/veka_bot
+# 3. Install dependencies
+pip install -r requirements.txt
 
-# Redis (Keep for caching)
-REDIS_URL=redis://localhost:6379
+# 4. Run bot
+python main.py
 ```
 
-### Updated docker-compose.yml
+### Production Deployment
 
-```yaml
-version: '3.8'
+```bash
+# Build and deploy
+docker-compose up -d --build
 
-services:
-  discord-bot:
-    build: .
-    image: veka-discord-bot:latest
-    container_name: veka-discord-bot
-    restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
-    environment:
-      - PYTHONUNBUFFERED=1
-    networks:
-      - veka-network
-    depends_on:
-      - postgres
-      - redis
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: veka-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: veka_bot
-      POSTGRES_USER: veka_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - veka-network
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:alpine
-    container_name: veka-redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    networks:
-      - veka-network
-    ports:
-      - "6379:6379"
-
-networks:
-  veka-network:
-    driver: bridge
-
-volumes:
-  postgres-data:
-  redis-data:
+# View logs
+docker-compose logs -f discord-bot
 ```
 
 ---
 
-## Part 5: Quick Reference
+## Key Design Decisions
 
-### MongoDB to PostgreSQL Type Mapping
+### 1. No ORM
+Using raw SQL with asyncpg for:
+- Better performance
+- Full SQL control
+- Easier migration from MongoDB mindset
 
-| MongoDB | PostgreSQL | Notes |
-|---------|-----------|-------|
-| ObjectId | SERIAL | Auto-incrementing integer |
-| String | VARCHAR/TEXT | Use VARCHAR with length limits |
-| Integer | INTEGER | Same |
-| Float | FLOAT/REAL | Same |
-| Boolean | BOOLEAN | Same |
-| Date | TIMESTAMP | Use TIMESTAMP WITH TIME ZONE |
-| Array | ARRAY | PostgreSQL native arrays |
-| Object | JSONB | For flexible schemas |
-| Embedded Doc | Separate Table | Normalize data |
-| Reference | FOREIGN KEY | Use proper constraints |
+### 2. Parameterized Queries
+All queries use `$1, $2...` placeholders for:
+- SQL injection protection
+- Automatic type handling
 
-### Critical Files Checklist
+### 3. Connection Pooling
+Built-in asyncpg pool for:
+- Concurrent request handling
+- Connection reuse
+- Automatic cleanup
 
-**Must Fix:**
-- [ ] `src/services/quiz_service.py` - Method names and return formats
-- [ ] `src/cogs/networking.py:162` - Database variable reference
-- [ ] `src/cogs/networking.py` - Add accept/decline commands
-- [ ] `src/cogs/gamification/gamification_manager.py` - Point value consistency
-
-**Should Fix:**
-- [ ] `src/cogs/quiz.py` - Add quiz management commands
-- [ ] `src/cogs/workshops/workshop_manager.py` - Persist to database
-- [ ] `src/services/quiz_service.py` - Daily quiz methods
-
-**Nice to Have:**
-- [ ] Add comprehensive test suite
-- [ ] Add logging to all error paths
-- [ ] Add input validation
+### 4. No Data Migration
+Starting fresh with PostgreSQL since you mentioned no existing MongoDB data.
 
 ---
 
-## Appendix A: Query Performance Notes
+## Security Considerations
 
-### MongoDB Queries to Optimize for PostgreSQL
+✅ **Already Protected:**
+- SQL injection (parameterized queries)
+- Environment variables for secrets
+- Admin-only commands with decorator
 
-1. **Quiz random selection** - Currently uses `$sample`, use `ORDER BY RANDOM()` in PostgreSQL
-2. **Leaderboard queries** - Add composite indexes on (points DESC, discord_id)
-3. **Mentorship lookups** - Index on (mentor_id, mentee_id, status)
-4. **Quiz attempts aggregation** - Use materialized view for leaderboard if slow
+**To Add:**
+- Rate limiting on commands
+- Input validation
+- Audit logging
 
-### PostgreSQL Specific Optimizations
+---
 
-```sql
--- Use partial indexes for common queries
-CREATE INDEX idx_active_mentorships ON mentorships(mentor_id, mentee_id) 
-WHERE status = 'active';
+## Success Criteria
 
--- Use GIN index for array searches
-CREATE INDEX idx_quiz_tags ON quizzes USING GIN(tags);
+- [ ] All existing features work with PostgreSQL
+- [ ] No MongoDB dependencies remaining
+- [ ] Bot starts without errors
+- [ ] All commands respond correctly
+- [ ] Data persists across restarts
+- [ ] Performance is equal or better than MongoDB
 
--- Partition quiz_attempts by date if high volume
-CREATE TABLE quiz_attempts_2024 PARTITION OF quiz_attempts 
-FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+---
+
+## Quick Start Commands
+
+After migration:
+
+```bash
+# Test database connection
+python -c "from src.database.database import db; import asyncio; asyncio.run(db.connect()); print('OK')"
+
+# Run the bot
+python main.py
+
+# Test a command
+!quiz start
+!profile
+!mentor list
 ```
 
 ---
 
-## Conclusion
+**Ready to start immediately?** Begin with Week 1, Day 1 tasks. The schema is ready, and the migration pattern is clear. Focus on one service at a time, test thoroughly, then move to the next.
 
-This codebase has solid architecture but suffers from:
-1. Method signature mismatches between cogs and services
-2. Incomplete networking features
-3. Memory-only storage for workshops
-4. No test coverage
-
-The migration to PostgreSQL is straightforward and will provide:
-- Better data consistency (foreign keys, constraints)
-- Easier backups and replication
-- Better query performance for complex aggregations
-- ACID compliance
-
-**Estimated Timeline:** 8 weeks  
-**Risk Level:** Medium (data migration complexity)  
-**Recommendation:** Proceed with Phase 1 fixes immediately, then migrate.
-
----
-
-**Document generated by:** Code Analysis Agent  
-**Last updated:** 2026-02-12
+**Questions?** Prioritize getting PostgreSQL working with the existing features before adding new ones from Phase 3+.
