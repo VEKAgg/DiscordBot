@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 from typing import Dict, List, Optional
 import json
+from src.database.mongodb import workshops, workshop_participants
 
 logger = logging.getLogger('VEKA.workshops')
 
@@ -15,7 +16,8 @@ class WorkshopManager(commands.Cog):
         self.bot = bot
         self.scheduler = AsyncIOScheduler()
         self.scheduler.start()
-        self.active_workshops = {}
+        self.db = bot.db.workshops
+        self.participants_db = bot.db.workshop_participants
 
     def cog_unload(self):
         self.scheduler.shutdown()
@@ -101,13 +103,12 @@ class WorkshopManager(commands.Cog):
                 "date": workshop_date,
                 "duration": duration,
                 "max_participants": max_participants,
-                "participants": [],
                 "created_by": ctx.author.id,
                 "created_at": datetime.utcnow()
             }
 
-            # Save workshop
-            self.active_workshops[workshop_id] = workshop
+            # Save workshop to database
+            await self.db.insert_one(workshop)
             
             # Schedule reminders
             self.schedule_workshop_reminders(workshop)
@@ -133,7 +134,9 @@ class WorkshopManager(commands.Cog):
     async def workshop_list(self, ctx):
         """List all upcoming workshops"""
         now = datetime.utcnow()
-        upcoming_workshops = [w for w in self.active_workshops.values() if w["date"] > now]
+        # Query database for upcoming workshops
+        cursor = self.db.find({"date": {"$gt": now}}).sort("date", 1)
+        upcoming_workshops = await cursor.to_list(length=None)
         
         if not upcoming_workshops:
             await ctx.send("📅 No upcoming workshops scheduled.")
@@ -145,7 +148,7 @@ class WorkshopManager(commands.Cog):
             color=nextcord.Color.orange()
         )
         
-        for workshop in sorted(upcoming_workshops, key=lambda w: w["date"]):
+        for workshop in upcoming_workshops:
             # Calculate time until workshop
             time_until = workshop["date"] - now
             days = time_until.days
@@ -153,8 +156,8 @@ class WorkshopManager(commands.Cog):
             minutes, _ = divmod(remainder, 60)
             time_str = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m"
             
-            # Get participant info
-            participant_count = len(workshop["participants"])
+            # Get participant count from database
+            participant_count = await self.participants_db.count_documents({"workshop_id": workshop["id"]})
             max_str = f"/{workshop['max_participants']}" if workshop["max_participants"] > 0 else ""
             
             embed.add_field(
@@ -172,29 +175,40 @@ class WorkshopManager(commands.Cog):
     @workshop.command(name="signup")
     async def workshop_signup(self, ctx, workshop_id: str):
         """Sign up for a workshop"""
-        if workshop_id not in self.active_workshops:
+        # Find workshop in database
+        workshop = await self.db.find_one({"id": workshop_id})
+        
+        if not workshop:
             await ctx.send("❌ Workshop not found. Use `!workshop list` to see available workshops.")
             return
             
-        workshop = self.active_workshops[workshop_id]
-        
         # Check if workshop is in the future
         if workshop["date"] < datetime.utcnow():
             await ctx.send("❌ This workshop has already started or ended.")
             return
             
         # Check if user is already signed up
-        if ctx.author.id in workshop["participants"]:
+        existing = await self.participants_db.find_one({
+            "workshop_id": workshop_id,
+            "user_id": ctx.author.id
+        })
+        if existing:
             await ctx.send("⚠️ You're already signed up for this workshop!")
             return
             
         # Check if workshop is full
-        if workshop["max_participants"] > 0 and len(workshop["participants"]) >= workshop["max_participants"]:
-            await ctx.send("❌ This workshop is already full.")
-            return
+        if workshop["max_participants"] > 0:
+            participant_count = await self.participants_db.count_documents({"workshop_id": workshop_id})
+            if participant_count >= workshop["max_participants"]:
+                await ctx.send("❌ This workshop is already full.")
+                return
             
-        # Add user to participants
-        workshop["participants"].append(ctx.author.id)
+        # Add user to participants in database
+        await self.participants_db.insert_one({
+            "workshop_id": workshop_id,
+            "user_id": ctx.author.id,
+            "registered_at": datetime.utcnow()
+        })
         
         # Confirmation
         embed = nextcord.Embed(
@@ -224,6 +238,7 @@ class WorkshopManager(commands.Cog):
     def schedule_workshop_reminders(self, workshop):
         """Schedule reminders for a workshop"""
         workshop_date = workshop["date"]
+        workshop_id = workshop["id"]
         
         # Schedule 1-day reminder
         if datetime.utcnow() < workshop_date - timedelta(days=1):
@@ -231,8 +246,8 @@ class WorkshopManager(commands.Cog):
             self.scheduler.add_job(
                 self.send_reminder,
                 trigger=DateTrigger(one_day_reminder),
-                args=[workshop, "1 day"],
-                id=f"{workshop['id']}_1day"
+                args=[workshop_id, "1 day"],
+                id=f"{workshop_id}_1day"
             )
         
         # Schedule 1-hour reminder
@@ -241,15 +256,24 @@ class WorkshopManager(commands.Cog):
             self.scheduler.add_job(
                 self.send_reminder,
                 trigger=DateTrigger(one_hour_reminder),
-                args=[workshop, "1 hour"],
-                id=f"{workshop['id']}_1hour"
+                args=[workshop_id, "1 hour"],
+                id=f"{workshop_id}_1hour"
             )
 
-    async def send_reminder(self, workshop: Dict, time_left: str):
+    async def send_reminder(self, workshop_id: str, time_left: str):
         """Send a reminder to workshop participants"""
-        for participant_id in workshop["participants"]:
+        # Fetch workshop from database
+        workshop = await self.db.find_one({"id": workshop_id})
+        if not workshop:
+            logger.error(f"Workshop {workshop_id} not found for reminder")
+            return
+            
+        # Fetch participants from database
+        participants = await self.participants_db.find({"workshop_id": workshop_id}).to_list(length=None)
+        
+        for participant in participants:
             try:
-                user = await self.bot.fetch_user(participant_id)
+                user = await self.bot.fetch_user(participant["user_id"])
                 if user:
                     embed = nextcord.Embed(
                         title="⏰ Workshop Reminder",
@@ -264,7 +288,7 @@ class WorkshopManager(commands.Cog):
                     )
                     await user.send(embed=embed)
             except Exception as e:
-                logger.error(f"Failed to send reminder to user {participant_id}: {str(e)}")
+                logger.error(f"Failed to send reminder to user {participant['user_id']}: {str(e)}")
 
 def setup(bot):
     """Setup the WorkshopManager cog"""

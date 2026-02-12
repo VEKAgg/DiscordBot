@@ -4,19 +4,21 @@ import logging
 from datetime import datetime
 import math
 from src.database.mongodb import users
+from src.config.config import POINTS_CONFIG
 
 logger = logging.getLogger('VEKA.gamification')
 
 class GamificationManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # Use POINTS_CONFIG from config.py as base
         self.point_actions = {
-            'quiz_correct': 10,
+            'quiz_correct': POINTS_CONFIG.get('quiz_correct', 10),
             'quiz_participation': 2,
             'workshop_host': 50,
             'workshop_attendance': 20,
-            'mentorship_complete': 100,
-            'daily_activity': 5,
+            'mentorship_complete': POINTS_CONFIG.get('mentor_session', 30),
+            'daily_activity': POINTS_CONFIG.get('daily_streak', 20),
             'portfolio_update': 15,
             'helpful_response': 10
         }
