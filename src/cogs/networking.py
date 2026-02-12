@@ -159,7 +159,7 @@ class Networking(commands.Cog):
                 "message": message or "Would like to connect with you!"
             }
 
-            await self.db.connection_requests.insert_one(connection_data)
+            await self.connection_requests.insert_one(connection_data)
 
             # Send notification to the target member
             embed = nextcord.Embed(
@@ -181,6 +181,152 @@ class Networking(commands.Cog):
         except Exception as e:
             logger.error(f"Error in connect: {str(e)}")
             await ctx.send("An error occurred while sending the connection request. Please try again later.")
+
+    @commands.command(
+        name="accept",
+        description="Accept a connection request from another member"
+    )
+    async def accept(self, ctx, member: nextcord.Member):
+        """Accept a connection request from another member"""
+        try:
+            # Find pending request from this member
+            request = await self.connection_requests.find_one({
+                "user1_id": str(member.id),
+                "user2_id": str(ctx.author.id),
+                "status": "pending"
+            })
+
+            if not request:
+                await ctx.send(f"No pending connection request from {member.mention}.")
+                return
+
+            # Update request status
+            await self.connection_requests.update_one(
+                {"_id": request["_id"]},
+                {"$set": {"status": "accepted"}}
+            )
+
+            # Create connection
+            connection_data = {
+                "user1_id": str(ctx.author.id),
+                "user2_id": str(member.id),
+                "connected_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            }
+            await self.connections.insert_one(connection_data)
+
+            # Notify both users
+            embed = nextcord.Embed(
+                title="Connection Accepted!",
+                description=f"You are now connected with {member.mention}!",
+                color=nextcord.Color.green()
+            )
+            await ctx.send(embed=embed)
+
+            # Notify the requester
+            try:
+                user_embed = nextcord.Embed(
+                    title="Connection Request Accepted!",
+                    description=f"{ctx.author.mention} has accepted your connection request!",
+                    color=nextcord.Color.green()
+                )
+                await member.send(embed=user_embed)
+            except:
+                pass
+
+        except Exception as e:
+            logger.error(f"Error in accept: {str(e)}")
+            await ctx.send("An error occurred while accepting the connection request.")
+
+    @commands.command(
+        name="decline",
+        description="Decline a connection request from another member"
+    )
+    async def decline(self, ctx, member: nextcord.Member):
+        """Decline a connection request from another member"""
+        try:
+            # Find pending request from this member
+            request = await self.connection_requests.find_one({
+                "user1_id": str(member.id),
+                "user2_id": str(ctx.author.id),
+                "status": "pending"
+            })
+
+            if not request:
+                await ctx.send(f"No pending connection request from {member.mention}.")
+                return
+
+            # Update request status
+            await self.connection_requests.update_one(
+                {"_id": request["_id"]},
+                {"$set": {"status": "declined"}}
+            )
+
+            embed = nextcord.Embed(
+                title="Connection Request Declined",
+                description=f"You have declined the connection request from {member.mention}.",
+                color=nextcord.Color.red()
+            )
+            await ctx.send(embed=embed)
+
+            # Notify the requester
+            try:
+                user_embed = nextcord.Embed(
+                    title="Connection Request Declined",
+                    description=f"{ctx.author.mention} has declined your connection request.",
+                    color=nextcord.Color.red()
+                )
+                await member.send(embed=user_embed)
+            except:
+                pass
+
+        except Exception as e:
+            logger.error(f"Error in decline: {str(e)}")
+            await ctx.send("An error occurred while declining the connection request.")
+
+    @commands.command(
+        name="connections",
+        description="View your connections"
+    )
+    async def connections_cmd(self, ctx):
+        """View your connections"""
+        try:
+            # Find all connections for this user
+            user_id = str(ctx.author.id)
+            cursor = self.connections.find({
+                "$or": [
+                    {"user1_id": user_id},
+                    {"user2_id": user_id}
+                ]
+            })
+            user_connections = await cursor.to_list(length=None)
+
+            if not user_connections:
+                await ctx.send("You don't have any connections yet. Use `!connect @user` to connect with someone!")
+                return
+
+            embed = nextcord.Embed(
+                title="Your Connections",
+                description=f"You have {len(user_connections)} connection(s)",
+                color=nextcord.Color.blue()
+            )
+
+            for conn in user_connections:
+                # Get the other user's ID
+                other_id = conn["user2_id"] if conn["user1_id"] == user_id else conn["user1_id"]
+                other_user = ctx.guild.get_member(int(other_id))
+                
+                if other_user:
+                    embed.add_field(
+                        name=other_user.display_name,
+                        value=f"Connected since: {conn.get('connected_at', 'Unknown')}",
+                        inline=False
+                    )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            logger.error(f"Error in connections: {str(e)}")
+            await ctx.send("An error occurred while fetching your connections.")
 
 def setup(bot):
     """Setup the Networking cog"""
