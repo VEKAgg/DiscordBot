@@ -6,8 +6,8 @@ Guidelines for AI coding agents working on this Python Discord bot.
 
 A professional networking Discord bot built with Python 3.10+, using:
 - **nextcord** - Discord API wrapper (modern fork of discord.py)
-- **motor** - Async MongoDB driver
-- **MongoDB Atlas** - Cloud database
+- **asyncpg** - Async PostgreSQL driver
+- **PostgreSQL** - Database (via DATABASE_URL env var)
 - **docker/podman** - Containerization
 
 ## Build & Run Commands
@@ -36,7 +36,10 @@ When adding tests, create a `tests/` directory and use pytest:
 ```bash
 pip install pytest pytest-asyncio
 pytest                          # Run all tests
-pytest tests/test_cog.py::test_function -v  # Run single test
+pytest tests/ -v                 # Run with verbose output
+pytest tests/test_cog.py -v      # Run single test file
+pytest tests/test_cog.py::test_function -v  # Run single test function
+pytest tests/ -k "test_name" -v  # Run tests matching pattern
 ```
 
 ## Linting & Formatting
@@ -64,7 +67,7 @@ import nextcord
 from nextcord.ext import commands
 
 from src.config.config import BOT_PREFIX
-from src.database.mongodb import users
+from src.database.database import db
 ```
 
 **Note:** Place `import logging` at the top since module-level loggers are defined immediately after.
@@ -74,7 +77,7 @@ from src.database.mongodb import users
 - **Functions/Variables**: snake_case (`get_user`, `active_quizzes`)
 - **Constants**: UPPER_SNAKE_CASE (`BOT_PREFIX`, `RSS_FEEDS`, `QUIZ_CATEGORIES`)
 - **Private**: _leading_underscore (`_internal_method`)
-- **Files**: snake_case (`quiz_service.py`, `mongodb.py`)
+- **Files**: snake_case (`quiz_service.py`, `database.py`)
 
 ### Type Hints
 Use type hints for function signatures and return types:
@@ -144,10 +147,10 @@ await ctx.send(embed=embed)
 
 ### Database Operations
 ```python
-from src.database.mongodb import db, users
+from src.database.database import db
 
 async def get_user(discord_id: str) -> Optional[Dict]:
-    return await users.find_one({"discord_id": discord_id})
+    return await db.fetch_one("SELECT * FROM users WHERE discord_id = $1", discord_id)
 ```
 
 ## Project Structure
@@ -174,7 +177,7 @@ async def get_user(discord_id: str) -> Optional[Dict]:
 │   │   ├── rss_service.py
 │   │   └── mentorship_service.py
 │   ├── database/          # Database layer
-│   │   └── mongodb.py     # MongoDB collections and operations
+│   │   └── database.py    # PostgreSQL connection and operations
 │   └── config/            # Configuration
 │       └── config.py      # Constants and env vars
 ├── requirements.txt       # Python dependencies
@@ -187,7 +190,7 @@ async def get_user(discord_id: str) -> Optional[Dict]:
 Required in `.env`:
 ```
 DISCORD_TOKEN=your_token
-MONGODB_URI=mongodb+srv://...
+DATABASE_URL=postgresql://user:pass@host:5432/dbname
 REDIS_URL=redis://redis:6379
 ```
 
@@ -206,5 +209,5 @@ REDIS_URL=redis://redis:6379
    - `quiz_service.py` → class `QuizService`
    - `workshop_manager.py` → class `WorkshopManager`
 4. **Bot prefix**: `!` (defined in config)
-5. **Database**: MongoDB Atlas with motor async driver
+5. **Database**: PostgreSQL with asyncpg driver
 6. **Loggers**: Use `logging.getLogger('VEKA.modulename')` format
