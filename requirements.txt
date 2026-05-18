@@ -1,16 +1,21 @@
-nextcord
-python-dotenv
-asyncpg>=0.29.0
-python-dateutil
-aiohttp
-colorama
-feedparser
-beautifulsoup4
-aiocron
-python-leetcode
-aiofiles
-pytz
-validators
-SQLAlchemy
-aiosqlite
-apscheduler
+# Discord bot dependencies — pinned for reproducible builds
+# Last updated: 2026-05-18 (RTA branch)
+
+nextcord==2.6.0          # Discord API wrapper
+python-dotenv==1.2.2     # .env file loading
+pymongo==4.9.2           # MongoDB sync driver (required by motor)
+motor==3.7.1             # Async MongoDB driver
+aiohttp==3.12.11         # Async HTTP client for RSS fetching
+python-dateutil==2.9.0   # Date parsing utilities
+feedparser==6.0.12       # RSS/Atom feed parsing
+beautifulsoup4==4.13.4   # HTML stripping for feed descriptions
+aiocron==1.8             # Cron-style task scheduling
+python-leetcode==1.2.6   # LeetCode API client
+aiofiles==24.1.0         # Async file I/O
+pytz==2024.2             # Timezone handling
+validators==0.34.0       # URL/email validation helpers
+apscheduler==3.11.2      # Advanced scheduler (background tasks)
+
+# Removed (RTA): SQLAlchemy, aiosqlite — SQLite was replaced by MongoDB
+# Removed (RTA): colorama — unused on Linux/Docker
+# Removed (RTA): asyncpg — Postgres driver, project uses MongoDB only
