@@ -20,6 +20,7 @@ challenges = db.challenges
 challenge_attempts = db.challenge_attempts
 workshops = db.workshops
 workshop_participants = db.workshop_participants
+rss_cache = db.rss_cache
 
 async def init_db():
     """Initialize database indexes"""
@@ -47,6 +48,10 @@ async def init_db():
         await workshops.create_index([("date", 1)])
         await workshops.create_index([("created_by", 1)])
         await workshop_participants.create_index([("workshop_id", 1), ("user_id", 1)], unique=True)
+        
+        # RSS cache TTL index (auto-expire after CACHE_TTL seconds)
+        await rss_cache.create_index('expires_at', expireAfterSeconds=0)
+        await rss_cache.create_index('feed_url', unique=False)
         
         logger.info("Database indexes created successfully")
     except Exception as e:
