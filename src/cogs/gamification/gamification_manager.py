@@ -174,10 +174,18 @@ class GamificationManager(commands.Cog):
         if message.author.bot:
             return
             
-        # Award points for daily activity (once per day)
-        # Implementation would track last activity date and award points accordingly
-        # This is a simplified version
-        await self.award_points(str(message.author.id), 'daily_activity')
+        # Award daily_activity points once per calendar day per user
+        try:
+            user = await self.get_or_create_user(str(message.author.id))
+            today = datetime.utcnow().date().isoformat()
+            if user.get('last_daily_activity') != today:
+                await users.update_one(
+                    {'discord_id': str(message.author.id)},
+                    {'$set': {'last_daily_activity': today}}
+                )
+                await self.award_points(str(message.author.id), 'daily_activity')
+        except Exception as e:
+            logger.error(f'Error in daily activity tracking: {e}')
 
 def setup(bot):
     """Setup the GamificationManager cog"""
