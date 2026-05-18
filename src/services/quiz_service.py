@@ -38,11 +38,7 @@ class QuizService:
         if difficulty:
             filter_query["difficulty"] = difficulty
         
-        # Get total count
-        count = await quizzes.count_documents(filter_query)
-        if count == 0:
-            return None
-
+        
         # Get random quiz
         random_quiz = await quizzes.aggregate([
             {"$match": filter_query},
@@ -195,18 +191,15 @@ class QuizService:
     async def get_category_stats(self) -> Dict[str, Dict]:
         """Get statistics for each quiz category"""
         stats = {}
-        for category in QUIZ_CATEGORIES:
-            # Get total questions
-            total_questions = await quizzes.count_documents({"category": category})
-            
-            # Get difficulty distribution
-            difficulty_counts = {}
-            for difficulty in QUIZ_DIFFICULTY_LEVELS:
-                count = await quizzes.count_documents({
-                    "category": category,
-                    "difficulty": difficulty
-                })
-                difficulty_counts[difficulty] = count
+                for category in QUIZ_CATEGORIES:
+            # Use aggregate to count by difficulty without count_documents
+            pipeline = [
+                {'$match': {'category': category}},
+                {'$group': {'_id': '$difficulty', 'count': {'$sum': 1}}}
+            ]
+            agg_result = await quizzes.aggregate(pipeline).to_list(length=None)
+            difficulty_counts = {row['_id']: row['count'] for row in agg_result}
+            total_questions = sum(difficulty_counts.values())
 
             stats[category] = {
                 'total_questions': total_questions,
