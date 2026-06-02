@@ -144,3 +144,13 @@ Feel free to contribute to this project by:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details. 
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=VEKAgg%2FDiscordBot&type=timeline&logscale=&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=VEKAgg/DiscordBot&type=timeline&theme=dark&logscale&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=VEKAgg/DiscordBot&type=timeline&logscale&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=VEKAgg/DiscordBot&type=timeline&logscale&legend=bottom-right" />
+ </picture>
+</a>
