@@ -67,12 +67,11 @@ async def get_user(discord_id: str):
     return user
 
 async def get_or_create_user(discord_id: str):
-    """Alias for get_user"""
+    """Alias for get_user — always returns the full users row."""
     return await get_user(discord_id)
 
 async def update_user_points(discord_id: str, points: int):
-    """Update user points"""
     await db.execute(
-        "UPDATE users SET points = points + $1 WHERE discord_id = $2",
+        "UPDATE users SET points = points + $1, updated_at = NOW() WHERE discord_id = $2",
         points, discord_id
     )

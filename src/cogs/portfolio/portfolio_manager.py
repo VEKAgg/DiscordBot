@@ -3,232 +3,188 @@ import nextcord
 from nextcord.ext import commands
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
-import json
-import aiohttp
 import validators
+from src.database.database import db, get_or_create_user
 
 logger = logging.getLogger('VEKA.portfolio')
+
 
 class PortfolioManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db = bot.db.portfolios
 
-    @commands.group(name="portfolio", invoke_without_command=True)
+    @commands.group(name='portfolio', invoke_without_command=True)
     async def portfolio(self, ctx):
-        """Portfolio management commands"""
         if ctx.invoked_subcommand is None:
-            embed = nextcord.Embed(
-                title="💼 Portfolio Commands",
-                description="Showcase your projects and view others' work!",
-                color=nextcord.Color.orange()
-            )
-            embed.add_field(
-                name="Available Commands",
-                value="""
-                `!portfolio add` - Add a new project
-                `!portfolio list [@user]` - List your or someone's projects
-                `!portfolio view <project_id>` - View project details
-                `!portfolio edit <project_id>` - Edit a project
-                `!portfolio delete <project_id>` - Delete a project
-                `!portfolio search <query>` - Search projects
-                """,
-                inline=False
-            )
+            embed = nextcord.Embed(title='💼 Portfolio Commands',
+                                   description="Showcase your projects and view others' work!",
+                                   color=nextcord.Color.orange())
+            embed.add_field(name='Available Commands', inline=False, value=(
+                '`!portfolio add` - Add a new project\n'
+                '`!portfolio list [@user]` - List projects\n'
+                '`!portfolio view <id>` - View project details\n'
+                '`!portfolio delete <id>` - Delete your project\n'
+                '`!portfolio search <query>` - Search projects\n'
+            ))
             await ctx.send(embed=embed)
 
-    @portfolio.command(name="add")
+    @portfolio.command(name='add')
     async def portfolio_add(self, ctx):
-        """Add a new project to your portfolio"""
         try:
             def check(m):
                 return m.author == ctx.author and m.channel == ctx.channel
 
-            # Get project details
             await ctx.send("📝 What's the title of your project?")
-            title_msg = await self.bot.wait_for('message', check=check, timeout=60)
-            title = title_msg.content
+            title = (await self.bot.wait_for('message', check=check, timeout=60)).content
 
-            await ctx.send("📋 Please provide a description of your project:")
-            desc_msg = await self.bot.wait_for('message', check=check, timeout=120)
-            description = desc_msg.content
+            await ctx.send('📋 Provide a description:')
+            description = (await self.bot.wait_for('message', check=check, timeout=120)).content
 
-            await ctx.send("🔗 Enter the project URL (optional, type 'skip' to skip):")
-            url_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            await ctx.send("🔗 Project URL? (type 'skip' to skip)")
+            url_resp = (await self.bot.wait_for('message', check=check, timeout=60)).content
             url = None
-            if url_msg.content.lower() != 'skip':
-                if validators.url(url_msg.content):
-                    url = url_msg.content
+            if url_resp.lower() != 'skip':
+                if validators.url(url_resp):
+                    url = url_resp
                 else:
-                    await ctx.send("⚠️ Invalid URL format. URL will not be saved.")
+                    await ctx.send('⚠️ Invalid URL — project will be saved without a URL.')
 
-            await ctx.send("🏷️ Enter project tags separated by commas (e.g., Python, Web, API):")
-            tags_msg = await self.bot.wait_for('message', check=check, timeout=60)
-            tags = [tag.strip() for tag in tags_msg.content.split(',') if tag.strip()]
+            await ctx.send('🏷️ Tags (comma-separated, e.g. Python, Web, API):')
+            tags_raw = (await self.bot.wait_for('message', check=check, timeout=60)).content
+            tags = [t.strip() for t in tags_raw.split(',') if t.strip()]
 
-            # Create project
             project_id = f"proj-{int(datetime.utcnow().timestamp())}"
-            project = {
-                "id": project_id,
-                "title": title,
-                "description": description,
-                "url": url,
-                "tags": tags,
-                "user_id": str(ctx.author.id),
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
+            user = await get_or_create_user(str(ctx.author.id))
 
-            # Save to database
-            await self.db.insert_one(project)
-
-            # Confirmation
-            embed = nextcord.Embed(
-                title="✅ Project Added",
-                description=f"Your project **{title}** has been added to your portfolio!",
-                color=nextcord.Color.orange()
+            await db.execute(
+                """
+                INSERT INTO portfolios (id, user_id, title, description, url, tags)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                project_id, user['id'], title, description, url, tags
             )
-            embed.add_field(name="Description", value=description[:100] + "..." if len(description) > 100 else description, inline=False)
-            if url:
-                embed.add_field(name="URL", value=url, inline=False)
-            if tags:
-                embed.add_field(name="Tags", value=", ".join(tags), inline=False)
-            embed.add_field(name="Project ID", value=f"`{project_id}`", inline=False)
-            embed.add_field(name="View Command", value=f"`!portfolio view {project_id}`", inline=False)
-            
-            await ctx.send(embed=embed)
-            
-        except asyncio.TimeoutError:
-            await ctx.send("⏱️ Project creation timed out. Please try again.")
 
-    @portfolio.command(name="list")
+            embed = nextcord.Embed(title='✅ Project Added',
+                                   description=f"**{title}** has been added to your portfolio!",
+                                   color=nextcord.Color.orange())
+            if url:
+                embed.add_field(name='URL', value=url, inline=False)
+            if tags:
+                embed.add_field(name='Tags', value=', '.join(tags), inline=False)
+            embed.add_field(name='Project ID', value=f'`{project_id}`', inline=False)
+            embed.add_field(name='View', value=f'`!portfolio view {project_id}`', inline=False)
+            await ctx.send(embed=embed)
+
+        except asyncio.TimeoutError:
+            await ctx.send('⏱️ Project creation timed out. Please try again.')
+
+    @portfolio.command(name='list')
     async def portfolio_list(self, ctx, member: nextcord.Member = None):
-        """List projects in a user's portfolio"""
-        target_user = member or ctx.author
-        
-        # Find projects for the user
-        projects = await self.db.find({"user_id": str(target_user.id)}).to_list(length=None)
-        
-        if not projects:
-            if target_user == ctx.author:
-                await ctx.send("📂 You don't have any projects in your portfolio yet. Use `!portfolio add` to add one!")
-            else:
-                await ctx.send(f"📂 {target_user.display_name} doesn't have any projects in their portfolio yet.")
-            return
-            
-        embed = nextcord.Embed(
-            title=f"💼 {target_user.display_name}'s Portfolio",
-            description=f"Found {len(projects)} projects",
-            color=nextcord.Color.orange()
+        target = member or ctx.author
+        user = await get_or_create_user(str(target.id))
+        rows = await db.fetch_many(
+            "SELECT * FROM portfolios WHERE user_id = $1 ORDER BY created_at DESC",
+            user['id']
         )
-        
-        for project in sorted(projects, key=lambda p: p["created_at"], reverse=True):
-            # Format the project entry
-            created_at = project["created_at"].strftime("%Y-%m-%d")
-            tags = ", ".join([f"`{tag}`" for tag in project["tags"]]) if project["tags"] else "No tags"
-            
+
+        if not rows:
+            msg = ("You don't have any projects yet. Use `!portfolio add` to add one!"
+                   if target == ctx.author else f"{target.display_name} has no projects yet.")
+            await ctx.send(f'📂 {msg}')
+            return
+
+        embed = nextcord.Embed(title=f"💼 {target.display_name}'s Portfolio",
+                               description=f'{len(rows)} projects',
+                               color=nextcord.Color.orange())
+        for p in rows:
+            tags = ', '.join([f'`{t}`' for t in (p['tags'] or [])]) or 'No tags'
             embed.add_field(
-                name=f"📁 {project['title']}",
-                value=f"**ID:** `{project['id']}`\n"
-                      f"**Created:** {created_at}\n"
-                      f"**Tags:** {tags}\n"
-                      f"**View:** `!portfolio view {project['id']}`",
+                name=f"📁 {p['title']}",
+                value=(
+                    f"**ID:** `{p['id']}`\n"
+                    f"**Created:** {p['created_at'].strftime('%Y-%m-%d')}\n"
+                    f"**Tags:** {tags}\n"
+                    f"**View:** `!portfolio view {p['id']}`"
+                ),
                 inline=False
             )
-            
-        embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
+        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         await ctx.send(embed=embed)
 
-    @portfolio.command(name="view")
+    @portfolio.command(name='view')
     async def portfolio_view(self, ctx, project_id: str):
-        """View details of a specific project"""
-        project = await self.db.find_one({"id": project_id})
-        
-        if not project:
-            await ctx.send("❌ Project not found. Check the ID and try again.")
+        row = await db.fetch_one("SELECT * FROM portfolios WHERE id = $1", project_id)
+        if not row:
+            await ctx.send('❌ Project not found.')
             return
-            
-        # Get the project owner
-        owner_id = int(project["user_id"])
-        owner = ctx.guild.get_member(owner_id) or await self.bot.fetch_user(owner_id)
-        owner_name = owner.display_name if owner else "Unknown User"
-        
-        embed = nextcord.Embed(
-            title=f"📂 {project['title']}",
-            description=project["description"],
-            color=nextcord.Color.orange()
-        )
-        
-        if project.get("url"):
-            embed.add_field(name="🔗 Project URL", value=project["url"], inline=False)
-            
-        if project.get("tags"):
-            embed.add_field(name="🏷️ Tags", value=", ".join([f"`{tag}`" for tag in project["tags"]]), inline=False)
-            
-        created_at = project["created_at"].strftime("%Y-%m-%d")
-        updated_at = project["updated_at"].strftime("%Y-%m-%d")
-        
-        embed.add_field(name="📅 Created", value=created_at, inline=True)
-        embed.add_field(name="🔄 Updated", value=updated_at, inline=True)
-        embed.add_field(name="👤 Owner", value=owner_name, inline=True)
-        
+
+        owner_row = await db.fetch_one("SELECT discord_id FROM users WHERE id = $1", row['user_id'])
+        owner = ctx.guild.get_member(int(owner_row['discord_id'])) if owner_row else None
+        owner_name = owner.display_name if owner else 'Unknown User'
+
+        embed = nextcord.Embed(title=f"📂 {row['title']}", description=row['description'],
+                               color=nextcord.Color.orange())
+        if row.get('url'):
+            embed.add_field(name='🔗 URL', value=row['url'], inline=False)
+        if row.get('tags'):
+            embed.add_field(name='🏷️ Tags', value=', '.join([f'`{t}`' for t in row['tags']]), inline=False)
+        embed.add_field(name='📅 Created', value=row['created_at'].strftime('%Y-%m-%d'), inline=True)
+        embed.add_field(name='🔄 Updated', value=row['updated_at'].strftime('%Y-%m-%d'), inline=True)
+        embed.add_field(name='👤 Owner', value=owner_name, inline=True)
         if owner and owner.avatar:
             embed.set_thumbnail(url=owner.avatar.url)
-            
         await ctx.send(embed=embed)
 
-    @portfolio.command(name="search")
+    @portfolio.command(name='delete')
+    async def portfolio_delete(self, ctx, project_id: str):
+        user = await get_or_create_user(str(ctx.author.id))
+        result = await db.execute(
+            "DELETE FROM portfolios WHERE id = $1 AND user_id = $2",
+            project_id, user['id']
+        )
+        if result == 'DELETE 1':
+            await ctx.send(f'✅ Project `{project_id}` deleted.')
+        else:
+            await ctx.send('❌ Project not found or you do not own it.')
+
+    @portfolio.command(name='search')
     async def portfolio_search(self, ctx, *, query: str):
-        """Search for projects by title, description, or tags"""
-        # Create a case-insensitive search query
-        search_query = {
-            "$or": [
-                {"title": {"$regex": query, "$options": "i"}},
-                {"description": {"$regex": query, "$options": "i"}},
-                {"tags": {"$regex": query, "$options": "i"}}
-            ]
-        }
-        
-        projects = await self.db.find(search_query).to_list(length=None)
-        
-        if not projects:
+        rows = await db.fetch_many(
+            """
+            SELECT p.*, u.discord_id AS owner_discord_id
+              FROM portfolios p
+              JOIN users u ON u.id = p.user_id
+             WHERE to_tsvector('english', p.title || ' ' || p.description) @@ plainto_tsquery('english', $1)
+                OR $1 = ANY(p.tags)
+             LIMIT 10
+            """,
+            query
+        )
+        if not rows:
             await ctx.send(f"🔍 No projects found matching '{query}'.")
             return
-            
-        embed = nextcord.Embed(
-            title="🔍 Search Results",
-            description=f"Found {len(projects)} projects matching '{query}'",
-            color=nextcord.Color.orange()
-        )
-        
-        for project in projects[:10]:  # Limit to 10 results
-            # Get the project owner
-            owner_id = int(project["user_id"])
-            owner = ctx.guild.get_member(owner_id) or await self.bot.fetch_user(owner_id)
-            owner_name = owner.display_name if owner else "Unknown User"
-            
-            # Format the project entry
-            tags = ", ".join([f"`{tag}`" for tag in project["tags"]]) if project["tags"] else "No tags"
-            
+
+        embed = nextcord.Embed(title='🔍 Search Results',
+                               description=f"{len(rows)} projects matching '{query}'",
+                               color=nextcord.Color.orange())
+        for p in rows:
+            owner = ctx.guild.get_member(int(p['owner_discord_id']))
+            owner_name = owner.display_name if owner else 'Unknown User'
+            tags = ', '.join([f'`{t}`' for t in (p['tags'] or [])]) or 'No tags'
+            desc = p['description']
             embed.add_field(
-                name=f"📁 {project['title']}",
-                value=f"**Owner:** {owner_name}\n"
-                      f"**Description:** {project['description'][:100]}...\n"
-                      f"**Tags:** {tags}\n"
-                      f"**View:** `!portfolio view {project['id']}`",
+                name=f"📁 {p['title']}",
+                value=(
+                    f"**Owner:** {owner_name}\n"
+                    f"**Description:** {desc[:100]}{'...' if len(desc) > 100 else ''}\n"
+                    f"**Tags:** {tags}\n"
+                    f"**View:** `!portfolio view {p['id']}`"
+                ),
                 inline=False
             )
-            
-        if len(projects) > 10:
-            embed.set_footer(text=f"Showing 10 of {len(projects)} results. Refine your search for more specific results.")
-            
         await ctx.send(embed=embed)
 
+
 def setup(bot):
-    """Setup the PortfolioManager cog"""
-    if bot is not None:
-        bot.add_cog(PortfolioManager(bot))
-        logging.getLogger('VEKA').info("Loaded cog: src.cogs.portfolio.portfolio_manager")
-    else:
-        logging.getLogger('VEKA').error("Bot is None in PortfolioManager cog setup")
+    bot.add_cog(PortfolioManager(bot))
+    logging.getLogger('VEKA').info('Loaded cog: src.cogs.portfolio.portfolio_manager')

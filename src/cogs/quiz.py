@@ -1,7 +1,7 @@
 import nextcord
 from nextcord.ext import commands
 import logging
-from datetime import datetime, timedelta
+import random
 import asyncio
 from src.services.quiz_service import QuizService
 from src.config.config import QUIZ_CATEGORIES, QUIZ_DIFFICULTY_LEVELS
@@ -40,20 +40,21 @@ class Quiz(commands.Cog):
     async def quiz_categories(self, ctx):
         """List available quiz categories and their statistics"""
         stats = await self.quiz_service.get_category_stats()
-        
+
         embed = nextcord.Embed(
             title="📊 Quiz Categories",
             description="Here are all available quiz categories and their statistics:",
             color=nextcord.Color.orange()
         )
-        
+
         for category, data in stats.items():
+            difficulties = ', '.join(data['difficulty_distribution'].keys()) or 'None yet'
             embed.add_field(
-                name=f"{data['emoji']} {category.capitalize()}",
-                value=f"**Questions:** {data['count']}\n**Difficulty Levels:** {', '.join(data['difficulties'])}",
+                name=category,
+                value=f"**Questions:** {data['total_questions']}\n**Difficulties:** {difficulties}",
                 inline=True
             )
-        
+
         await ctx.send(embed=embed)
 
     @quiz.command(name="start")
@@ -139,7 +140,7 @@ class Quiz(commands.Cog):
             value = ""
             for i, entry in enumerate(leaderboard):
                 medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"{i+1}."
-                user = ctx.guild.get_member(int(entry['user_id']))
+                user = ctx.guild.get_member(int(entry['discord_id']))
                 username = user.display_name if user else "Unknown User"
                 value += f"{medal} **{username}** - {entry['correct_answers']} correct ({entry['accuracy']}% accuracy)\n"
             
@@ -165,12 +166,9 @@ class Quiz(commands.Cog):
 
     async def send_quiz(self, ctx, quiz, is_daily=False):
         """Send a quiz to the channel and handle responses"""
-        # Add user to active quizzes
-        self.active_quizzes[str(ctx.author.id)] = quiz['_id']
-        
-        # Create a list with all answers (correct + wrong) and shuffle it
-        import random
-        all_answers = [quiz['correct_answer']] + quiz['wrong_answers']
+        self.active_quizzes[str(ctx.author.id)] = quiz['id']
+
+        all_answers = [quiz['correct_answer']] + list(quiz['wrong_answers'])
         random.shuffle(all_answers)
         
         # Create the quiz embed
@@ -245,8 +243,8 @@ class Quiz(commands.Cog):
             
             # Record the result
             points = await self.quiz_service.record_quiz_attempt(
-                ctx.author.id, 
-                quiz['_id'], 
+                ctx.author.id,
+                quiz['id'],
                 is_correct,
                 is_daily
             )
@@ -345,20 +343,17 @@ class Quiz(commands.Cog):
 
     @quiz.command(name="delete")
     @commands.has_permissions(administrator=True)
-    async def quiz_delete(self, ctx, quiz_id: str):
+    async def quiz_delete(self, ctx, quiz_id: int):
         """Delete a quiz question (Admin only)"""
         try:
-            from bson import ObjectId
-            from src.database.mongodb import quizzes
-            
-            result = await quizzes.delete_one({"_id": ObjectId(quiz_id)})
-            
-            if result.deleted_count > 0:
+            from src.database.database import db
+            result = await db.execute("DELETE FROM quizzes WHERE id = $1", quiz_id)
+            if result == "DELETE 1":
                 await ctx.send(f"✅ Quiz `{quiz_id}` has been deleted.")
             else:
                 await ctx.send(f"❌ Quiz `{quiz_id}` not found.")
         except Exception as e:
-            logger.error(f"Error deleting quiz: {str(e)}")
+            logger.error(f"Error deleting quiz: {e}")
             await ctx.send("❌ An error occurred while deleting the quiz.")
 
     @quiz.command(name="admin")

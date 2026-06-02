@@ -3,7 +3,6 @@ python-dotenv
 asyncpg>=0.29.0
 python-dateutil
 aiohttp
-colorama
 feedparser
 beautifulsoup4
 aiocron
@@ -11,6 +10,4 @@ python-leetcode
 aiofiles
 pytz
 validators
-SQLAlchemy
-aiosqlite
 apscheduler

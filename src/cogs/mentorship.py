@@ -1,7 +1,6 @@
 import nextcord
 from nextcord.ext import commands
 import logging
-from datetime import datetime
 from typing import Optional
 from src.services.mentorship_service import MentorshipService
 from src.config.config import MENTORSHIP_CATEGORIES, MENTORSHIP_ROLES, POINTS_CONFIG
@@ -168,7 +167,7 @@ class Mentorship(commands.Cog):
                 return
 
             mentorship = await self.mentorship_service.accept_mentorship(
-                str(pending_mentorship['_id']),
+                pending_mentorship['id'],
                 str(ctx.author.id)
             )
 
@@ -210,7 +209,7 @@ class Mentorship(commands.Cog):
                 return
 
             mentorship = await self.mentorship_service.complete_mentorship(
-                str(active_mentorship['_id']),
+                active_mentorship['id'],
                 str(ctx.author.id)
             )
 
