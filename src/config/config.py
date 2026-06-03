@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+from typing import Dict, List
 
 # Load environment variables
 load_dotenv()
@@ -7,9 +8,21 @@ load_dotenv()
 # Bot Configuration
 BOT_PREFIX = "!"
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+BOT_VERSION = os.getenv("BOT_VERSION", "1.0.0")
+ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("BOT_ENVIRONMENT", "development"))
+ADMIN_IDS = [int(item) for item in os.getenv("ADMIN_IDS", "").split(",") if item.strip().isdigit()]
+OWNER_IDS = [int(item) for item in os.getenv("OWNER_IDS", "").split(",") if item.strip().isdigit()]
 
 # PostgreSQL Configuration
-DATABASE_URL = os.getenv("DATABASE_URL")
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "veka_bot")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "veka_bot_user")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "example")
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+    f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+)
 
 # RSS Feed Configuration
 RSS_FEEDS = {

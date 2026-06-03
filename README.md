@@ -44,7 +44,7 @@ A professional networking and community development Discord bot designed to crea
    Create a `.env` file in the root directory with the following variables:
    ```
    DISCORD_TOKEN=your_discord_bot_token
-   MONGODB_URI=your_mongodb_connection_string
+   DATABASE_URL=postgresql://veka_bot_user:example@localhost:5432/veka_bot
    REDIS_URL=redis://127.0.0.1:6379
    ```
 
@@ -65,7 +65,7 @@ A professional networking and community development Discord bot designed to crea
    Create a `.env` file in the root directory with the following variables:
    ```
    DISCORD_TOKEN=your_discord_bot_token
-   MONGODB_URI=your_mongodb_atlas_connection_string
+   DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
    REDIS_URL=redis://redis:6379
    ```
 
@@ -91,7 +91,7 @@ A professional networking and community development Discord bot designed to crea
    Create a `.env` file in the root directory with the following variables:
    ```
    DISCORD_TOKEN=your_discord_bot_token
-   MONGODB_URI=your_mongodb_atlas_connection_string
+   DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
    REDIS_URL=redis://localhost:6379
    ```
 

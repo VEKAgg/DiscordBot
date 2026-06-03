@@ -140,4 +140,6 @@ CREATE INDEX idx_profiles_user_id ON profiles(user_id);
 CREATE INDEX idx_portfolios_user_id ON portfolios(user_id);
 CREATE INDEX idx_connections_user1 ON connections(user1_id);
 CREATE INDEX idx_connections_user2 ON connections(user2_id);
+CREATE INDEX idx_connection_requests_recipient ON connection_requests(recipient_id);
+CREATE INDEX idx_connection_requests_status ON connection_requests(status);
 CREATE INDEX idx_workshops_date ON workshops(workshop_date);

@@ -12,7 +12,7 @@ jobs:
     runs-on: [self-hosted, X64, Linux, Veka]
     env:
       DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-      MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       CONTAINER_ENGINE: ${{ secrets.CONTAINER_ENGINE || 'docker' }}
 
     steps:
@@ -51,7 +51,7 @@ jobs:
       - name: Create .env file
         run: |
           echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
-          echo "MONGODB_URI=${{ secrets.MONGODB_URI }}" >> .env
+          echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
           echo "REDIS_URL=redis://redis:6379" >> .env
         shell: bash
 
