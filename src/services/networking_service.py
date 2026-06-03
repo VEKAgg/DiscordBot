@@ -1,101 +1,157 @@
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional
-from src.database.mongodb import db
+
+from src.database.database import db, get_or_create_user
 
 logger = logging.getLogger('VEKA.networking')
 
-# Collection references
-_profiles = db.profiles
-_connections = db.connections
-_connection_requests = db.connection_requests
-
 
 class NetworkingService:
-    """DB layer for networking profiles and connections."""
+    """Database-backed networking service for profiles and connections."""
 
-    # ------------------------------------------------------------------
-    # Profiles
-    # ------------------------------------------------------------------
+    async def _resolve_user_id(self, discord_id: str) -> int:
+        user = await get_or_create_user(discord_id)
+        return user['id']
 
-    async def get_profile(self, user_id: str) -> Optional[Dict]:
-        """Return the profile document for *user_id*, or None."""
-        return await _profiles.find_one({'user_id': user_id})
-
-    async def upsert_profile(self, user_id: str, data: Dict) -> None:
-        """Create or update a profile document for *user_id*."""
-        data['user_id'] = user_id
-        data['last_updated'] = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        await _profiles.update_one(
-            {'user_id': user_id},
-            {'$set': data},
-            upsert=True
+    async def get_profile(self, discord_id: str) -> Optional[Dict]:
+        return await db.fetch_one(
+            """
+            SELECT p.*, u.discord_id
+            FROM profiles p
+            JOIN users u ON p.user_id = u.id
+            WHERE u.discord_id = $1
+            """,
+            discord_id,
         )
 
-    # ------------------------------------------------------------------
-    # Connections
-    # ------------------------------------------------------------------
+    async def upsert_profile(self, discord_id: str, data: Dict) -> None:
+        user_id = await self._resolve_user_id(discord_id)
+        await db.execute(
+            """
+            INSERT INTO profiles (user_id, title, skills, bio, links, looking_for, last_updated)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                title = $2,
+                skills = $3,
+                bio = $4,
+                links = $5,
+                looking_for = $6,
+                last_updated = NOW()
+            """,
+            user_id,
+            data.get('title'),
+            data.get('skills'),
+            data.get('bio'),
+            data.get('links'),
+            data.get('looking_for'),
+        )
 
     async def connection_exists(self, user1_id: str, user2_id: str) -> bool:
-        """Return True if a connection between the two users exists."""
-        doc = await _connections.find_one({
-            '$or': [
-                {'user1_id': user1_id, 'user2_id': user2_id},
-                {'user1_id': user2_id, 'user2_id': user1_id},
-            ]
-        })
-        return doc is not None
+        owner_id = await self._resolve_user_id(user1_id)
+        target_id = await self._resolve_user_id(user2_id)
+        row = await db.fetch_one(
+            """
+            SELECT 1 FROM connections
+            WHERE (user1_id = $1 AND user2_id = $2)
+               OR (user1_id = $2 AND user2_id = $1)
+            """,
+            owner_id,
+            target_id,
+        )
+        return row is not None
 
-    async def create_connection(self, user1_id: str, user2_id: str) -> None:
-        """Insert a new connection document between two users."""
-        await _connections.insert_one({
-            'user1_id': user1_id,
-            'user2_id': user2_id,
-            'connected_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
-        })
+    async def has_pending_request(self, from_user_id: str, to_user_id: str) -> bool:
+        requester_id = await self._resolve_user_id(from_user_id)
+        recipient_id = await self._resolve_user_id(to_user_id)
+        row = await db.fetch_one(
+            """
+            SELECT 1 FROM connection_requests
+            WHERE requester_id = $1
+              AND recipient_id = $2
+              AND status = 'pending'
+            """,
+            requester_id,
+            recipient_id,
+        )
+        return row is not None
 
-    async def get_connections(self, user_id: str) -> List[Dict]:
-        """Return all connection documents for *user_id*."""
-        cursor = _connections.find({
-            '$or': [
-                {'user1_id': user_id},
-                {'user2_id': user_id},
-            ]
-        })
-        return await cursor.to_list(length=None)
+    async def get_pending_request(self, from_user_id: str, to_user_id: str) -> Optional[Dict]:
+        requester_id = await self._resolve_user_id(from_user_id)
+        recipient_id = await self._resolve_user_id(to_user_id)
+        return await db.fetch_one(
+            """
+            SELECT * FROM connection_requests
+            WHERE requester_id = $1
+              AND recipient_id = $2
+              AND status = 'pending'
+            """,
+            requester_id,
+            recipient_id,
+        )
 
-    # ------------------------------------------------------------------
-    # Connection requests
-    # ------------------------------------------------------------------
+    async def get_requests_for_user(self, discord_id: str) -> List[Dict]:
+        user_id = await self._resolve_user_id(discord_id)
+        return await db.fetch(
+            """
+            SELECT r.*, u1.discord_id AS requester_discord_id, u2.discord_id AS recipient_discord_id,
+                   u1.id AS requester_user_id, u2.id AS recipient_user_id
+            FROM connection_requests r
+            JOIN users u1 ON r.requester_id = u1.id
+            JOIN users u2 ON r.recipient_id = u2.id
+            WHERE r.requester_id = $1 OR r.recipient_id = $1
+            ORDER BY r.created_at DESC
+            """,
+            user_id,
+        )
 
-    async def get_pending_request(
-        self, from_user_id: str, to_user_id: str
-    ) -> Optional[Dict]:
-        """Return a pending request from *from_user_id* to *to_user_id*, or None."""
-        return await _connection_requests.find_one({
-            'user1_id': from_user_id,
-            'user2_id': to_user_id,
-            'status': 'pending',
-        })
+    async def create_request(self, from_user_id: str, to_user_id: str, message: str = '') -> None:
+        requester_id = await self._resolve_user_id(from_user_id)
+        recipient_id = await self._resolve_user_id(to_user_id)
+        if requester_id == recipient_id:
+            raise ValueError('You cannot send a connection request to yourself.')
 
-    async def create_request(
-        self, from_user_id: str, to_user_id: str, message: str = ''
-    ) -> None:
-        """Insert a new pending connection request."""
-        await _connection_requests.insert_one({
-            'user1_id': from_user_id,
-            'user2_id': to_user_id,
-            'status': 'pending',
-            'created_at': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC'),
-            'message': message or 'Would like to connect with you!',
-        })
+        if await self.connection_exists(from_user_id, to_user_id):
+            raise ValueError('You are already connected with this member.')
 
-    async def update_request_status(
-        self, request_id, status: str
-    ) -> None:
-        """Update the status field of a connection request document."""
-        from bson import ObjectId
-        await _connection_requests.update_one(
-            {'_id': ObjectId(str(request_id))},
-            {'$set': {'status': status}}
+        if await self.has_pending_request(from_user_id, to_user_id):
+            raise ValueError('You already have a pending request to this member.')
+
+        if await self.has_pending_request(to_user_id, from_user_id):
+            raise ValueError('There is already a pending request from this member. Accept it or decline it first.')
+
+        await db.execute(
+            """
+            INSERT INTO connection_requests (requester_id, recipient_id, message, status, created_at)
+            VALUES ($1, $2, $3, 'pending', NOW())
+            """,
+            requester_id,
+            recipient_id,
+            message or 'Would like to connect with you!',
+        )
+
+    async def update_request_status(self, request_id: int, status: str) -> None:
+        await db.execute(
+            """
+            UPDATE connection_requests
+            SET status = $1
+            WHERE id = $2
+            """,
+            status,
+            request_id,
+        )
+
+    async def get_connections(self, discord_id: str) -> List[Dict]:
+        user_id = await self._resolve_user_id(discord_id)
+        return await db.fetch(
+            """
+            SELECT c.*, u1.discord_id AS user1_discord_id, u2.discord_id AS user2_discord_id
+            FROM connections c
+            LEFT JOIN users u1 ON c.user1_id = u1.id
+            LEFT JOIN users u2 ON c.user2_id = u2.id
+            WHERE c.user1_id = $1 OR c.user2_id = $1
+            ORDER BY c.connected_at DESC
+            """,
+            user_id,
         )

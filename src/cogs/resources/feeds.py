@@ -3,6 +3,7 @@ from nextcord.ext import commands, tasks
 import logging
 from src.services.rss_service import RSSService
 from src.config.config import RSS_FEEDS
+from src.utils.safety import safe_background_task
 from typing import Optional
 
 logger = logging.getLogger('VEKA.feeds')
@@ -17,22 +18,20 @@ class Feeds(commands.Cog):
         self.feed_update.cancel()
 
     @tasks.loop(minutes=15)
+    @safe_background_task(name='feed_update')
     async def feed_update(self):
         """Periodically check for new feed entries and post updates"""
-        try:
-            for category in RSS_FEEDS:
-                entries = await self.rss_service.get_latest_entries(category, limit=3)
-                for guild in self.bot.guilds:
-                    # Try to find an appropriate channel
-                    channel = nextcord.utils.get(guild.text_channels, name=f"{category}-feed")
-                    if not channel:
-                        continue
+        for category in RSS_FEEDS:
+            entries = await self.rss_service.get_latest_entries(category, limit=3)
+            for guild in self.bot.guilds:
+                # Try to find an appropriate channel
+                channel = nextcord.utils.get(guild.text_channels, name=f"{category}-feed")
+                if not channel:
+                    continue
 
-                    for entry in entries:
-                        embed = self.create_feed_embed(entry, category)
-                        await channel.send(embed=embed)
-        except Exception as e:
-            logger.error(f"Error in feed update task: {str(e)}")
+                for entry in entries:
+                    embed = self.create_feed_embed(entry, category)
+                    await channel.send(embed=embed)
 
     @feed_update.before_loop
     async def before_feed_update(self):
