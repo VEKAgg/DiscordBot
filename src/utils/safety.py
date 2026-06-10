@@ -131,8 +131,10 @@ def safe_command(requires_db: bool = False) -> Callable[[Callable[..., Coroutine
             except Exception as error:
                 log_error(error, ctx, module=getattr(func, '__module__', None))
                 message = map_exception_to_message(error)
+                from src.utils.embeds import error_embed
+                embed = error_embed(title="Command Error", description=message, contributor_source=getattr(func, '__module__', None))
                 if isinstance(ctx, commands.Context):
-                    await safe_send(ctx, content=message)
+                    await safe_send(ctx, embed=embed)
                 return None
         return wrapper
     return decorator
@@ -152,8 +154,10 @@ def safe_slash_command(requires_db: bool = False) -> Callable[[Callable[..., Cor
             except Exception as error:
                 log_error(error, interaction, module=getattr(func, '__module__', None))
                 message = map_exception_to_message(error)
+                from src.utils.embeds import error_embed
+                embed = error_embed(title="Command Error", description=message, contributor_source=getattr(func, '__module__', None))
                 if isinstance(interaction, nextcord.Interaction):
-                    await safe_send(interaction, content=message, ephemeral=True)
+                    await safe_send(interaction, embed=embed, ephemeral=True)
                 return None
         return wrapper
     return decorator

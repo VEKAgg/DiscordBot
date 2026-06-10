@@ -6,7 +6,7 @@ MIGRATIONS_TABLE = 'schema_migrations'
 
 
 def get_migrations_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / 'migrations'
+    return Path(__file__).resolve().parent.parent.parent / 'migrations'
 
 
 def list_migration_files() -> List[Path]:
