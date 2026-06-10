@@ -11,44 +11,11 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - PYTHONUNBUFFERED=1
-      - DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
-      - REDIS_URL=redis://redis:6379
+      # DATABASE_URL is expected to be provided in the .env file
     networks:
       - veka-network
-    depends_on:
-      - postgres
-      - redis
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: veka-postgres
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: veka_bot
-      POSTGRES_USER: veka_bot_user
-      POSTGRES_PASSWORD: example
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - veka-network
-    ports:
-      - "5432:5432"
-
-  redis:
-    image: redis:alpine
-    container_name: veka-redis
-    restart: unless-stopped
-    volumes:
-      - redis-data:/data
-    networks:
-      - veka-network
-    ports:
-      - "6379:6379"
 
 networks:
   veka-network:
     driver: bridge
 
-volumes:
-  redis-data:
-  postgres-data:
