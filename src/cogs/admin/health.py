@@ -5,7 +5,7 @@ from typing import Optional
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import ENVIRONMENT, FEATURES
+from src.config.config import ENVIRONMENT
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
@@ -111,7 +111,7 @@ class Health(commands.Cog):
         feature_status = {
             'Profiles/Networking': self._feature_state('src.cogs.networking'),
             'Marketplace': self._feature_state('src.cogs.marketplace'),
-            'Resources/RSS': self._feature_state('src.cogs.resources.feeds', enabled_flag=FEATURES.get('rss_feeds', True)),
+            'Resources/RSS': self._feature_state('src.cogs.resources.feeds'),
             'Database': 'Available' if runtime_state.db_available else 'Unavailable',
         }
 
@@ -123,6 +123,25 @@ class Health(commands.Cog):
         )
         for name, value in feature_status.items():
             embed.add_field(name=name, value=value, inline=False)
+
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @nextcord.slash_command(name='startupchecks', description='Show results of initial boot checks')
+    @admin_only()
+    @safe_slash_command()
+    async def startupchecks(self, interaction: nextcord.Interaction):
+        embed = info_embed(
+            title='Startup Checks',
+            description='Results from the system boot sequence.',
+            contributor_source=__name__,
+        )
+        
+        if not runtime_state.startup_check_results:
+            embed.description = "No startup checks were recorded."
+        else:
+            for check in runtime_state.startup_check_results:
+                icon = "✅" if check['status'] == 'PASS' else "⚠️" if check['status'] == 'WARN' else "❌"
+                embed.add_field(name=f"{icon} {check['name']}", value=f"`{check['status']}`: {check['message']}", inline=False)
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
