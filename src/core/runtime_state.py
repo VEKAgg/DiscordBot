@@ -41,6 +41,11 @@ class RuntimeState:
     version: str = field(default_factory=lambda: os.getenv('BOT_VERSION', '1.0.0'))
     commit: str = field(default_factory=_load_git_metadata)
     branch: str = field(default_factory=_load_git_branch)
-
+    
+    # New state fields for production observability
+    startup_check_results: List[dict] = field(default_factory=list)
+    last_db_error: str | None = None
+    last_recovery_time: datetime | None = None
+    alert_state_cache: dict = field(default_factory=dict)
 
 runtime_state = RuntimeState()

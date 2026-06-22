@@ -9,9 +9,10 @@ import nextcord
 from dotenv import load_dotenv
 from nextcord.ext import commands
 
-from src.config.config import BOT_PREFIX, DISCORD_TOKEN, LOG_FILE, LOG_FORMAT
+from src.config.config import BOT_PREFIX, DISCORD_TOKEN
 from src.core.runtime_state import runtime_state
 from src.database.database import db
+from src.utils.logger import setup_logging, get_logger
 from src.utils.safety import (
     DatabaseUnavailableError,
     ValidationError,
@@ -21,7 +22,7 @@ from src.utils.safety import (
     format_context,
 )
 
-logger = logging.getLogger('VEKA')
+logger = get_logger('VEKA.core')
 
 EXTENSIONS = [
     'src.cogs.admin.basic',
@@ -31,20 +32,6 @@ EXTENSIONS = [
     'src.cogs.marketplace.marketplace',
     'src.cogs.resources.feeds',
 ]
-
-
-def setup_logging() -> None:
-    if not os.path.exists('logs'):
-        os.makedirs('logs', exist_ok=True)
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format=LOG_FORMAT,
-        handlers=[
-            logging.FileHandler(LOG_FILE),
-            logging.StreamHandler(),
-        ],
-    )
 
 
 def get_intents() -> nextcord.Intents:
@@ -86,13 +73,53 @@ def load_extensions(bot: commands.Bot, extensions: List[str]) -> None:
 
 
 def configure_bot_events(bot: commands.Bot) -> None:
+    from nextcord.ext import tasks
+    @tasks.loop(minutes=1)
+    async def db_health_check():
+        was_available = runtime_state.db_available
+        try:
+            await db.ping()
+            if not was_available:
+                runtime_state.db_available = True
+                runtime_state.last_recovery_time = datetime.utcnow()
+                if hasattr(bot, 'notifier'):
+                    bot.notifier.clear_cooldown('db_unavailable')
+                    await bot.notifier.send_alert(
+                        title="Database Reconnected",
+                        description="The PostgreSQL database connection has been restored.",
+                        severity="INFO"
+                    )
+                logger.info("Database connection restored.")
+        except DatabaseUnavailableError:
+            if was_available:
+                runtime_state.db_available = False
+                if hasattr(bot, 'notifier'):
+                    await bot.notifier.send_alert(
+                        title="Database Unavailable",
+                        description="The PostgreSQL database connection was lost. Running in degraded mode.",
+                        severity="CRITICAL",
+                        dedupe_key="db_unavailable",
+                        cooldown_minutes=60
+                    )
+                logger.error("Database connection lost. Operating in degraded mode.")
+
     @bot.event
     async def on_ready():
         if getattr(bot, '_veka_ready', False):
             return
         bot._veka_ready = True
 
+        from src.services.admin_notifier import AdminNotifier
+        bot.notifier = AdminNotifier(bot)
+
         await initialize_database()
+        
+        from src.core.checks import StartupChecks
+        await StartupChecks.run_all_checks()
+        
+        await bot.notifier.send_startup_summary()
+        
+        db_health_check.start()
 
         try:
             await bot.change_presence(

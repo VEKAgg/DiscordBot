@@ -10,8 +10,12 @@ BOT_PREFIX = "!"
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 BOT_VERSION = os.getenv("BOT_VERSION", "1.0.0")
 ENVIRONMENT = os.getenv("ENVIRONMENT", os.getenv("BOT_ENVIRONMENT", "development"))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 ADMIN_IDS = [int(item) for item in os.getenv("ADMIN_IDS", "").split(",") if item.strip().isdigit()]
 OWNER_IDS = [int(item) for item in os.getenv("OWNER_IDS", "").split(",") if item.strip().isdigit()]
+
+_admin_alert_channel = os.getenv("ADMIN_ALERT_CHANNEL_ID", "")
+ADMIN_ALERT_CHANNEL_ID = int(_admin_alert_channel) if _admin_alert_channel.strip().isdigit() else None
 
 # PostgreSQL Configuration
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
@@ -42,10 +46,6 @@ RSS_FEEDS = {
         "https://blog.github.com/all.atom"
     ]
 }
-
-# Logging Configuration
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-LOG_FILE = "logs/bot.log"
 
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {

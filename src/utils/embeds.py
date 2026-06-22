@@ -113,3 +113,19 @@ def info_embed(
     **kwargs: Any,
 ) -> nextcord.Embed:
     return veka_embed(title=title, description=description, **kwargs)
+
+
+def alert_embed(
+    title: str,
+    description: str,
+    severity: str = "INFO",
+    **kwargs: Any,
+) -> nextcord.Embed:
+    colors = {
+        "INFO": nextcord.Color.blue(),
+        "WARN": nextcord.Color.gold(),
+        "ERROR": nextcord.Color.red(),
+        "CRITICAL": nextcord.Color.dark_red()
+    }
+    color = colors.get(severity.upper(), ORANGE)
+    return veka_embed(title=f"[{severity.upper()}] {title}", description=description, color=color, **kwargs)

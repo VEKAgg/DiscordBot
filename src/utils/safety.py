@@ -163,21 +163,50 @@ def safe_slash_command(requires_db: bool = False) -> Callable[[Callable[..., Cor
     return decorator
 
 
-async def run_safe_task(coro: Coroutine[Any, Any, Any], *, name: Optional[str] = None, logger_obj: Optional[logging.Logger] = None) -> Optional[Any]:
+async def run_safe_task(coro: Coroutine[Any, Any, Any], *, name: Optional[str] = None, logger_obj: Optional[logging.Logger] = None, bot: Optional[nextcord.Client] = None) -> Optional[Any]:
     if logger_obj is None:
         logger_obj = logger
     task_name = name or getattr(coro, '__name__', 'anonymous_task')
     try:
-        return await coro
+        result = await coro
+        
+        # Reset failure count on success
+        fail_key = f"task_fails_{task_name}"
+        if runtime_state.alert_state_cache.get(fail_key, 0) > 0:
+            runtime_state.alert_state_cache[fail_key] = 0
+            if bot and hasattr(bot, 'notifier'):
+                bot.notifier.clear_cooldown(f"task_alert_{task_name}")
+                await bot.notifier.send_alert(
+                    title="Task Recovered",
+                    description=f"Background task `{task_name}` has recovered and completed successfully.",
+                    severity="INFO"
+                )
+                
+        return result
     except Exception as error:
         logger_obj.error('Background task failed: %s | %s', task_name, error, exc_info=True)
+        
+        fail_key = f"task_fails_{task_name}"
+        fails = runtime_state.alert_state_cache.get(fail_key, 0) + 1
+        runtime_state.alert_state_cache[fail_key] = fails
+        
+        if fails >= 3 and bot and hasattr(bot, 'notifier'):
+            await bot.notifier.send_alert(
+                title="Background Task Failing",
+                description=f"Task `{task_name}` has failed {fails} consecutive times.\n**Error:** {str(error)[:500]}",
+                severity="ERROR",
+                dedupe_key=f"task_alert_{task_name}",
+                cooldown_minutes=60
+            )
+            
         return None
 
 
 def safe_background_task(name: Optional[str] = None) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
     def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
         @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any):
-            return await run_safe_task(func(*args, **kwargs), name=name or func.__name__)
+        async def wrapper(self, *args: Any, **kwargs: Any):
+            bot = getattr(self, 'bot', None)
+            return await run_safe_task(func(self, *args, **kwargs), name=name or func.__name__, bot=bot)
         return wrapper
     return decorator
