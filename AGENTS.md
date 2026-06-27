@@ -8,9 +8,8 @@ Python `>=3.13`. No test framework configured.
 git clone <repo> && cd discord-bot
 cp .env.example .env              # then fill in DISCORD_TOKEN and DATABASE_URL
 
-# Install runtime deps
-pip install -r requirements.txt   # or: uv sync
-pip install -e '.[dev]'           # dev deps (ruff, mypy, pre-commit)
+# Install all deps (runtime + dev) via uv
+uv sync --extra dev
 
 # Activate pre-commit hooks (do this once after clone)
 pre-commit install
