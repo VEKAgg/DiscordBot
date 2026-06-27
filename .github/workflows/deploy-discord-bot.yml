@@ -52,7 +52,6 @@ jobs:
         run: |
           echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}" > .env
           echo "DATABASE_URL=${{ secrets.DATABASE_URL }}" >> .env
-          echo "REDIS_URL=redis://redis:6379" >> .env
         shell: bash
 
       - name: Build and deploy with Docker/Podman
@@ -74,14 +73,8 @@ jobs:
             
             # Build and run containers
             podman build -t veka-discord-bot:latest .
-            
-            # Run Redis
-            podman run -d --pod veka-bot-pod \
-              --name veka-redis \
-              -v redis-data:/data \
-              redis:alpine
-            
-            # Run Discord Bot
+
+            # Run Discord Bot (PostgreSQL is external/managed via DATABASE_URL)
             podman run -d --pod veka-bot-pod \
               --name veka-discord-bot \
               -v ./logs:/app/logs \
@@ -139,13 +132,13 @@ jobs:
           SUCCESS=0
           while [ $ELAPSED -lt $MAX_WAIT ]; do
             if [ "${CONTAINER_CMD}" = "podman" ]; then
-              if podman logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+              if podman logs veka-discord-bot 2>&1 | grep -q "is ready. DB available"; then
                 echo "Health check passed - Bot connected to Discord"
                 SUCCESS=1
                 break
               fi
             else
-              if docker logs veka-discord-bot 2>&1 | grep -q "has connected to Discord"; then
+              if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available"; then
                 echo "Health check passed - Bot connected to Discord"
                 SUCCESS=1
                 break
