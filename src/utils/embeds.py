@@ -3,7 +3,7 @@ import logging
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import nextcord
 
@@ -17,7 +17,7 @@ ORANGE = nextcord.Color.orange()
 
 # Best-effort contributor attribution mapping for known modules.
 # This is a static local fallback to avoid expensive runtime API calls.
-_STATIC_CONTRIBUTOR_MAP: Dict[str, Dict[str, str]] = {
+_STATIC_CONTRIBUTOR_MAP: dict[str, dict[str, str]] = {
     'src.cogs.admin.basic': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.help': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.health': DEFAULT_CONTRIBUTOR,
@@ -28,7 +28,7 @@ _STATIC_CONTRIBUTOR_MAP: Dict[str, Dict[str, str]] = {
 }
 
 
-def _git_author_for_path(path: Path) -> Optional[str]:
+def _git_author_for_path(path: Path) -> str | None:
     try:
         author = subprocess.check_output(
             ['git', 'log', '-1', '--format=%an', '--', str(path)],
@@ -42,7 +42,7 @@ def _git_author_for_path(path: Path) -> Optional[str]:
 
 
 @functools.lru_cache(maxsize=64)
-def get_contributor(source: Optional[str] = None) -> Dict[str, str]:
+def get_contributor(source: str | None = None) -> dict[str, str]:
     if source:
         if source in _STATIC_CONTRIBUTOR_MAP:
             return _STATIC_CONTRIBUTOR_MAP[source]
@@ -65,16 +65,16 @@ def get_contributor(source: Optional[str] = None) -> Dict[str, str]:
     return DEFAULT_CONTRIBUTOR
 
 
-def _build_footer(contributor: Dict[str, str]) -> str:
+def _build_footer(contributor: dict[str, str]) -> str:
     name = contributor.get('name', DEFAULT_CONTRIBUTOR['name'])
     return f'Command made by {name}, you can also contribute: {REPO_URL}'
 
 
 def veka_embed(
-    title: Optional[str] = None,
-    description: Optional[str] = None,
+    title: str | None = None,
+    description: str | None = None,
     color: nextcord.Color = ORANGE,
-    contributor_source: Optional[str] = None,
+    contributor_source: str | None = None,
     timestamp: bool = True,
     footer: bool = True,
     include_repo_link: bool = False,
@@ -92,24 +92,24 @@ def veka_embed(
 
 
 def success_embed(
-    title: Optional[str] = None,
-    description: Optional[str] = None,
+    title: str | None = None,
+    description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
     return veka_embed(title=title, description=description, **kwargs)
 
 
 def error_embed(
-    title: Optional[str] = 'Error',
-    description: Optional[str] = None,
+    title: str | None = 'Error',
+    description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
     return veka_embed(title=title, description=description, **kwargs)
 
 
 def info_embed(
-    title: Optional[str] = 'Info',
-    description: Optional[str] = None,
+    title: str | None = 'Info',
+    description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
     return veka_embed(title=title, description=description, **kwargs)
@@ -118,14 +118,14 @@ def info_embed(
 def alert_embed(
     title: str,
     description: str,
-    severity: str = "INFO",
+    severity: str = 'INFO',
     **kwargs: Any,
 ) -> nextcord.Embed:
     colors = {
-        "INFO": nextcord.Color.blue(),
-        "WARN": nextcord.Color.gold(),
-        "ERROR": nextcord.Color.red(),
-        "CRITICAL": nextcord.Color.dark_red()
+        'INFO': nextcord.Color.blue(),
+        'WARN': nextcord.Color.gold(),
+        'ERROR': nextcord.Color.red(),
+        'CRITICAL': nextcord.Color.dark_red(),
     }
     color = colors.get(severity.upper(), ORANGE)
-    return veka_embed(title=f"[{severity.upper()}] {title}", description=description, color=color, **kwargs)
+    return veka_embed(title=f'[{severity.upper()}] {title}', description=description, color=color, **kwargs)

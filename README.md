@@ -32,8 +32,9 @@ database or any single feature is unavailable.
 - **aiohttp / feedparser / beautifulsoup4** — RSS resource feeds
 - **python-dotenv / validators** — config and input validation
 
-Dependencies are pinned in `requirements.txt` (the canonical install used by
-Docker and CI). `pyproject.toml` mirrors the same pins for `uv`/`pip install .`.
+Package management is done via **`uv`** — `uv.lock` is the lockfile.
+`pyproject.toml` is the source of truth for dependencies. A `requirements.txt`
+is kept for Docker images that don't have `uv`.
 
 ---
 
@@ -212,8 +213,15 @@ the environment.
 ### Local
 
 ```bash
-pip install -r requirements.txt
+git clone <repo> && cd discord-bot
 cp .env.example .env          # then fill in DISCORD_TOKEN and DATABASE_URL
+
+# Install all deps (runtime + dev) via uv
+uv sync --extra dev
+
+# Activate pre-commit hooks (once after clone)
+pre-commit install
+
 python main.py                # needs a reachable PostgreSQL
 ```
 
@@ -254,7 +262,24 @@ the same feature — keep them in sync when changing behavior.
 
 ## Development
 
-- **No tests, linters, or formatters are configured** (no pytest/black/flake8).
+### Lint, Format, Typecheck
+
+Run these before every push:
+
+```bash
+ruff check .                  # lint (no auto-fixes)
+ruff check --fix . && ruff format .  # auto-fix then format
+mypy src/ main.py             # static type check
+pre-commit run --all-files    # all checks (ruff + mypy + misc)
+```
+
+Pre-commit hooks run automatically on `git commit`. Config in
+`.pre-commit-config.yaml`. Install them once with `pre-commit install`.
+
+All tool config lives in `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`).
+
+### Guidelines
+
 - Every module logs via `logging.getLogger('VEKA.<area>')`, configured by
   `setup_logging()` in `src/utils/logger.py`.
 - To enable an unloaded cog, add its module path to `EXTENSIONS` in

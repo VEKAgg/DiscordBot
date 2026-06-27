@@ -1,6 +1,4 @@
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional
 
 from src.database.database import db, get_or_create_user
 
@@ -14,7 +12,7 @@ class NetworkingService:
         user = await get_or_create_user(discord_id)
         return user['id']
 
-    async def get_profile(self, discord_id: str) -> Optional[Dict]:
+    async def get_profile(self, discord_id: str) -> dict | None:
         return await db.fetch_one(
             """
             SELECT p.*, u.discord_id
@@ -25,7 +23,7 @@ class NetworkingService:
             discord_id,
         )
 
-    async def upsert_profile(self, discord_id: str, data: Dict) -> None:
+    async def upsert_profile(self, discord_id: str, data: dict) -> None:
         user_id = await self._resolve_user_id(discord_id)
         await db.execute(
             """
@@ -77,7 +75,7 @@ class NetworkingService:
         )
         return row is not None
 
-    async def get_pending_request(self, from_user_id: str, to_user_id: str) -> Optional[Dict]:
+    async def get_pending_request(self, from_user_id: str, to_user_id: str) -> dict | None:
         requester_id = await self._resolve_user_id(from_user_id)
         recipient_id = await self._resolve_user_id(to_user_id)
         return await db.fetch_one(
@@ -91,7 +89,7 @@ class NetworkingService:
             recipient_id,
         )
 
-    async def get_requests_for_user(self, discord_id: str) -> List[Dict]:
+    async def get_requests_for_user(self, discord_id: str) -> list[dict]:
         user_id = await self._resolve_user_id(discord_id)
         return await db.fetch(
             """
@@ -131,6 +129,22 @@ class NetworkingService:
             message or 'Would like to connect with you!',
         )
 
+    async def create_connection(self, user1_discord_id: str, user2_discord_id: str) -> None:
+        user1_id = await self._resolve_user_id(user1_discord_id)
+        user2_id = await self._resolve_user_id(user2_discord_id)
+        if user1_id == user2_id:
+            return
+        if await self.connection_exists(user1_discord_id, user2_discord_id):
+            return
+        await db.execute(
+            """
+            INSERT INTO connections (user1_id, user2_id, connected_at)
+            VALUES ($1, $2, NOW())
+            """,
+            user1_id,
+            user2_id,
+        )
+
     async def update_request_status(self, request_id: int, status: str) -> None:
         await db.execute(
             """
@@ -142,7 +156,7 @@ class NetworkingService:
             request_id,
         )
 
-    async def get_connections(self, discord_id: str) -> List[Dict]:
+    async def get_connections(self, discord_id: str) -> list[dict]:
         user_id = await self._resolve_user_id(discord_id)
         return await db.fetch(
             """

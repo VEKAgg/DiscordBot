@@ -13,3 +13,37 @@ dependencies = [
     "beautifulsoup4==4.15.0",
     "validators==0.35.0",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.11.0",
+    "mypy>=1.15.0",
+    "pre-commit>=4.2.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "I", "UP", "B", "W", "ARG"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "single"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+warn_no_return = true
+disallow_any_unimported = false
+no_implicit_optional = false
+
+# Discord User/Member union is excessively noisy; catch these in review instead.
+disable_error_code = [
+    "union-attr",
+]

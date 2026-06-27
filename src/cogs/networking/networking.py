@@ -1,6 +1,5 @@
 import logging
 import re
-from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
 import nextcord
@@ -26,7 +25,7 @@ class Networking(commands.Cog):
         self.bot = bot
         self.svc = NetworkingService()
 
-    def _normalize_links(self, links: Optional[str]) -> Optional[str]:
+    def _normalize_links(self, links: str | None) -> str | None:
         if not links:
             return None
 
@@ -48,12 +47,12 @@ class Networking(commands.Cog):
 
         return '\n'.join(normalized)
 
-    def _links_display(self, links: Optional[str]) -> str:
+    def _links_display(self, links: str | None) -> str:
         if not links:
             return 'Not set'
         return '\n'.join(f'<{link}>' for link in links.splitlines())
 
-    def _format_profile(self, target: nextcord.Member, profile: Dict) -> nextcord.Embed:
+    def _format_profile(self, target: nextcord.Member, profile: dict) -> nextcord.Embed:
         embed = info_embed(
             title=f"{target.display_name}'s Professional Profile",
             description='A concise overview of community networking details.',
@@ -66,10 +65,10 @@ class Networking(commands.Cog):
         embed.add_field(name='About', value=profile.get('bio') or profile.get('experience') or 'Not set', inline=False)
         embed.add_field(name='Looking For', value=profile.get('looking_for') or 'Not set', inline=False)
         embed.add_field(name='Links', value=self._links_display(profile.get('links')), inline=False)
-        embed.set_footer(text=f"Last updated: {profile.get('last_updated', 'Never')}")
+        embed.set_footer(text=f'Last updated: {profile.get("last_updated", "Never")}')
         return embed
 
-    async def _build_profile_data(self, existing: Optional[Dict], values: Dict) -> Dict:
+    async def _build_profile_data(self, existing: dict | None, values: dict) -> dict:
         profile_data = {}
         for field in ['title', 'skills', 'bio', 'links', 'looking_for']:
             if values.get(field) is not None:
@@ -98,10 +97,10 @@ class Networking(commands.Cog):
         self,
         interaction: nextcord.Interaction,
         title: str,
-        skills: Optional[str] = None,
-        bio: Optional[str] = None,
-        links: Optional[str] = None,
-        looking_for: Optional[str] = None,
+        skills: str | None = None,
+        bio: str | None = None,
+        links: str | None = None,
+        looking_for: str | None = None,
     ):
         """Create or update your professional profile with core fields."""
         try:
@@ -135,11 +134,11 @@ class Networking(commands.Cog):
     async def profile_edit(
         self,
         interaction: nextcord.Interaction,
-        title: Optional[str] = None,
-        skills: Optional[str] = None,
-        bio: Optional[str] = None,
-        links: Optional[str] = None,
-        looking_for: Optional[str] = None,
+        title: str | None = None,
+        skills: str | None = None,
+        bio: str | None = None,
+        links: str | None = None,
+        looking_for: str | None = None,
     ):
         """Update profile fields while preserving existing values."""
         if not any([title, skills, bio, links, looking_for]):
@@ -188,16 +187,16 @@ class Networking(commands.Cog):
     async def profile_view(
         self,
         interaction: nextcord.Interaction,
-        member: Optional[nextcord.Member] = None,
+        member: nextcord.Member | None = None,
     ):
         """View your or another member's profile."""
         target = member or interaction.user
         profile = await self.svc.get_profile(str(target.id))
         if not profile:
-            await self._send_profile_missing(interaction, target)
+            await self._send_profile_missing(interaction, target)  # type: ignore[arg-type]
             return
 
-        embed = self._format_profile(target, profile)
+        embed = self._format_profile(target, profile)  # type: ignore[arg-type]
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @connect.subcommand(name='request', description='Send a connection request')
@@ -206,13 +205,11 @@ class Networking(commands.Cog):
         self,
         interaction: nextcord.Interaction,
         member: nextcord.Member,
-        message: Optional[str] = None,
+        message: str | None = None,
     ):
         """Send a connection request to another member."""
         try:
-            await self.svc.create_request(
-                str(interaction.user.id), str(member.id), message or ''
-            )
+            await self.svc.create_request(str(interaction.user.id), str(member.id), message or '')
             embed = success_embed(
                 title='Connection Request Sent',
                 description=f'Your request has been sent to {member.display_name}.',
@@ -328,8 +325,12 @@ class Networking(commands.Cog):
         requests = await self.svc.get_requests_for_user(str(interaction.user.id))
         connections = await self.svc.get_connections(str(interaction.user.id))
 
-        pending_incoming = [r for r in requests if r['recipient_discord_id'] == str(interaction.user.id) and r['status'] == 'pending']
-        pending_outgoing = [r for r in requests if r['requester_discord_id'] == str(interaction.user.id) and r['status'] == 'pending']
+        pending_incoming = [
+            r for r in requests if r['recipient_discord_id'] == str(interaction.user.id) and r['status'] == 'pending'
+        ]
+        pending_outgoing = [
+            r for r in requests if r['requester_discord_id'] == str(interaction.user.id) and r['status'] == 'pending'
+        ]
 
         embed = info_embed(
             title='Connection Status',
@@ -340,7 +341,7 @@ class Networking(commands.Cog):
 
         if pending_incoming:
             incoming_text = '\n'.join(
-                f"• <@{req['requester_discord_id']}> — {req['message'] or 'No message'}"
+                f'• <@{req["requester_discord_id"]}> — {req["message"] or "No message"}'
                 for req in pending_incoming[:10]
             )
         else:
@@ -349,7 +350,7 @@ class Networking(commands.Cog):
 
         if pending_outgoing:
             outgoing_text = '\n'.join(
-                f"• <@{req['recipient_discord_id']}> — {req['message'] or 'No message'}"
+                f'• <@{req["recipient_discord_id"]}> — {req["message"] or "No message"}'
                 for req in pending_outgoing[:10]
             )
         else:
@@ -358,7 +359,7 @@ class Networking(commands.Cog):
 
         if connections:
             connected_text = '\n'.join(
-                f"• <@{conn['user1_discord_id'] if conn['user1_discord_id'] != str(interaction.user.id) else conn['user2_discord_id']}> — connected {conn.get('connected_at', 'Unknown')}"
+                f'• <@{conn["user1_discord_id"] if conn["user1_discord_id"] != str(interaction.user.id) else conn["user2_discord_id"]}> — connected {conn.get("connected_at", "Unknown")}'
                 for conn in connections[:10]
             )
         else:
@@ -481,8 +482,12 @@ class Networking(commands.Cog):
             include_repo_link=True,
         )
         for conn in connections:
-            other_id = conn['user2_discord_id'] if conn['user1_discord_id'] == str(ctx.author.id) else conn['user1_discord_id']
-            embed.add_field(name=f'Connection', value=f'<@{other_id}> — {conn.get("connected_at", "Unknown")}', inline=False)
+            other_id = (
+                conn['user2_discord_id'] if conn['user1_discord_id'] == str(ctx.author.id) else conn['user1_discord_id']
+            )
+            embed.add_field(
+                name='Connection', value=f'<@{other_id}> — {conn.get("connected_at", "Unknown")}', inline=False
+            )
         await ctx.send(embed=embed)
 
 
