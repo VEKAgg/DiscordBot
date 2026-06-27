@@ -1,4 +1,6 @@
 import logging
+
+import nextcord
 from nextcord.ext import commands
 
 logger = logging.getLogger('VEKA.workshops')

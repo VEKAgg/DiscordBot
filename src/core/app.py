@@ -1,8 +1,5 @@
 import asyncio
-import logging
-import os
 from datetime import datetime
-from typing import List
 
 import aiohttp
 import nextcord
@@ -12,14 +9,13 @@ from nextcord.ext import commands
 from src.config.config import BOT_PREFIX, DISCORD_TOKEN
 from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.utils.logger import setup_logging, get_logger
+from src.utils.logger import get_logger, setup_logging
 from src.utils.safety import (
     DatabaseUnavailableError,
-    ValidationError,
     ExternalRequestError,
-    map_exception_to_message,
-    safe_send,
+    ValidationError,
     format_context,
+    safe_send,
 )
 
 logger = get_logger('VEKA.core')
@@ -44,7 +40,7 @@ def get_intents() -> nextcord.Intents:
 
 def build_bot() -> commands.Bot:
     bot = commands.Bot(command_prefix=BOT_PREFIX, intents=get_intents(), help_command=None)
-    bot.runtime_state = runtime_state
+    bot.runtime_state = runtime_state  # type: ignore[attr-defined]
     return bot
 
 
@@ -67,7 +63,7 @@ async def initialize_database() -> None:
         runtime_state.degraded_features.append('migrations')
 
 
-def load_extensions(bot: commands.Bot, extensions: List[str]) -> None:
+def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
     for extension in extensions:
         try:
             bot.load_extension(extension)
@@ -81,6 +77,7 @@ def load_extensions(bot: commands.Bot, extensions: List[str]) -> None:
 
 def configure_bot_events(bot: commands.Bot) -> None:
     from nextcord.ext import tasks
+
     @tasks.loop(minutes=1)
     async def db_health_check():
         was_available = runtime_state.db_available
@@ -92,48 +89,47 @@ def configure_bot_events(bot: commands.Bot) -> None:
                 if hasattr(bot, 'notifier'):
                     bot.notifier.clear_cooldown('db_unavailable')
                     await bot.notifier.send_alert(
-                        title="Database Reconnected",
-                        description="The PostgreSQL database connection has been restored.",
-                        severity="INFO"
+                        title='Database Reconnected',
+                        description='The PostgreSQL database connection has been restored.',
+                        severity='INFO',
                     )
-                logger.info("Database connection restored.")
+                logger.info('Database connection restored.')
         except DatabaseUnavailableError:
             if was_available:
                 runtime_state.db_available = False
                 if hasattr(bot, 'notifier'):
                     await bot.notifier.send_alert(
-                        title="Database Unavailable",
-                        description="The PostgreSQL database connection was lost. Running in degraded mode.",
-                        severity="CRITICAL",
-                        dedupe_key="db_unavailable",
-                        cooldown_minutes=60
+                        title='Database Unavailable',
+                        description='The PostgreSQL database connection was lost. Running in degraded mode.',
+                        severity='CRITICAL',
+                        dedupe_key='db_unavailable',
+                        cooldown_minutes=60,
                     )
-                logger.error("Database connection lost. Operating in degraded mode.")
+                logger.error('Database connection lost. Operating in degraded mode.')
 
     @bot.event
     async def on_ready():
         if getattr(bot, '_veka_ready', False):
             return
-        bot._veka_ready = True
+        bot._veka_ready = True  # type: ignore[attr-defined]
 
         from src.services.admin_notifier import AdminNotifier
-        bot.notifier = AdminNotifier(bot)
+
+        bot.notifier = AdminNotifier(bot)  # type: ignore[attr-defined]
 
         await initialize_database()
-        
+
         from src.core.checks import StartupChecks
+
         await StartupChecks.run_all_checks()
-        
-        await bot.notifier.send_startup_summary()
-        
+
+        await bot.notifier.send_startup_summary()  # type: ignore[attr-defined]
+
         db_health_check.start()
 
         try:
             await bot.change_presence(
-                activity=nextcord.Activity(
-                    type=nextcord.ActivityType.watching,
-                    name='VEKA community and resources'
-                )
+                activity=nextcord.Activity(type=nextcord.ActivityType.watching, name='VEKA community and resources')
             )
         except Exception as exc:
             logger.warning(f'Unable to set presence: {exc}')
@@ -161,7 +157,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
             await ctx.send('Command not found. Use /help or !help to see available commands.')
             return
 
-        if isinstance(original_error, (commands.MissingPermissions, commands.MissingRole, commands.NotOwner)):
+        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
             await ctx.send('You do not have permission to use this command.')
             return
 
@@ -170,16 +166,21 @@ def configure_bot_events(bot: commands.Bot) -> None:
             return
 
         if isinstance(original_error, DatabaseUnavailableError):
-            await ctx.send('This feature is temporarily unavailable due to database connectivity issues. Please try again later.')
+            await ctx.send(
+                'This feature is temporarily unavailable due to database connectivity issues. Please try again later.'
+            )
             logger.warning('Database unavailable during command: %s | %s', original_error, format_context(ctx))
             return
 
-        if isinstance(original_error, (commands.BadArgument, commands.MissingRequiredArgument, commands.UserInputError, ValidationError)):
+        if isinstance(
+            original_error,
+            commands.BadArgument | commands.MissingRequiredArgument | commands.UserInputError | ValidationError,
+        ):
             await ctx.send('Invalid command input. Please check your arguments and try again.')
             logger.warning('Validation error: %s | %s', original_error, format_context(ctx))
             return
 
-        if isinstance(original_error, (asyncio.TimeoutError, aiohttp.ClientError, ExternalRequestError)):
+        if isinstance(original_error, asyncio.TimeoutError | aiohttp.ClientError | ExternalRequestError):
             await ctx.send('A network or external service error occurred. Please try again later.')
             logger.warning('External request error: %s | %s', original_error, format_context(ctx))
             return
@@ -191,10 +192,14 @@ def configure_bot_events(bot: commands.Bot) -> None:
     async def on_application_command_error(interaction, error):
         original_error = error.original if isinstance(error, commands.CommandInvokeError) else error
         if isinstance(original_error, commands.CommandOnCooldown):
-            await safe_send(interaction, content=f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.', ephemeral=True)
+            await safe_send(
+                interaction,
+                content=f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.',
+                ephemeral=True,
+            )
             return
 
-        if isinstance(original_error, (commands.MissingPermissions, commands.MissingRole, commands.NotOwner)):
+        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
             await safe_send(interaction, content='You do not have permission to use this command.', ephemeral=True)
             return
 
@@ -204,21 +209,36 @@ def configure_bot_events(bot: commands.Bot) -> None:
                 content='This feature is temporarily unavailable due to database connectivity issues. Please try again later.',
                 ephemeral=True,
             )
-            logger.warning('Database unavailable during slash command: %s | %s', original_error, format_context(interaction))
+            logger.warning(
+                'Database unavailable during slash command: %s | %s', original_error, format_context(interaction)
+            )
             return
 
-        if isinstance(original_error, (commands.BadArgument, commands.MissingRequiredArgument, commands.UserInputError, ValidationError)):
-            await safe_send(interaction, content='Invalid command input. Please check your arguments and try again.', ephemeral=True)
+        if isinstance(
+            original_error,
+            commands.BadArgument | commands.MissingRequiredArgument | commands.UserInputError | ValidationError,
+        ):
+            await safe_send(
+                interaction, content='Invalid command input. Please check your arguments and try again.', ephemeral=True
+            )
             logger.warning('Validation error: %s | %s', original_error, format_context(interaction))
             return
 
-        if isinstance(original_error, (asyncio.TimeoutError, aiohttp.ClientError, ExternalRequestError)):
-            await safe_send(interaction, content='A network or external service error occurred. Please try again later.', ephemeral=True)
+        if isinstance(original_error, asyncio.TimeoutError | aiohttp.ClientError | ExternalRequestError):
+            await safe_send(
+                interaction,
+                content='A network or external service error occurred. Please try again later.',
+                ephemeral=True,
+            )
             logger.warning('External request error: %s | %s', original_error, format_context(interaction))
             return
 
-        logger.error('Unhandled application command error: %s | %s', original_error, format_context(interaction), exc_info=True)
-        await safe_send(interaction, content='An internal error occurred while processing your command.', ephemeral=True)
+        logger.error(
+            'Unhandled application command error: %s | %s', original_error, format_context(interaction), exc_info=True
+        )
+        await safe_send(
+            interaction, content='An internal error occurred while processing your command.', ephemeral=True
+        )
 
 
 def run_bot() -> None:
@@ -231,6 +251,7 @@ def run_bot() -> None:
 
     try:
         load_extensions(bot, EXTENSIONS)
+        assert DISCORD_TOKEN is not None
         bot.run(DISCORD_TOKEN)
     except Exception as exc:
         logger.error(f'Failed to start bot: {exc}')

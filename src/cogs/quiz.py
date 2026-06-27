@@ -1,8 +1,10 @@
 import logging
+
 import nextcord
 from nextcord.ext import commands
 
 logger = logging.getLogger('VEKA.quiz')
+
 
 class Quiz(commands.Cog):
     def __init__(self, bot):
