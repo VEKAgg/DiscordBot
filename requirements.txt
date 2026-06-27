@@ -1,7 +1,7 @@
-nextcord==2.6.0          # Discord API wrapper
-python-dotenv==1.2.2     # .env file loading
-asyncpg==0.29.2          # PostgreSQL async driver
-aiohttp==3.12.11         # Async HTTP client for RSS fetching
-feedparser==6.0.12       # RSS/Atom feed parsing
-beautifulsoup4==4.13.4   # HTML stripping for feed descriptions
-validators==0.34.0       # URL/email validation helpers
+nextcord==3.2.0
+python-dotenv==1.2.2
+asyncpg==0.31.0
+aiohttp==3.14.1
+feedparser==6.0.12
+beautifulsoup4==4.15.0
+validators==0.35.0
