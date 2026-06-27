@@ -1,213 +1,91 @@
-# AGENTS.md - VEKA Discord Bot
+# AGENTS.md — VEKA Discord Bot
 
-Guidelines for AI coding agents working on this Python Discord bot.
+A nextcord-based professional networking Discord bot. Work-in-progress — several modules referenced in imports do not exist yet (`src.core.app`, `src.core.runtime_state`, `src.database.migrations`, `src.utils.embeds`, `src.utils.safety`).
 
-## Project Overview
+## Python & Dependencies
 
-A professional networking Discord bot built with Python 3.10+, using:
-- **nextcord** - Discord API wrapper (modern fork of discord.py)
-- **asyncpg** - Async PostgreSQL driver
-- **PostgreSQL** - Database (via DATABASE_URL env var)
-- **docker/podman** - Containerization
+- **Python**: `>=3.10` (Dockerfile uses `3.10-slim`; `pyproject.toml` says `>=3.13` — install via `requirements.txt`, not `pyproject.toml` which lists no deps)
+- **Install**: `pip install -r requirements.txt`
+- **Key pinned deps**: nextcord 2.6.0, asyncpg 0.29.2, aiohttp 3.12.11, feedparser 6.0.12, python-dotenv 1.2.2
 
-## Build & Run Commands
+## Run
 
 ```bash
-# Local development
-pip install -r requirements.txt
-python main.py
-
-# Docker
-docker-compose up -d --build
-docker logs veka-discord-bot
-
-# Podman
-podman build -t veka-discord-bot:latest .
-podman pod create --name veka-bot-pod
-podman run -d --pod veka-bot-pod --name veka-redis -v redis-data:/data redis:alpine
-podman run -d --pod veka-bot-pod --name veka-discord-bot -v ./logs:/app/logs -v ./.env:/app/.env:ro veka-discord-bot:latest
+python main.py                        # local (needs postgres + redis)
+docker-compose up -d --build          # full stack
 ```
 
-## Testing
-
-**No test framework is currently configured.**
-
-When adding tests, create a `tests/` directory and use pytest:
-```bash
-pip install pytest pytest-asyncio
-pytest                          # Run all tests
-pytest tests/ -v                 # Run with verbose output
-pytest tests/test_cog.py -v      # Run single test file
-pytest tests/test_cog.py::test_function -v  # Run single test function
-pytest tests/ -k "test_name" -v  # Run tests matching pattern
-```
-
-## Linting & Formatting
-
-**No linting configuration exists yet.**
-
-Recommended setup (create if needed):
-```bash
-pip install black isort flake8
-black src/ main.py && isort src/ main.py  # Format
-flake8 src/ main.py                       # Lint
-```
-
-## Code Style Guidelines
-
-### Imports
-Order: stdlib → third-party → local
-```python
-import os
-import logging
-from datetime import datetime
-from typing import Optional, List, Dict, Tuple
-
-import nextcord
-from nextcord.ext import commands
-
-from src.config.config import BOT_PREFIX
-from src.database.database import db
-```
-
-**Note:** Place `import logging` at the top since module-level loggers are defined immediately after.
-
-### Naming Conventions
-- **Classes**: PascalCase (`QuizService`, `Basic`, `WorkshopManager`)
-- **Functions/Variables**: snake_case (`get_user`, `active_quizzes`)
-- **Constants**: UPPER_SNAKE_CASE (`BOT_PREFIX`, `RSS_FEEDS`, `QUIZ_CATEGORIES`)
-- **Private**: _leading_underscore (`_internal_method`)
-- **Files**: snake_case (`quiz_service.py`, `database.py`)
-
-### Type Hints
-Use type hints for function signatures and return types:
-```python
-from typing import Optional, List, Dict, Tuple
-
-async def get_user(discord_id: str) -> Optional[Dict]:
-    pass
-```
-
-### Cog Structure
-Cogs are auto-loaded from `src/cogs/` (flat files) and subdirectories (`workshops/`, `portfolio/`, `gamification/`).
-
-```python
-import logging
-from typing import Optional
-
-import nextcord
-from nextcord.ext import commands
-
-logger = logging.getLogger('VEKA.cogname')
-
-class CogName(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-        logger.info("CogName cog initialized")
-
-    @commands.command(name="command")
-    async def command_name(self, ctx):
-        """Command description"""
-        pass
-
-    @nextcord.slash_command(name="slashcmd", description="Description")
-    async def slash_command(self, interaction: nextcord.Interaction):
-        """Slash command handler"""
-        pass
-```
-
-**Important:** Cogs are loaded dynamically by `main.py` using class name detection:
-- File `quiz.py` → class `Quiz`
-- File `quiz_service.py` → class `QuizService`  
-- File `workshop_manager.py` → class `WorkshopManager`
-
-### Logging & Error Handling
-```python
-logger = logging.getLogger('VEKA.modulename')
-logger.info("Message")
-logger.error(f"Error: {str(e)}")
-
-try:
-    result = await some_async_operation()
-except Exception as e:
-    logger.error(f"Operation failed: {str(e)}")
-    return None
-```
-
-### Discord Embeds
-```python
-embed = nextcord.Embed(
-    title="Title",
-    description="Description",
-    color=nextcord.Color.orange()  # Primary brand color
-)
-embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-await ctx.send(embed=embed)
-```
-
-### Database Operations
-```python
-from src.database.database import db
-
-async def get_user(discord_id: str) -> Optional[Dict]:
-    return await db.fetch_one("SELECT * FROM users WHERE discord_id = $1", discord_id)
-```
+Requires PostgreSQL + Redis. Docker Compose provides both.
 
 ## Project Structure
 
 ```
-├── main.py                 # Bot entry point with cog loader
-├── src/
-│   ├── cogs/              # Discord command modules
-│   │   ├── basic.py       # Simple commands (class: Basic)
-│   │   ├── quiz.py        # Quiz feature (class: Quiz)
-│   │   ├── feeds.py       # RSS feeds
-│   │   ├── fun.py         # Fun commands
-│   │   ├── help.py        # Help system
-│   │   ├── mentorship.py  # Mentorship system
-│   │   ├── networking.py  # Networking features
-│   │   ├── gamification/  # Gamification cog
-│   │   │   └── gamification_manager.py (class: GamificationManager)
-│   │   ├── portfolio/     # Portfolio cog
-│   │   │   └── portfolio_manager.py (class: PortfolioManager)
-│   │   └── workshops/     # Workshops cog
-│   │       └── workshop_manager.py (class: WorkshopManager)
-│   ├── services/          # Business logic
-│   │   ├── quiz_service.py
-│   │   ├── rss_service.py
-│   │   └── mentorship_service.py
-│   ├── database/          # Database layer
-│   │   └── database.py    # PostgreSQL connection and operations
-│   └── config/            # Configuration
-│       └── config.py      # Constants and env vars
-├── requirements.txt       # Python dependencies
-├── Dockerfile
-└── docker-compose.yml
+main.py                     → entrypoint (delegates to src.core.app — not yet created)
+src/
+├── core/                   → app bootstrap, runtime state (WIP — mostly missing)
+├── config/config.py        → all env vars, constants, feature flags, cooldowns
+├── database/
+│   ├── database.py         → asyncpg pool manager, global `db` singleton, migrations runner
+│   └── migrations.py       → referenced but does not exist yet
+├── cogs/
+│   ├── admin/              → basic.py, help.py, health.py (all use missing utils modules)
+│   ├── networking/         → networking.py (profiles, connections — slash + prefix fallbacks)
+│   ├── marketplace/        → marketplace.py, reviews.py
+│   ├── marketplace_enhanced.py (background tasks for price drops, expiring listings)
+│   ├── resources/feeds.py  → RSS, uses @tasks.loop(minutes=15), safe_background_task
+│   ├── fun.py, quiz.py, mentorship.py (flat files)
+│   ├── gamification/       → stub (disabled)
+│   ├── portfolio/          → portfolio_manager.py
+│   └── workshops/          → workshop_manager.py
+├── services/               → mentorship_service.py, networking_service.py, quiz_service.py, rss_service.py
+├── utils/
+│   ├── security/           → rbac.py, rate_limiter.py, audit.py, validation.py
+│   └── marketplace/        → fraud_detection.py
+migrations/                 → 6 SQL files (001–007), auto-applied on startup by database.py
 ```
 
-## Environment Variables
+## Commands
 
-Required in `.env`:
-```
-DISCORD_TOKEN=your_token
-DATABASE_URL=postgresql://user:pass@host:5432/dbname
-REDIS_URL=redis://redis:6379
-```
+Prefix: `!` (hardcoded in `config.py`). Both prefix commands and slash commands are defined — often in parallel for the same feature.
 
-## Git Workflow
+## Cogs — Conventions
 
-- Branch from `main`
-- PRs deploy via GitHub Actions (`.github/workflows/deploy-discord-bot.yml`)
-- Commits must start with "Merge pull request" to trigger deploy
+Require a `setup(bot)` function at module level. Some cogs guard with `if bot is not None:`, others don't. All use `logging.getLogger('VEKA.xxx')`.
 
-## Key Conventions
+Cog class name auto-mapping:
+- `fun.py` → `Fun`
+- `networking/networking.py` → `Networking`
+- `admin/basic.py` → `Basic`
+- `admin/health.py` → `Health`
 
-1. **Always use async/await** - Database and Discord operations are async
-2. **Cogs auto-load** - Place `.py` files in `src/cogs/` (or subdirs)
-3. **Class naming**: 
-   - `quiz.py` → class `Quiz`
-   - `quiz_service.py` → class `QuizService`
-   - `workshop_manager.py` → class `WorkshopManager`
-4. **Bot prefix**: `!` (defined in config)
-5. **Database**: PostgreSQL with asyncpg driver
-6. **Loggers**: Use `logging.getLogger('VEKA.modulename')` format
+## Database
+
+- PostgreSQL via asyncpg. **Parameter style**: `$1`, `$2` (asyncpg native).
+- Global singleton: `from src.database.database import db`
+- Migration files live in `migrations/` directory. Applied automatically by `db.run_migrations()` on connect. The migration runner module itself (`database/migrations.py`) does not exist yet.
+- Tables: `users`, `profiles`, `connections`, `connection_requests`, `mentorships`, `quizzes`, `quiz_attempts`, `listings`, `reviews`, `transactions`, `rss_cache`, `guild_settings`, `audit_log`, `audit_trail`, `rate_limits`, `security_events`, `watchlist`
+
+## Testing / Linting
+
+**None configured.** No test files, no config files for pytest/black/flake8. `pyproject.toml` is a stub.
+
+## CI/CD
+
+- GitHub Actions at `.github/workflows/deploy-discord-bot.yml`
+- Triggers on push to `main` or `production`, but only runs if commit message starts with `Merge pull request`
+- Self-hosted runner (label: `self-hosted, X64, Linux, Veka`)
+- Supports both Docker and Podman (controlled by `CONTAINER_ENGINE` secret, defaults to `docker`)
+- Health check waits for log line `"has connected to Discord"` (up to 60s)
+
+## Security Utilities
+
+Package at `src.utils.security` exports: `rate_limiter`, `rate_limit`, `InputValidator`, `sanitize`, `validate_id`, `is_safe`, `audit_log`, `audit_action`, `rbac`, `Role`, `require_mod`, `require_admin`, `require_verified`.
+
+RBAC hierarchy: USER < VERIFIED < MODERATOR < ADMIN < OWNER. Mapped from Discord role names (`everyone`, `verified`, `mod`/`moderator`, `admin`/`administrator`, guild owner).
+
+## Key WIP Facts
+
+- `src.core.app`, `src.core.runtime_state`, `src.database.migrations`, `src.utils.embeds`, `src.utils.safety` are **imported but do not exist**. The bot cannot run as-is.
+- Several cogs (`admin/basic.py`, `admin/health.py`, `resources/feeds.py`) depend on these missing modules.
+- `pyproject.toml` has no dependencies (all deps in `requirements.txt`).
+- Gamification cog is a stub (`gamification_manager.py` responds "disabled").
