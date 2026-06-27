@@ -1,7 +1,6 @@
 import logging
-from typing import Dict, List, Optional
 
-from src.config.config import MENTORSHIP_CATEGORIES, POINTS_CONFIG
+from src.config.config import MENTORSHIP_CATEGORIES
 from src.database.database import db, get_or_create_user
 
 logger = logging.getLogger('VEKA.mentorship')
@@ -15,9 +14,9 @@ class MentorshipService:
         user = await get_or_create_user(discord_id)
         return user['id']
 
-    async def create_mentorship_request(self, mentor_id: str, mentee_id: str, category: str) -> Dict:
+    async def create_mentorship_request(self, mentor_id: str, mentee_id: str, category: str) -> dict:
         if category not in MENTORSHIP_CATEGORIES:
-            raise ValueError(f"Invalid category. Must be one of: {', '.join(MENTORSHIP_CATEGORIES)}")
+            raise ValueError(f'Invalid category. Must be one of: {", ".join(MENTORSHIP_CATEGORIES)}')
 
         existing = await self.get_active_mentorship(mentor_id, mentee_id)
         if existing:
@@ -36,9 +35,10 @@ class MentorshipService:
             mentee_user_id,
             category,
         )
+        assert mentorship is not None
         return mentorship
 
-    async def accept_mentorship(self, mentorship_id: int, mentor_id: str) -> Dict:
+    async def accept_mentorship(self, mentorship_id: int, mentor_id: str) -> dict:
         mentorship = await self.get_mentorship(mentorship_id)
         if not mentorship:
             raise ValueError('Mentorship not found')
@@ -48,7 +48,7 @@ class MentorshipService:
             raise ValueError('Only the mentor can accept this request')
 
         if mentorship['status'] != 'pending':
-            raise ValueError(f"Cannot accept mentorship with status: {mentorship['status']}")
+            raise ValueError(f'Cannot accept mentorship with status: {mentorship["status"]}')
 
         await db.execute(
             """
@@ -62,7 +62,7 @@ class MentorshipService:
         mentorship['status'] = 'active'
         return mentorship
 
-    async def complete_mentorship(self, mentorship_id: int, mentor_id: str) -> Dict:
+    async def complete_mentorship(self, mentorship_id: int, mentor_id: str) -> dict:
         mentorship = await self.get_mentorship(mentorship_id)
         if not mentorship:
             raise ValueError('Mentorship not found')
@@ -72,7 +72,7 @@ class MentorshipService:
             raise ValueError('Only the mentor can complete this mentorship')
 
         if mentorship['status'] != 'active':
-            raise ValueError(f"Cannot complete mentorship with status: {mentorship['status']}")
+            raise ValueError(f'Cannot complete mentorship with status: {mentorship["status"]}')
 
         await db.execute(
             """
@@ -82,29 +82,16 @@ class MentorshipService:
             """,
             mentorship_id,
         )
-        return dict(row)
-
-        points = POINTS_CONFIG['mentor_session']
-        await db.execute(
-            """
-            UPDATE users
-            SET points = points + $1
-            WHERE id = ANY($2::int[])
-            """,
-            points,
-            [mentor_user_id, mentorship['mentee_id']],
-        )
-
         mentorship['status'] = 'completed'
         return mentorship
 
-    async def get_mentorship(self, mentorship_id: int) -> Optional[Dict]:
+    async def get_mentorship(self, mentorship_id: int) -> dict | None:
         return await db.fetch_one(
             'SELECT * FROM mentorships WHERE id = $1',
             mentorship_id,
         )
 
-    async def get_active_mentorship(self, mentor_id: str, mentee_id: str) -> Optional[Dict]:
+    async def get_active_mentorship(self, mentor_id: str, mentee_id: str) -> dict | None:
         mentor_user_id = await self._resolve_user_id(mentor_id)
         mentee_user_id = await self._resolve_user_id(mentee_id)
         return await db.fetch_one(
@@ -118,22 +105,22 @@ class MentorshipService:
             mentee_user_id,
         )
 
-    async def get_user_mentorships(self, user_id: str, status: Optional[str] = None) -> List[Dict]:
+    async def get_user_mentorships(self, user_id: str, status: str | None = None) -> list[dict]:
         resolved_id = await self._resolve_user_id(user_id)
         query = """
             SELECT *
             FROM mentorships
             WHERE (mentor_id = $1 OR mentee_id = $1)
         """
-        params = [resolved_id]
+        params: list[int | str] = [resolved_id]
 
         if status:
-            query += " AND status = $2"
+            query += ' AND status = $2'
             params.append(status)
 
         return await db.fetch(query, *params)
 
-    async def find_mentors(self, category: str) -> List[Dict]:
+    async def find_mentors(self, category: str) -> list[dict]:
         return await db.fetch(
             """
             SELECT u.discord_id,
@@ -150,15 +137,15 @@ class MentorshipService:
             category,
         )
 
-    async def get_completed_mentorships(self, user_id: str, as_mentor: bool = True) -> List[Dict]:
+    async def get_completed_mentorships(self, user_id: str, as_mentor: bool = True) -> list[dict]:
         resolved_id = await self._resolve_user_id(user_id)
         if as_mentor:
-            query = 'SELECT * FROM mentorships WHERE mentor_id = $1 AND status = \'completed\''
+            query = "SELECT * FROM mentorships WHERE mentor_id = $1 AND status = 'completed'"
         else:
-            query = 'SELECT * FROM mentorships WHERE mentee_id = $1 AND status = \'completed\''
+            query = "SELECT * FROM mentorships WHERE mentee_id = $1 AND status = 'completed'"
         return await db.fetch(query, resolved_id)
 
-    async def get_mentorship_stats(self) -> Dict:
+    async def get_mentorship_stats(self) -> dict:
         total = await db.fetchval('SELECT COUNT(*) FROM mentorships')
         active = await db.fetchval("SELECT COUNT(*) FROM mentorships WHERE status = 'active'")
         completed = await db.fetchval("SELECT COUNT(*) FROM mentorships WHERE status = 'completed'")
@@ -177,7 +164,7 @@ class MentorshipService:
             'category_distribution': category_stats,
         }
 
-    async def get_user_stats(self, user_id: str) -> Dict:
+    async def get_user_stats(self, user_id: str) -> dict:
         resolved_id = await self._resolve_user_id(user_id)
         mentorships_as_mentor = await self.get_completed_mentorships(user_id, as_mentor=True)
         mentorships_as_mentee = await self.get_completed_mentorships(user_id, as_mentor=False)
@@ -185,12 +172,20 @@ class MentorshipService:
         return {
             'as_mentor': {
                 'total': len([m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id]),
-                'active': len([m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'active']),
-                'completed': len([m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'completed']),
+                'active': len(
+                    [m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'active']
+                ),
+                'completed': len(
+                    [m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'completed']
+                ),
             },
             'as_mentee': {
                 'total': len([m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id]),
-                'active': len([m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'active']),
-                'completed': len([m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'completed']),
+                'active': len(
+                    [m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'active']
+                ),
+                'completed': len(
+                    [m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'completed']
+                ),
             },
         }

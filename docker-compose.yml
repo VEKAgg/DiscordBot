@@ -16,4 +16,3 @@ services:
 networks:
   veka-network:
     driver: bridge
-

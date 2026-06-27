@@ -1,7 +1,8 @@
 import asyncio
 import functools
 import logging
-from typing import Any, Callable, Coroutine, Optional, Union
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 import aiohttp
 import nextcord
@@ -51,7 +52,7 @@ def map_exception_to_message(error: BaseException) -> str:
         return 'The database is temporarily unavailable. Please try again later.'
     if isinstance(error, ValidationError):
         return str(error) or 'Invalid input. Please check your command and try again.'
-    if isinstance(error, (asyncio.TimeoutError, aiohttp.ClientError)):
+    if isinstance(error, asyncio.TimeoutError | aiohttp.ClientError):
         return 'External service unavailable or timed out. Please try again later.'
     if isinstance(error, commands.MissingPermissions):
         return 'You do not have permission to use this command.'
@@ -62,7 +63,7 @@ def map_exception_to_message(error: BaseException) -> str:
     return 'An internal error occurred while processing your request.'
 
 
-def _is_admin_user(user: nextcord.abc.User, guild: Optional[nextcord.Guild] = None) -> bool:
+def _is_admin_user(user: nextcord.abc.User, guild: nextcord.Guild | None = None) -> bool:
     if user is None:
         return False
     if getattr(user, 'id', None) in OWNER_IDS or getattr(user, 'id', None) in ADMIN_IDS:
@@ -80,44 +81,46 @@ def _is_admin_user(user: nextcord.abc.User, guild: Optional[nextcord.Guild] = No
 def admin_only():
     def predicate(ctx_or_interaction):
         if isinstance(ctx_or_interaction, commands.Context):
-            return _is_admin_user(ctx_or_interaction.author, ctx_or_interaction.guild)
+            return _is_admin_user(ctx_or_interaction.author, ctx_or_interaction.guild)  # type: ignore[arg-type]
         if isinstance(ctx_or_interaction, nextcord.Interaction):
-            return _is_admin_user(ctx_or_interaction.user, ctx_or_interaction.guild)
+            return _is_admin_user(ctx_or_interaction.user, ctx_or_interaction.guild)  # type: ignore[arg-type]
         return False
 
     return commands.check(predicate)
 
 
 async def safe_send(
-    target: Union[commands.Context, nextcord.Interaction],
-    content: Optional[str] = None,
-    embed: Optional[nextcord.Embed] = None,
+    target: commands.Context | nextcord.Interaction,
+    content: str | None = None,
+    embed: nextcord.Embed | None = None,
     ephemeral: bool = False,
 ) -> None:
     if isinstance(target, nextcord.Interaction):
         try:
             if is_response_sent(target):
-                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral)  # type: ignore[arg-type]
             else:
-                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral)  # type: ignore[arg-type]
         except Exception as exc:
             logger.error('Failed to send interaction response: %s | %s', exc, format_context(target), exc_info=True)
     elif isinstance(target, commands.Context):
         try:
-            await target.send(content=content, embed=embed)
+            await target.send(content=content, embed=embed)  # type: ignore[arg-type]
         except Exception as exc:
             logger.error('Failed to send context response: %s | %s', exc, format_context(target), exc_info=True)
     else:
         logger.warning('Safe send called with unsupported target type: %s', type(target).__name__)
 
 
-def log_error(error: BaseException, source: Any, module: Optional[str] = None) -> None:
+def log_error(error: BaseException, source: Any, module: str | None = None) -> None:
     context = format_context(source)
     module_name = f'{module} | ' if module else ''
     logger.error('%sError handling request: %s | %s', module_name, error, context, exc_info=True)
 
 
-def safe_command(requires_db: bool = False) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
+def safe_command(
+    requires_db: bool = False,
+) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
     def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any):
@@ -132,15 +135,22 @@ def safe_command(requires_db: bool = False) -> Callable[[Callable[..., Coroutine
                 log_error(error, ctx, module=getattr(func, '__module__', None))
                 message = map_exception_to_message(error)
                 from src.utils.embeds import error_embed
-                embed = error_embed(title="Command Error", description=message, contributor_source=getattr(func, '__module__', None))
+
+                embed = error_embed(
+                    title='Command Error', description=message, contributor_source=getattr(func, '__module__', None)
+                )
                 if isinstance(ctx, commands.Context):
                     await safe_send(ctx, embed=embed)
                 return None
+
         return wrapper
+
     return decorator
 
 
-def safe_slash_command(requires_db: bool = False) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
+def safe_slash_command(
+    requires_db: bool = False,
+) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
     def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
         @functools.wraps(func)
         async def wrapper(*args: Any, **kwargs: Any):
@@ -155,58 +165,73 @@ def safe_slash_command(requires_db: bool = False) -> Callable[[Callable[..., Cor
                 log_error(error, interaction, module=getattr(func, '__module__', None))
                 message = map_exception_to_message(error)
                 from src.utils.embeds import error_embed
-                embed = error_embed(title="Command Error", description=message, contributor_source=getattr(func, '__module__', None))
+
+                embed = error_embed(
+                    title='Command Error', description=message, contributor_source=getattr(func, '__module__', None)
+                )
                 if isinstance(interaction, nextcord.Interaction):
                     await safe_send(interaction, embed=embed, ephemeral=True)
                 return None
+
         return wrapper
+
     return decorator
 
 
-async def run_safe_task(coro: Coroutine[Any, Any, Any], *, name: Optional[str] = None, logger_obj: Optional[logging.Logger] = None, bot: Optional[nextcord.Client] = None) -> Optional[Any]:
+async def run_safe_task(
+    coro: Coroutine[Any, Any, Any],
+    *,
+    name: str | None = None,
+    logger_obj: logging.Logger | None = None,
+    bot: nextcord.Client | None = None,
+) -> Any | None:
     if logger_obj is None:
         logger_obj = logger
     task_name = name or getattr(coro, '__name__', 'anonymous_task')
     try:
         result = await coro
-        
+
         # Reset failure count on success
-        fail_key = f"task_fails_{task_name}"
+        fail_key = f'task_fails_{task_name}'
         if runtime_state.alert_state_cache.get(fail_key, 0) > 0:
             runtime_state.alert_state_cache[fail_key] = 0
             if bot and hasattr(bot, 'notifier'):
-                bot.notifier.clear_cooldown(f"task_alert_{task_name}")
+                bot.notifier.clear_cooldown(f'task_alert_{task_name}')
                 await bot.notifier.send_alert(
-                    title="Task Recovered",
-                    description=f"Background task `{task_name}` has recovered and completed successfully.",
-                    severity="INFO"
+                    title='Task Recovered',
+                    description=f'Background task `{task_name}` has recovered and completed successfully.',
+                    severity='INFO',
                 )
-                
+
         return result
     except Exception as error:
         logger_obj.error('Background task failed: %s | %s', task_name, error, exc_info=True)
-        
-        fail_key = f"task_fails_{task_name}"
+
+        fail_key = f'task_fails_{task_name}'
         fails = runtime_state.alert_state_cache.get(fail_key, 0) + 1
         runtime_state.alert_state_cache[fail_key] = fails
-        
+
         if fails >= 3 and bot and hasattr(bot, 'notifier'):
             await bot.notifier.send_alert(
-                title="Background Task Failing",
-                description=f"Task `{task_name}` has failed {fails} consecutive times.\n**Error:** {str(error)[:500]}",
-                severity="ERROR",
-                dedupe_key=f"task_alert_{task_name}",
-                cooldown_minutes=60
+                title='Background Task Failing',
+                description=f'Task `{task_name}` has failed {fails} consecutive times.\n**Error:** {str(error)[:500]}',
+                severity='ERROR',
+                dedupe_key=f'task_alert_{task_name}',
+                cooldown_minutes=60,
             )
-            
+
         return None
 
 
-def safe_background_task(name: Optional[str] = None) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
+def safe_background_task(
+    name: str | None = None,
+) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
     def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
         @functools.wraps(func)
         async def wrapper(self, *args: Any, **kwargs: Any):
             bot = getattr(self, 'bot', None)
             return await run_safe_task(func(self, *args, **kwargs), name=name or func.__name__, bot=bot)
+
         return wrapper
+
     return decorator
