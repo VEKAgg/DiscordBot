@@ -3,7 +3,7 @@
 -- Created: 2026-06-02
 
 -- Guild / server configuration
-CREATE TABLE guild_config (
+CREATE TABLE IF NOT EXISTS guild_config (
     guild_id VARCHAR(20) PRIMARY KEY,
     prefix VARCHAR(10) DEFAULT '!',
     welcome_channel_id VARCHAR(20),
@@ -18,7 +18,7 @@ CREATE TABLE guild_config (
 CREATE INDEX idx_guild_config_guild_id ON guild_config(guild_id);
 
 -- RSS cache and deduplication
-CREATE TABLE rss_cache (
+CREATE TABLE IF NOT EXISTS rss_cache (
     id SERIAL PRIMARY KEY,
     feed_url VARCHAR(500) NOT NULL,
     entry_id VARCHAR(500) NOT NULL,

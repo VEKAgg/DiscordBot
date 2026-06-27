@@ -131,12 +131,12 @@ def configure_bot_events(bot: commands.Bot) -> None:
         except Exception as exc:
             logger.warning(f'Unable to set presence: {exc}')
 
+        logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available}')
+
         try:
             await bot.sync_all_application_commands()
         except Exception as exc:
             logger.warning(f'Application command sync failed: {exc}')
-
-        logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available}')
 
     @bot.event
     async def on_disconnect():

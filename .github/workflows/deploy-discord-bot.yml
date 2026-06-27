@@ -24,8 +24,10 @@ jobs:
             echo "ADMIN_IDS=${{ vars.ADMIN_IDS }}"
             echo "OWNER_IDS=${{ vars.OWNER_IDS }}"
             echo "ADMIN_ALERT_CHANNEL_ID=${{ vars.ADMIN_ALERT_CHANNEL_ID }}"
+            echo "COMMIT_SHA=${{ github.sha }}"
             echo "BOT_VERSION=${{ github.sha }}"
             echo "LOG_LEVEL=${{ vars.LOG_LEVEL || 'INFO' }}"
+            echo "GIT_BRANCH=${{ github.ref_name }}"
             echo "ENVIRONMENT=production"
           } > .env
 
