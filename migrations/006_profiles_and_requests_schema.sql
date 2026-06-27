@@ -4,8 +4,8 @@
 
 -- Add missing profile columns for bio and links, and enforce one profile per user.
 ALTER TABLE profiles
-    ADD COLUMN bio TEXT,
-    ADD COLUMN links TEXT;
+    ADD COLUMN IF NOT EXISTS bio TEXT,
+    ADD COLUMN IF NOT EXISTS links TEXT;
 
 ALTER TABLE profiles
     ADD CONSTRAINT unique_profile_user_id UNIQUE (user_id);

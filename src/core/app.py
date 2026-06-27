@@ -51,13 +51,20 @@ def build_bot() -> commands.Bot:
 async def initialize_database() -> None:
     try:
         await db.connect()
-        await db.run_migrations()
         runtime_state.db_available = True
-        logger.info('PostgreSQL database connected and migrations applied')
+        logger.info('PostgreSQL database connected')
     except Exception as exc:
         runtime_state.db_available = False
         runtime_state.degraded_features.append('database')
-        logger.error('Database startup failed: %s', exc, exc_info=True)
+        logger.error('Database connection failed: %s', exc, exc_info=True)
+        return
+
+    try:
+        await db.run_migrations()
+        logger.info('Database migrations applied')
+    except Exception as exc:
+        logger.error('Database migrations failed (DB remains available): %s', exc, exc_info=True)
+        runtime_state.degraded_features.append('migrations')
 
 
 def load_extensions(bot: commands.Bot, extensions: List[str]) -> None:
