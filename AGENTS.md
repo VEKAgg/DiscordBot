@@ -36,8 +36,8 @@ ruff check .
 # Auto-fix lint issues then format
 ruff check --fix . && ruff format .
 
-# Type check
-mypy src/ main.py
+# Type check (--explicit-package-bases avoids src/ layout confusion)
+mypy src/ main.py --explicit-package-bases
 
 # All pre-commit hooks (runs ruff + mypy + misc checks)
 pre-commit run --all-files
