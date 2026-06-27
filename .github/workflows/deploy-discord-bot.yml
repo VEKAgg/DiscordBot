@@ -46,7 +46,7 @@ jobs:
           ELAPSED=0
           SUCCESS=0
           while [ $ELAPSED -lt $MAX_WAIT ]; do
-            if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available"; then
+            if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
               echo "Health check passed - Bot is ready"
               SUCCESS=1
               break

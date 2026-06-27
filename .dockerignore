@@ -43,8 +43,6 @@ docker-compose.yml
 *.swp
 *.swo
 
-# Node.js (for PM2)
+# Node.js
 node_modules/
 npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
