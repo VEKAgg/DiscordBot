@@ -32,8 +32,9 @@ database or any single feature is unavailable.
 - **aiohttp / feedparser / beautifulsoup4** — RSS resource feeds
 - **python-dotenv / validators** — config and input validation
 
-Dependencies are pinned in `requirements.txt` (the canonical install used by
-Docker and CI). `pyproject.toml` mirrors the same pins for `uv`/`pip install .`.
+Package management is done via **`uv`** — `uv.lock` is the lockfile.
+`pyproject.toml` is the source of truth for dependencies. A `requirements.txt`
+is kept for Docker images that don't have `uv`.
 
 ---
 
@@ -212,10 +213,15 @@ the environment.
 ### Local
 
 ```bash
-pip install -r requirements.txt
-pip install -e '.[dev]'       # dev dependencies (ruff, mypy, pre-commit)
+git clone <repo> && cd discord-bot
 cp .env.example .env          # then fill in DISCORD_TOKEN and DATABASE_URL
-pre-commit install            # activate git hooks (once after clone)
+
+# Install all deps (runtime + dev) via uv
+uv sync --extra dev
+
+# Activate pre-commit hooks (once after clone)
+pre-commit install
+
 python main.py                # needs a reachable PostgreSQL
 ```
 
