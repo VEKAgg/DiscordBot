@@ -82,9 +82,12 @@ class Database:
         try:
             async with self.pool.acquire() as connection:
                 return await connection.fetchrow(query, *args)
-        except asyncpg.PostgresError as exc:
+        except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
-            logger.error('Database fetch_one failed: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def fetchrow(self, query: str, *args: Any) -> asyncpg.Record | None:
@@ -98,9 +101,12 @@ class Database:
         try:
             async with self.pool.acquire() as connection:
                 return await connection.fetch(query, *args)
-        except asyncpg.PostgresError as exc:
+        except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
-            logger.error('Database fetch failed: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def fetch_many(self, query: str, *args: Any):
@@ -114,9 +120,12 @@ class Database:
         try:
             async with self.pool.acquire() as connection:
                 return await connection.fetchval(query, *args)
-        except asyncpg.PostgresError as exc:
+        except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
-            logger.error('Database fetchval failed: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -127,9 +136,12 @@ class Database:
         try:
             async with self.pool.acquire() as connection:
                 return await connection.execute(query, *args)
-        except asyncpg.PostgresError as exc:
+        except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
-            logger.error('Database execute failed: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def execute_many(self, query: str, args_list: list[tuple[Any, ...]]) -> None:
@@ -140,11 +152,14 @@ class Database:
         try:
             async with self.pool.acquire() as connection:
                 await connection.executemany(query, args_list)
-        except asyncpg.PostgresError as exc:
+        except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
             logger.error(
-                'Database execute_many failed: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True
+                'Database connection error: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True
             )
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            logger.error('Database query error: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def run_migrations(self) -> None:
