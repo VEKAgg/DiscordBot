@@ -82,6 +82,8 @@ def configure_bot_events(bot: commands.Bot) -> None:
     async def db_health_check():
         was_available = runtime_state.db_available
         try:
+            if db.pool is None:
+                await db.connect()
             await db.ping()
             if not was_available:
                 runtime_state.db_available = True

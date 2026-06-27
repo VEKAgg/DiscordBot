@@ -23,7 +23,7 @@ pre-commit install
 | Local stack (bot + postgres) | `docker compose -f docker-compose.dev.yml up -d --build` |
 | Production (bot only) | `docker compose up -d` |
 | View logs | `docker logs veka-discord-bot` |
-| PM2 start (self-hosted) | `pm2 start discord-bot.json` |
+
 
 ## Lint / Format / Typecheck
 
