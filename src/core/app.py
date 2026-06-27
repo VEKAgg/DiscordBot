@@ -132,7 +132,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
             logger.warning(f'Unable to set presence: {exc}')
 
         try:
-            bot.sync_all_application_commands()
+            await bot.sync_all_application_commands()
         except Exception as exc:
             logger.warning(f'Application command sync failed: {exc}')
 
