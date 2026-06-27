@@ -1,4 +1,5 @@
 import logging
+import urllib.parse
 from typing import Any
 
 import asyncpg
@@ -21,10 +22,22 @@ class Database:
         if self.pool is not None:
             return
 
+        dsn = DATABASE_URL
+        parsed = urllib.parse.urlparse(dsn)
+        query = dict(urllib.parse.parse_qsl(parsed.query))
+        if 'keepalives' not in query:
+            query['keepalives'] = '1'
+            query['tcp_keepalives_idle'] = '30'
+            query['tcp_keepalives_interval'] = '10'
+            query['tcp_keepalives_count'] = '5'
+            parsed = parsed._replace(query=urllib.parse.urlencode(query))
+            dsn = urllib.parse.urlunparse(parsed)
+
         self.pool = await asyncpg.create_pool(
-            DATABASE_URL,
+            dsn,
             min_size=1,
             max_size=10,
+            max_inactive_connection_lifetime=60.0,
         )
         logger.info('Database connection pool established')
 
