@@ -44,6 +44,18 @@ class Database:
             self.pool = None
             logger.info('Database connection closed')
 
+    async def reconnect(self) -> None:
+        """Close the existing pool and create a brand-new one."""
+        logger.info('Attempting database reconnection...')
+        if self.pool is not None:
+            try:
+                await self.pool.close()
+            except Exception:
+                logger.warning('Error closing old pool during reconnect', exc_info=True)
+            self.pool = None
+        await self.connect()
+        logger.info('Database reconnection successful')
+
     async def ping(self) -> bool:
         if self.pool is None:
             runtime_state.db_available = False
