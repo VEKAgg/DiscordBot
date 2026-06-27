@@ -213,7 +213,9 @@ the environment.
 
 ```bash
 pip install -r requirements.txt
+pip install -e '.[dev]'       # dev dependencies (ruff, mypy, pre-commit)
 cp .env.example .env          # then fill in DISCORD_TOKEN and DATABASE_URL
+pre-commit install            # activate git hooks (once after clone)
 python main.py                # needs a reachable PostgreSQL
 ```
 
@@ -254,7 +256,24 @@ the same feature — keep them in sync when changing behavior.
 
 ## Development
 
-- **No tests, linters, or formatters are configured** (no pytest/black/flake8).
+### Lint, Format, Typecheck
+
+Run these before every push:
+
+```bash
+ruff check .                  # lint (no auto-fixes)
+ruff check --fix . && ruff format .  # auto-fix then format
+mypy src/ main.py             # static type check
+pre-commit run --all-files    # all checks (ruff + mypy + misc)
+```
+
+Pre-commit hooks run automatically on `git commit`. Config in
+`.pre-commit-config.yaml`. Install them once with `pre-commit install`.
+
+All tool config lives in `pyproject.toml` (`[tool.ruff]`, `[tool.mypy]`).
+
+### Guidelines
+
 - Every module logs via `logging.getLogger('VEKA.<area>')`, configured by
   `setup_logging()` in `src/utils/logger.py`.
 - To enable an unloaded cog, add its module path to `EXTENSIONS` in

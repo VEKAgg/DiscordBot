@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from src.config.config import RSS_FEEDS
 from src.database.database import db
-from src.utils.safety import ExternalRequestError
+from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
 
@@ -93,10 +93,16 @@ class RSSService:
     async def process_and_dedupe(self, url: str, entries: list[dict]) -> list[dict]:
         new_entries = []
         for entry in entries:
-            # Check if entry already exists in db
-            exists = await db.fetch_one(
-                'SELECT 1 FROM rss_cache WHERE feed_url = $1 AND entry_id = $2', url, entry['entry_id']
-            )
+            try:
+                exists = await db.fetch_one(
+                    'SELECT 1 FROM rss_cache WHERE feed_url = $1 AND entry_id = $2', url, entry['entry_id']
+                )
+            except DatabaseUnavailableError:
+                logger.warning('Database unavailable during feed dedup check, stopping feed processing')
+                break
+            except Exception as exc:
+                logger.error('Failed to check RSS entry in db: %s', exc)
+                continue
             if not exists:
                 try:
                     await db.execute(
