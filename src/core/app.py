@@ -78,25 +78,59 @@ def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
 def configure_bot_events(bot: commands.Bot) -> None:
     from nextcord.ext import tasks
 
-    @tasks.loop(minutes=1)
+    CONSECUTIVE_HEALTHY_REQUIRED = 3
+
+    @tasks.loop(seconds=30)
     async def db_health_check():
         was_available = runtime_state.db_available
         try:
             if db.pool is None:
                 await db.connect()
             await db.ping()
+
+            # --- Ping succeeded ---
             if not was_available:
-                runtime_state.db_available = True
-                runtime_state.last_recovery_time = datetime.utcnow()
-                if hasattr(bot, 'notifier'):
-                    bot.notifier.clear_cooldown('db_unavailable')
-                    await bot.notifier.send_alert(
-                        title='Database Reconnected',
-                        description='The PostgreSQL database connection has been restored.',
-                        severity='INFO',
+                # Recovering from outage — require N consecutive healthy pings
+                healthy_count = runtime_state.alert_state_cache.get('healthy_count', 0) + 1
+                runtime_state.alert_state_cache['healthy_count'] = healthy_count
+
+                if healthy_count >= CONSECUTIVE_HEALTHY_REQUIRED:
+                    runtime_state.db_available = True
+                    runtime_state.last_recovery_time = datetime.utcnow()
+                    runtime_state.alert_state_cache.pop('healthy_count', None)
+                    if hasattr(bot, 'notifier'):
+                        bot.notifier.clear_cooldown('db_unavailable')
+                        await bot.notifier.send_alert(
+                            title='Database Reconnected',
+                            description='The PostgreSQL database connection has been restored.',
+                            severity='INFO',
+                            dedupe_key='db_reconnected',
+                            cooldown_minutes=10,
+                        )
+                    logger.info('Database connection restored.')
+                else:
+                    logger.info(
+                        'Database ping succeeded (%d/%d consecutive healthy checks)',
+                        healthy_count,
+                        CONSECUTIVE_HEALTHY_REQUIRED,
                     )
-                logger.info('Database connection restored.')
+            else:
+                # Already healthy — reset counter
+                runtime_state.alert_state_cache.pop('healthy_count', None)
+
         except DatabaseUnavailableError:
+            # --- Ping failed ---
+            runtime_state.alert_state_cache.pop('healthy_count', None)
+
+            # Try to recover the pool immediately
+            try:
+                await db.reconnect()
+                await db.ping()  # retry on fresh pool
+                logger.info('Database recovered immediately via reconnect.')
+                return  # transient blip, no alert
+            except DatabaseUnavailableError:
+                pass  # still down
+
             if was_available:
                 runtime_state.db_available = False
                 if hasattr(bot, 'notifier'):
