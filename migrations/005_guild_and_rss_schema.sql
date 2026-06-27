@@ -2,6 +2,12 @@
 -- Migration: 005_guild_and_rss_schema.sql
 -- Created: 2026-06-02
 
+-- Drop rss_cache if it exists from the incompatible 005_community_additions.sql schema
+DROP TABLE IF EXISTS rss_cache;
+
+-- Add image_url column to marketplace_listings (missing from 004_marketplace_schema.sql)
+ALTER TABLE marketplace_listings ADD COLUMN IF NOT EXISTS image_url TEXT;
+
 -- Guild / server configuration
 CREATE TABLE IF NOT EXISTS guild_config (
     guild_id VARCHAR(20) PRIMARY KEY,
