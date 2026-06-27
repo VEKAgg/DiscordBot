@@ -269,7 +269,7 @@ Run these before every push:
 ```bash
 ruff check .                  # lint (no auto-fixes)
 ruff check --fix . && ruff format .  # auto-fix then format
-mypy src/ main.py             # static type check
+mypy src/ main.py --explicit-package-bases  # static type check
 pre-commit run --all-files    # all checks (ruff + mypy + misc)
 ```
 
