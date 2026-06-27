@@ -1,23 +1,57 @@
 # AGENTS.md — VEKA Discord Bot
 
-## Commands
+Python `>=3.13`. No test framework configured.
+
+## Setup
 
 ```bash
-pip install -r requirements.txt    # or: uv sync
-python main.py                     # needs .env + reachable PostgreSQL
-docker compose -f docker-compose.dev.yml up -d --build  # local stack w/ bundled postgres
-docker compose up -d               # production (external DB via DATABASE_URL)
-docker logs veka-discord-bot       # view logs
+git clone <repo> && cd discord-bot
+cp .env.example .env              # then fill in DISCORD_TOKEN and DATABASE_URL
+
+# Install runtime deps
+pip install -r requirements.txt   # or: uv sync
+pip install -e '.[dev]'           # dev deps (ruff, mypy, pre-commit)
+
+# Activate pre-commit hooks (do this once after clone)
+pre-commit install
 ```
 
-Python `>=3.13`. No tests, linters, or formatters configured.
+## Commands
+
+| Action | Command |
+|---|---|
+| Run locally | `python main.py` |
+| Local stack (bot + postgres) | `docker compose -f docker-compose.dev.yml up -d --build` |
+| Production (bot only) | `docker compose up -d` |
+| View logs | `docker logs veka-discord-bot` |
+| PM2 start (self-hosted) | `pm2 start discord-bot.json` |
+
+## Lint / Format / Typecheck
+
+Run these before every push:
+
+```bash
+# Lint check (no auto-fixes)
+ruff check .
+
+# Auto-fix lint issues then format
+ruff check --fix . && ruff format .
+
+# Type check
+mypy src/ main.py
+
+# All pre-commit hooks (runs ruff + mypy + misc checks)
+pre-commit run --all-files
+```
+
+All config lives in `pyproject.toml` under `[tool.ruff]` and `[tool.mypy]`. Pre-commit config is `.pre-commit-config.yaml`.
 
 ## Architecture
 
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, builds bot, loads extensions, `bot.run()`
-- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py:27`). Only these: `admin.basic`, `admin.help`, `admin.health`, `networking.networking`, `marketplace.marketplace`, `resources.feeds`. Many stubs under `src/cogs/` are NOT loaded (fun, quiz, mentorship, gamification, portfolio, workshops). Add a cog's module path to `EXTENSIONS` to enable it.
+- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py:27`). Only these: `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.resources.feeds`. Many stubs under `src/cogs/` are NOT loaded (fun, quiz, mentorship, gamification, portfolio, workshops). Add a cog's module path (full dotted path, e.g. `src.cogs.xxx`) to `EXTENSIONS` to enable it.
 - **Degraded-mode:** DB/cog failures don't crash the bot. `bot.runtime_state` (`src/core/runtime_state.py`) tracks `db_available`, `loaded_cogs`, `failed_cogs`, `degraded_features`.
-- **Layering:** `cogs/` (thin command handlers) → `services/` (business logic) → `database/` (data access).
+- **Layering:** `src/cogs/` (thin command handlers) → `src/services/` (business logic) → `src/database/` (data access).
 - **Each cog** needs a module-level `setup(bot)` function.
 
 ## Database

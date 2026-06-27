@@ -46,4 +46,4 @@ data/
 *.sqlite3
 
 # Config (except example)
-config.yml 
+config.yml
