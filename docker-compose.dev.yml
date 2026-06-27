@@ -1,0 +1,39 @@
+services:
+  discord-bot:
+    build: .
+    image: veka-discord-bot:dev
+    container_name: veka-discord-bot-dev
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./.env:/app/.env:ro
+      - ./src:/app/src:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
+    networks:
+      - veka-network
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: veka-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: veka_bot
+      POSTGRES_USER: veka_bot_user
+      POSTGRES_PASSWORD: example
+    volumes:
+      - postgres-data-dev:/var/lib/postgresql/data
+    networks:
+      - veka-network
+    ports:
+      - "5432:5432"
+
+networks:
+  veka-network:
+    driver: bridge
+
+volumes:
+  postgres-data-dev:
