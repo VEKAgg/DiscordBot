@@ -1,6 +1,5 @@
 import logging
 from datetime import datetime
-from typing import Optional
 
 import nextcord
 from nextcord.ext import commands
@@ -12,6 +11,7 @@ from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_com
 
 logger = logging.getLogger('VEKA.admin.health')
 
+
 class Health(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -19,7 +19,7 @@ class Health(commands.Cog):
     def _is_degraded(self) -> bool:
         return not runtime_state.db_available or bool(runtime_state.failed_cogs)
 
-    def _feature_state(self, prefix: str, enabled_flag: Optional[bool] = None) -> str:
+    def _feature_state(self, prefix: str, enabled_flag: bool | None = None) -> str:
         if any(ext.startswith(prefix) for ext in runtime_state.failed_cogs):
             return 'Degraded'
         if enabled_flag is False:
@@ -28,7 +28,7 @@ class Health(commands.Cog):
             return 'Enabled'
         return 'Disabled'
 
-    def _resolve_extension(self, name: str) -> Optional[str]:
+    def _resolve_extension(self, name: str) -> str | None:
         candidates = set(runtime_state.loaded_cogs) | set(runtime_state.failed_cogs)
         if name in candidates:
             return name
@@ -55,7 +55,9 @@ class Health(commands.Cog):
         embed.add_field(name='Database', value=db_status, inline=True)
         embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
         embed.add_field(name='Failed Cogs', value=str(len(runtime_state.failed_cogs)), inline=True)
-        embed.add_field(name='Degraded Features', value=', '.join(runtime_state.degraded_features) or 'None', inline=False)
+        embed.add_field(
+            name='Degraded Features', value=', '.join(runtime_state.degraded_features) or 'None', inline=False
+        )
         embed.add_field(name='Bot Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
         embed.add_field(name='Version', value=runtime_state.version, inline=True)
         embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
@@ -135,13 +137,15 @@ class Health(commands.Cog):
             description='Results from the system boot sequence.',
             contributor_source=__name__,
         )
-        
+
         if not runtime_state.startup_check_results:
-            embed.description = "No startup checks were recorded."
+            embed.description = 'No startup checks were recorded.'
         else:
             for check in runtime_state.startup_check_results:
-                icon = "✅" if check['status'] == 'PASS' else "⚠️" if check['status'] == 'WARN' else "❌"
-                embed.add_field(name=f"{icon} {check['name']}", value=f"`{check['status']}`: {check['message']}", inline=False)
+                icon = '✅' if check['status'] == 'PASS' else '⚠️' if check['status'] == 'WARN' else '❌'
+                embed.add_field(
+                    name=f'{icon} {check["name"]}', value=f'`{check["status"]}`: {check["message"]}', inline=False
+                )
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 

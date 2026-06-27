@@ -1,6 +1,7 @@
-import asyncpg
 import logging
-from typing import Any, Optional
+from typing import Any
+
+import asyncpg
 
 from src.config.config import DATABASE_URL
 from src.core.runtime_state import runtime_state
@@ -9,11 +10,12 @@ from src.utils.safety import DatabaseUnavailableError
 
 logger = logging.getLogger('VEKA.database')
 
+
 class Database:
     """PostgreSQL database connection manager using asyncpg."""
 
     def __init__(self) -> None:
-        self.pool: Optional[asyncpg.Pool] = None
+        self.pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
         if self.pool is not None:
@@ -50,7 +52,7 @@ class Database:
             logger.error('Database ping failed: %s', exc, exc_info=True)
             raise DatabaseUnavailableError('Database ping error') from exc
 
-    async def fetch_one(self, query: str, *args: Any) -> Optional[asyncpg.Record]:
+    async def fetch_one(self, query: str, *args: Any) -> asyncpg.Record | None:
         if self.pool is None:
             runtime_state.db_available = False
             raise DatabaseUnavailableError('Database pool is not initialized')
@@ -63,7 +65,7 @@ class Database:
             logger.error('Database fetch_one failed: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
-    async def fetchrow(self, query: str, *args: Any) -> Optional[asyncpg.Record]:
+    async def fetchrow(self, query: str, *args: Any) -> asyncpg.Record | None:
         return await self.fetch_one(query, *args)
 
     async def fetch(self, query: str, *args: Any):
@@ -118,7 +120,9 @@ class Database:
                 await connection.executemany(query, args_list)
         except asyncpg.PostgresError as exc:
             runtime_state.db_available = False
-            logger.error('Database execute_many failed: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True)
+            logger.error(
+                'Database execute_many failed: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True
+            )
             raise DatabaseUnavailableError('Database query failed') from exc
 
     async def run_migrations(self) -> None:
@@ -133,14 +137,11 @@ class Database:
 
         async with self.pool.acquire() as connection:
             await connection.execute(
-                f"CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} ("
-                "filename TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW()"
-                ")"
+                f'CREATE TABLE IF NOT EXISTS {MIGRATIONS_TABLE} ('
+                'filename TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW()'
+                ')'
             )
-            existing = {
-                row['filename']
-                for row in await connection.fetch(f"SELECT filename FROM {MIGRATIONS_TABLE}")
-            }
+            existing = {row['filename'] for row in await connection.fetch(f'SELECT filename FROM {MIGRATIONS_TABLE}')}
 
             for migration_path in migration_files:
                 migration_name = migration_path.name
@@ -152,7 +153,7 @@ class Database:
                     logger.info('Applying migration: %s', migration_name)
                     await connection.execute(sql)
                     await connection.execute(
-                        f"INSERT INTO {MIGRATIONS_TABLE} (filename) VALUES ($1)",
+                        f'INSERT INTO {MIGRATIONS_TABLE} (filename) VALUES ($1)',
                         migration_name,
                     )
                     logger.info('Applied migration: %s', migration_name)
@@ -173,12 +174,12 @@ async def get_user(discord_id: str):
 
 async def create_user(discord_id: str):
     return await db.fetch_one(
-        '''
+        """
         INSERT INTO users (discord_id)
         VALUES ($1)
         ON CONFLICT (discord_id) DO UPDATE SET updated_at = NOW()
         RETURNING *
-        ''',
+        """,
         discord_id,
     )
 
