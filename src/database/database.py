@@ -22,16 +22,13 @@ class Database:
         if self.pool is not None:
             return
 
-        dsn = DATABASE_URL
-        parsed = urllib.parse.urlparse(dsn)
-        query = dict(urllib.parse.parse_qsl(parsed.query))
-        if 'keepalives' not in query:
-            query['keepalives'] = '1'
-            query['tcp_keepalives_idle'] = '30'
-            query['tcp_keepalives_interval'] = '10'
-            query['tcp_keepalives_count'] = '5'
-            parsed = parsed._replace(query=urllib.parse.urlencode(query))
-            dsn = urllib.parse.urlunparse(parsed)
+        # Strip libpq-only keepalive params — asyncpg passes unknown DSN query
+        # params as PostgreSQL server_settings, causing the server to reject them.
+        _libpq_params = {'keepalives', 'tcp_keepalives_idle', 'tcp_keepalives_interval', 'tcp_keepalives_count'}
+        parsed = urllib.parse.urlparse(DATABASE_URL)
+        query = {k: v for k, v in urllib.parse.parse_qsl(parsed.query) if k not in _libpq_params}
+        parsed = parsed._replace(query=urllib.parse.urlencode(query))
+        dsn = urllib.parse.urlunparse(parsed)
 
         self.pool = await asyncpg.create_pool(
             dsn,
