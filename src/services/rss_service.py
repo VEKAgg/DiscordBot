@@ -1,140 +1,134 @@
-import feedparser
-import aiohttp
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Dict, List, Optional
+
+import aiohttp
+from aiohttp import ClientError
+import feedparser
 import logging
 from bs4 import BeautifulSoup
-from src.config.config import RSS_FEEDS, RATE_LIMITS, CACHE_TTL
-from typing import Dict, List, Optional
-import json
-import os
-import aiofiles
+
+from src.config.config import RSS_FEEDS
+from src.database.database import db
+from src.utils.safety import ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
 
+
 class RSSService:
-    def __init__(self):
-        self.cache_dir = "data/cache/rss"
-        self.cache: Dict[str, Dict] = {}
-        self.last_fetch: Dict[str, datetime] = {}
-        os.makedirs(self.cache_dir, exist_ok=True)
+    def __init__(self, bot=None):
+        self.bot = bot
 
     async def fetch_feed(self, url: str) -> Optional[Dict]:
-        """Fetch a single RSS feed with rate limiting and caching"""
         try:
-            # Check cache
-            cache_key = url.replace('/', '_').replace(':', '_')
-            cache_file = f"{self.cache_dir}/{cache_key}.json"
-
-            # Check if we have a recent cache
-            if os.path.exists(cache_file):
-                async with aiofiles.open(cache_file, 'r') as f:
-                    cached_data = json.loads(await f.read())
-                    cache_time = datetime.fromisoformat(cached_data['timestamp'])
-                    if datetime.utcnow() - cache_time < timedelta(seconds=CACHE_TTL['rss_feed']):
-                        return cached_data['data']
-
-            # Respect rate limits
-            if url in self.last_fetch:
-                time_since_last = datetime.utcnow() - self.last_fetch[url]
-                if time_since_last.seconds < (60 / RATE_LIMITS['rss_fetch']):
-                    await asyncio.sleep(60 / RATE_LIMITS['rss_fetch'] - time_since_last.seconds)
-
             async with aiohttp.ClientSession() as session:
-                async with session.get(url) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        feed = feedparser.parse(content)
-                        
-                        # Process and clean the feed
-                        processed_entries = []
-                        for entry in feed.entries[:10]:  # Limit to 10 most recent entries
-                            # Clean and extract text from HTML
-                            soup = BeautifulSoup(entry.get('description', ''), 'html.parser')
-                            clean_description = soup.get_text()[:500] + '...' if len(soup.get_text()) > 500 else soup.get_text()
-                            
-                            processed_entry = {
-                                'title': entry.get('title', 'No title'),
-                                'link': entry.get('link', '#'),
-                                'description': clean_description,
-                                'published': entry.get('published', 'No date'),
-                                'author': entry.get('author', 'Unknown')
-                            }
-                            processed_entries.append(processed_entry)
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status != 200:
+                        raise ExternalRequestError(f"HTTP Status: {response.status}")
+                    content = await response.text()
 
-                        feed_data = {
-                            'title': feed.feed.get('title', 'Unknown Feed'),
-                            'entries': processed_entries
-                        }
+            feed = feedparser.parse(content)
+            processed_entries = []
+            for entry in feed.entries[:10]:
+                soup = BeautifulSoup(entry.get('description', ''), 'html.parser')
+                text = soup.get_text()
+                clean_description = text[:500] + '...' if len(text) > 500 else text
+                
+                entry_id = entry.get('id', entry.get('link', ''))
+                if not entry_id:
+                    continue
 
-                        # Cache the results
-                        cache_data = {
-                            'timestamp': datetime.utcnow().isoformat(),
-                            'data': feed_data
-                        }
-                        async with aiofiles.open(cache_file, 'w') as f:
-                            await f.write(json.dumps(cache_data))
+                processed_entries.append({
+                    'entry_id': entry_id,
+                    'title': entry.get('title', 'No title'),
+                    'link': entry.get('link', '#'),
+                    'description': clean_description,
+                    'published': entry.get('published', 'No date'),
+                    'author': entry.get('author', 'Unknown'),
+                })
 
-                        self.last_fetch[url] = datetime.utcnow()
-                        return feed_data
+            feed_data = {
+                'title': feed.feed.get('title', 'Unknown Feed'),
+                'entries': processed_entries,
+            }
+            
+            # Handle recovery
+            from src.core.runtime_state import runtime_state
+            fail_key = f"rss_fail_{url}"
+            if runtime_state.alert_state_cache.get(fail_key, 0) > 0:
+                runtime_state.alert_state_cache[fail_key] = 0
+                if self.bot and hasattr(self.bot, 'notifier'):
+                    self.bot.notifier.clear_cooldown(f"rss_alert_{url}")
+                    asyncio.create_task(self.bot.notifier.send_alert(
+                        title="RSS Feed Recovered",
+                        description=f"The RSS feed `{url}` is now responding correctly.",
+                        severity="INFO"
+                    ))
+            
+            return feed_data
 
+        except Exception as exc:
+            logger.error('Error fetching RSS feed %s: %s', url, exc, exc_info=True)
+            from src.core.runtime_state import runtime_state
+            fail_key = f"rss_fail_{url}"
+            fails = runtime_state.alert_state_cache.get(fail_key, 0) + 1
+            runtime_state.alert_state_cache[fail_key] = fails
+            
+            if fails >= 3 and self.bot and hasattr(self.bot, 'notifier'):
+                asyncio.create_task(self.bot.notifier.send_alert(
+                    title="RSS Feed Failing",
+                    description=f"The RSS feed `{url}` has failed {fails} consecutive times.\n**Error:** {str(exc)[:500]}",
+                    severity="WARN",
+                    dedupe_key=f"rss_alert_{url}",
+                    cooldown_minutes=120
+                ))
             return None
-        except Exception as e:
-            logger.error(f"Error fetching RSS feed {url}: {str(e)}")
-            return None
 
-    async def get_category_feeds(self, category: str) -> List[Dict]:
-        """Get all feeds for a specific category"""
-        if category not in RSS_FEEDS:
-            return []
+    async def process_and_dedupe(self, url: str, entries: List[Dict]) -> List[Dict]:
+        new_entries = []
+        for entry in entries:
+            # Check if entry already exists in db
+            exists = await db.fetch_one(
+                "SELECT 1 FROM rss_cache WHERE feed_url = $1 AND entry_id = $2",
+                url, entry['entry_id']
+            )
+            if not exists:
+                try:
+                    await db.execute(
+                        """INSERT INTO rss_cache 
+                           (feed_url, entry_id, title, link, summary, author) 
+                           VALUES ($1, $2, $3, $4, $5, $6) 
+                           ON CONFLICT DO NOTHING""",
+                        url, entry['entry_id'], entry['title'][:500], entry['link'][:500],
+                        entry['description'], entry['author'][:255]
+                    )
+                    new_entries.append(entry)
+                except Exception as exc:
+                    logger.error("Failed to insert RSS entry into db: %s", exc)
+        return new_entries
 
-        feeds = []
-        for url in RSS_FEEDS[category]:
+    async def get_latest_new_entries(self, category: str, limit: int = 5) -> List[Dict]:
+        """Fetch feeds and return ONLY new entries (deduplicated via Postgres)."""
+        feeds_info = RSS_FEEDS.get(category, [])
+        all_new_entries: List[Dict] = []
+
+        for url in feeds_info:
             feed_data = await self.fetch_feed(url)
-            if feed_data:
-                feeds.append(feed_data)
+            if not feed_data:
+                continue
+            
+            new_entries = await self.process_and_dedupe(url, feed_data['entries'])
+            all_new_entries.extend(new_entries)
 
-        return feeds
-
-    async def get_latest_entries(self, category: str, limit: int = 5) -> List[Dict]:
-        """Get the latest entries from all feeds in a category"""
-        feeds = await self.get_category_feeds(category)
-        
-        # Combine all entries
-        all_entries = []
-        for feed in feeds:
-            all_entries.extend(feed['entries'])
-
-        # Sort by date (if available) and limit
         try:
-            all_entries.sort(key=lambda x: datetime.strptime(x['published'], '%a, %d %b %Y %H:%M:%S %z'), reverse=True)
-        except:
-            # If date parsing fails, keep the original order
+            all_new_entries.sort(
+                key=lambda x: datetime.strptime(x['published'], '%a, %d %b %Y %H:%M:%S %z'),
+                reverse=True,
+            )
+        except Exception:
             pass
 
-        return all_entries[:limit]
-
-    async def search_feeds(self, query: str, category: Optional[str] = None) -> List[Dict]:
-        """Search for entries across all feeds or in a specific category"""
-        if category:
-            feeds = await self.get_category_feeds(category)
-        else:
-            feeds = []
-            for category in RSS_FEEDS:
-                category_feeds = await self.get_category_feeds(category)
-                feeds.extend(category_feeds)
-
-        # Search through entries
-        results = []
-        query = query.lower()
-        for feed in feeds:
-            for entry in feed['entries']:
-                if (query in entry['title'].lower() or 
-                    query in entry['description'].lower()):
-                    results.append(entry)
-
-        return results[:10]  # Limit to 10 results
+        return all_new_entries[:limit]
 
     def get_available_categories(self) -> List[str]:
-        """Get list of available RSS feed categories"""
-        return list(RSS_FEEDS.keys()) 
+        return list(RSS_FEEDS.keys())
