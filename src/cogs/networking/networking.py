@@ -14,8 +14,13 @@ logger = logging.getLogger('VEKA.networking')
 
 
 class Networking(commands.Cog):
-    profile = nextcord.SlashCommandGroup('profile', 'Professional profile commands')
-    connect = nextcord.SlashCommandGroup('connect', 'Connection request commands')
+    @nextcord.slash_command(name='profile', description='Professional profile commands')
+    async def profile(self, interaction: nextcord.Interaction):
+        pass
+
+    @nextcord.slash_command(name='connect', description='Connection request commands')
+    async def connect(self, interaction: nextcord.Interaction):
+        pass
 
     def __init__(self, bot):
         self.bot = bot

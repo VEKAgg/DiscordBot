@@ -9,7 +9,9 @@ from src.utils.embeds import info_embed, error_embed
 logger = logging.getLogger('VEKA.feeds')
 
 class Feeds(commands.Cog):
-    resource = nextcord.SlashCommandGroup('resource', 'Commands to browse community resources and RSS feeds')
+    @nextcord.slash_command(name='resource', description='Commands to browse community resources and RSS feeds')
+    async def resource(self, interaction: nextcord.Interaction):
+        pass
 
     def __init__(self, bot):
         self.bot = bot

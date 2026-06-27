@@ -225,16 +225,16 @@ an external/managed PostgreSQL reachable via `DATABASE_URL`.
 
 ```bash
 # Local: bot + bundled postgres
-docker-compose -f docker-compose.dev.yml up -d --build
+docker compose -f docker-compose.dev.yml up -d --build
 
 # Production: bot only (set DATABASE_URL to your managed DB)
-docker-compose up -d --build
+docker compose up -d --build
 
 docker logs veka-discord-bot
 ```
 
-Podman is also supported — build the image and run the bot in a pod, providing
-`DATABASE_URL` via the mounted `.env` (see `.github/workflows/deploy-discord-bot.yml`).
+The bot does not require Docker — `python main.py` runs it directly against any
+reachable PostgreSQL. Docker is simply how it is packaged and deployed.
 
 ---
 
@@ -270,10 +270,18 @@ the same feature — keep them in sync when changing behavior.
 
 `.github/workflows/deploy-discord-bot.yml` deploys on push to `main`/`production`,
 but **only when the commit message starts with `Merge pull request`** (i.e.
-merged PRs). It runs on a self-hosted runner (`self-hosted, X64, Linux, Veka`),
-supports Docker or Podman via the `CONTAINER_ENGINE` secret (default `docker`),
-injects `DISCORD_TOKEN`/`DATABASE_URL` from secrets, and gates success on the log
-line `"is ready. DB available"` appearing within 60s.
+merged PRs). It runs on a self-hosted runner (`self-hosted, X64, Linux, Veka`)
+using Docker (`docker compose up -d --build`), writes a `.env` from GitHub
+secrets/variables, and gates success on the log line `"is ready. DB available"`
+appearing within 60s.
+
+Configure these in the repository's GitHub settings:
+
+- **Secrets** (sensitive): `DISCORD_TOKEN`, `DATABASE_URL`
+- **Variables** (non-sensitive): `ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL` (optional)
+
+`BOT_VERSION` is set automatically to the commit SHA and `ENVIRONMENT` to
+`production`.
 
 > Production uses an external/managed database — ensure the `DATABASE_URL` secret
 > points at a reachable host (not `@postgres:5432`).
