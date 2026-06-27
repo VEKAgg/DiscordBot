@@ -5,6 +5,7 @@ from src.services.rss_service import RSSService
 from src.config.config import RSS_FEEDS
 from src.utils.safety import safe_background_task, safe_slash_command, safe_send
 from src.utils.embeds import info_embed, error_embed
+from src.core.runtime_state import runtime_state
 
 logger = logging.getLogger('VEKA.feeds')
 
@@ -25,6 +26,9 @@ class Feeds(commands.Cog):
     @safe_background_task(name='feed_update')
     async def feed_update(self):
         """Periodically check for new feed entries and post updates"""
+        if not runtime_state.db_available:
+            logger.debug("Skipping feed update: database unavailable")
+            return
         for category in RSS_FEEDS:
             # We fetch only the new entries, as deduplication is now persistent via DB
             entries = await self.rss_service.get_latest_new_entries(category, limit=3)
