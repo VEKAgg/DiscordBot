@@ -13,7 +13,9 @@ logger = logging.getLogger('VEKA.marketplace')
 
 
 class Marketplace(commands.Cog):
-    marketplace = nextcord.SlashCommandGroup('marketplace', 'Buy and sell items within the community')
+    @nextcord.slash_command(name='marketplace', description='Buy and sell items within the community')
+    async def marketplace(self, interaction: nextcord.Interaction):
+        pass
 
     def __init__(self, bot):
         self.bot = bot

@@ -9,8 +9,8 @@ VEKA is a nextcord-based professional-networking/community Discord bot backed by
 ```bash
 pip install -r requirements.txt      # canonical install (pyproject.toml mirrors the same pins)
 python main.py                       # run locally — needs a reachable PostgreSQL + DISCORD_TOKEN in .env
-docker-compose -f docker-compose.dev.yml up -d --build   # local stack: bot + bundled postgres
-docker-compose up -d                 # production: bot only, expects external DB via DATABASE_URL
+docker compose -f docker-compose.dev.yml up -d --build    # local stack: bot + bundled postgres
+docker compose up -d                 # production: bot only, expects external DB via DATABASE_URL
 docker logs veka-discord-bot         # view logs
 ```
 
@@ -70,4 +70,4 @@ All env/constants live here: `BOT_PREFIX = "!"` (hardcoded), `DISCORD_TOKEN`, `D
 
 ## CI/CD
 
-`.github/workflows/deploy-discord-bot.yml` deploys on push to `main`/`production`, **but only when the commit message starts with `Merge pull request`** (i.e. merged PRs). Runs on a self-hosted runner (`self-hosted, X64, Linux, Veka`), supports Docker or Podman via the `CONTAINER_ENGINE` secret (default `docker`), and gates success on the log line `"has connected to Discord"` appearing within 60s.
+`.github/workflows/deploy-discord-bot.yml` deploys on push to `main`/`production`, **but only when the commit message starts with `Merge pull request`** (i.e. merged PRs). Runs on a self-hosted runner (`self-hosted, X64, Linux, Veka`) using Docker (`docker compose up -d --build`), writes `.env` from GitHub secrets (`DISCORD_TOKEN`, `DATABASE_URL`) and variables (`ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL`), and gates success on the log line `"is ready. DB available"` appearing within 60s.
