@@ -54,7 +54,7 @@ class Moderation(commands.Cog):
         # Send to staff channel with @everyone
         staff_channel = self.bot.get_channel(STAFF_CHANNEL_ID)
         if staff_channel:
-            embed = alert_embed(
+            embed = await alert_embed(
                 title=f'LOCKDOWN {status}',
                 description=(
                     f'Server lockdown has been **{status.lower()}** by a Founder.\n\n'
@@ -70,7 +70,7 @@ class Moderation(commands.Cog):
                 logger.error('Failed to send lockdown alert: %s', e)
 
         # Respond to the command user
-        embed = alert_embed(
+        embed = await alert_embed(
             title=f'Lockdown {status}',
             description=f'Server lockdown has been **{status.lower()}**.',
             severity='CRITICAL' if self.lockdown_active else 'INFO',

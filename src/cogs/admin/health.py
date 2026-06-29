@@ -44,11 +44,12 @@ class Health(commands.Cog):
         db_status = 'Available' if runtime_state.db_available else 'Unavailable'
         uptime = datetime.utcnow() - runtime_state.startup_time
 
-        embed = info_embed(
+        user = target.author if hasattr(target, 'author') else target.user if hasattr(target, 'user') else None
+        embed = await info_embed(
             title='VEKA Bot Health',
             description='Current runtime and infrastructure status for VEKA.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=user,
         )
         embed.add_field(name='Status', value=status, inline=False)
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
@@ -90,11 +91,11 @@ class Health(commands.Cog):
     @safe_slash_command()
     async def botinfo(self, interaction: nextcord.Interaction):
         uptime = datetime.utcnow() - runtime_state.startup_time
-        embed = info_embed(
+        embed = await info_embed(
             title='VEKA Bot Info',
             description='Basic runtime and environment details for the VEKA bot.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
         embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
@@ -117,11 +118,11 @@ class Health(commands.Cog):
             'Database': 'Available' if runtime_state.db_available else 'Unavailable',
         }
 
-        embed = info_embed(
+        embed = await info_embed(
             title='VEKA Feature Status',
             description='Enabled, disabled, and degraded bot features.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         for name, value in feature_status.items():
             embed.add_field(name=name, value=value, inline=False)
@@ -132,19 +133,20 @@ class Health(commands.Cog):
     @staff_only()
     @safe_slash_command()
     async def startupchecks(self, interaction: nextcord.Interaction):
-        embed = info_embed(
+        embed = await info_embed(
             title='Startup Checks',
             description='Results from the system boot sequence.',
             contributor_source=__name__,
+            user=interaction.user,
         )
 
         if not runtime_state.startup_check_results:
             embed.description = 'No startup checks were recorded.'
         else:
             for check in runtime_state.startup_check_results:
-                icon = '✅' if check['status'] == 'PASS' else '⚠️' if check['status'] == 'WARN' else '❌'
+                icon = 'PASS' if check['status'] == 'PASS' else 'WARN' if check['status'] == 'WARN' else 'FAIL'
                 embed.add_field(
-                    name=f'{icon} {check["name"]}', value=f'`{check["status"]}`: {check["message"]}', inline=False
+                    name=f'[{icon}] {check["name"]}', value=f'`{check["status"]}`: {check["message"]}', inline=False
                 )
 
         await safe_send(interaction, embed=embed, ephemeral=True)
@@ -155,14 +157,14 @@ class Health(commands.Cog):
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
         extension = self._resolve_extension(cog_name)
         if not extension:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Reload Failed',
                 description=(
                     'Could not resolve the cog name. Use a full extension path '
                     'or a short cog name like `health`, `basic`, `networking`, `marketplace`, or `feeds`.'
                 ),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -180,20 +182,20 @@ class Health(commands.Cog):
             if extension in runtime_state.degraded_features:
                 runtime_state.degraded_features.remove(extension)
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Reload Successful',
                 description=f'Extension `{extension}` reloaded successfully.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as exc:
             logger.error('Reload cog failed: %s', exc, exc_info=True)
-            embed = error_embed(
+            embed = await error_embed(
                 title='Reload Failed',
                 description=f'Unable to reload `{extension}`: {exc}',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 

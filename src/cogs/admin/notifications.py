@@ -49,7 +49,7 @@ class Notifications(commands.Cog):
 
             role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
 
-            embed = info_embed(
+            embed = await info_embed(
                 title='Daily Bump Reminder',
                 description=(
                     f'{role_mention}\n\n'
@@ -79,7 +79,7 @@ class Notifications(commands.Cog):
         """Ping notification squad in public bot commands channel"""
         channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
         if not channel:
-            embed = error_embed(
+            embed = await error_embed(
                 'Channel Not Found', 'Public bot commands channel not found.', contributor_source=__name__
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
@@ -89,7 +89,7 @@ class Notifications(commands.Cog):
         squad_role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
         role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
 
-        embed = info_embed(
+        embed = await info_embed(
             title='Squad Ping',
             description=f'{role_mention}\n\n{message}',
             contributor_source=__name__,
@@ -97,7 +97,7 @@ class Notifications(commands.Cog):
 
         try:
             await channel.send(embed=embed)
-            embed = success_embed(
+            embed = await success_embed(
                 title='Sent',
                 description=f'Notification squad pinged in {channel.mention}.',
                 contributor_source=__name__,
@@ -105,7 +105,7 @@ class Notifications(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error('Failed to ping squad: %s', e)
-            embed = error_embed('Send Failed', 'Could not send the ping.', contributor_source=__name__)
+            embed = await error_embed('Send Failed', 'Could not send the ping.', contributor_source=__name__)
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @commands.command(name='pingsquad')
@@ -114,14 +114,14 @@ class Notifications(commands.Cog):
         """Ping notification squad (Staff+)"""
         channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
         if not channel:
-            await ctx.send('❌ Public bot commands channel not found.')
+            await ctx.send('Public bot commands channel not found.')
             return
 
         guild = ctx.guild
         squad_role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
         role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
 
-        embed = info_embed(
+        embed = await info_embed(
             title='Squad Ping',
             description=f'{role_mention}\n\n{message}',
             contributor_source=__name__,
@@ -129,10 +129,10 @@ class Notifications(commands.Cog):
 
         try:
             await channel.send(embed=embed)
-            await ctx.send(f'✅ Notification squad pinged in {channel.mention}.')
+            await ctx.send(f'Notification squad pinged in {channel.mention}.')
         except Exception as e:
             logger.error('Failed to ping squad: %s', e)
-            await ctx.send('❌ Could not send the ping.')
+            await ctx.send('Could not send the ping.')
 
     # ==================== FOUNDER COMMANDS ====================
 
@@ -146,7 +146,7 @@ class Notifications(commands.Cog):
         message: str,
     ):
         """Send an announcement to any channel"""
-        embed = info_embed(
+        embed = await info_embed(
             title='Announcement',
             description=message,
             contributor_source=__name__,
@@ -155,7 +155,7 @@ class Notifications(commands.Cog):
 
         try:
             await channel.send(embed=embed)
-            embed = success_embed(
+            embed = await success_embed(
                 title='Broadcast Sent',
                 description=f'Announcement sent to {channel.mention}.',
                 contributor_source=__name__,
@@ -163,14 +163,16 @@ class Notifications(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error('Failed to broadcast: %s', e)
-            embed = error_embed('Broadcast Failed', 'Could not send the announcement.', contributor_source=__name__)
+            embed = await error_embed(
+                'Broadcast Failed', 'Could not send the announcement.', contributor_source=__name__
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @commands.command(name='broadcast')
     @require_founder()
     async def broadcast_prefix(self, ctx, channel: nextcord.TextChannel, *, message: str):
         """Send announcement to a channel (Founder only)"""
-        embed = info_embed(
+        embed = await info_embed(
             title='Announcement',
             description=message,
             contributor_source=__name__,
@@ -179,10 +181,10 @@ class Notifications(commands.Cog):
 
         try:
             await channel.send(embed=embed)
-            await ctx.send(f'✅ Announcement sent to {channel.mention}.')
+            await ctx.send(f'Announcement sent to {channel.mention}.')
         except Exception as e:
             logger.error('Failed to broadcast: %s', e)
-            await ctx.send('❌ Could not send the announcement.')
+            await ctx.send('Could not send the announcement.')
 
 
 def setup(bot):

@@ -44,7 +44,7 @@ class Feeds(commands.Cog):
                     continue
 
                 for entry in entries:
-                    embed = self.create_feed_embed(entry, category)
+                    embed = await self.create_feed_embed(entry, category)
                     try:
                         await channel.send(embed=embed)
                     except Exception as e:
@@ -59,10 +59,11 @@ class Feeds(commands.Cog):
     async def feed_sources(self, interaction: nextcord.Interaction):
         categories = self.rss_service.get_available_categories()
 
-        embed = info_embed(
+        embed = await info_embed(
             title='Available Resource Categories',
             description='Here are the categories of feeds we track:',
             contributor_source=__name__,
+            user=interaction.user,
         )
 
         for category in categories:
@@ -84,7 +85,12 @@ class Feeds(commands.Cog):
     ):
         if category not in RSS_FEEDS:
             categories = ', '.join(RSS_FEEDS.keys())
-            embed = error_embed('Invalid Category', f'Available categories: {categories}', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Category',
+                f'Available categories: {categories}',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
@@ -99,8 +105,11 @@ class Feeds(commands.Cog):
                 entries.extend(feed_data['entries'])
 
         if not entries:
-            embed = info_embed(
-                'No Entries Found', f'No entries found for category: {category}', contributor_source=__name__
+            embed = await info_embed(
+                'No Entries Found',
+                f'No entries found for category: {category}',
+                contributor_source=__name__,
+                user=interaction.user,
             )
             await interaction.followup.send(embed=embed)
             return
@@ -108,14 +117,14 @@ class Feeds(commands.Cog):
         entries = entries[:5]
 
         for idx, entry in enumerate(entries):
-            embed = self.create_feed_embed(entry, category)
+            embed = await self.create_feed_embed(entry, category)
             if idx == 0:
                 await interaction.followup.send(embed=embed)
             else:
                 await interaction.channel.send(embed=embed)
 
-    def create_feed_embed(self, entry: dict, category: str) -> nextcord.Embed:
-        embed = info_embed(
+    async def create_feed_embed(self, entry: dict, category: str) -> nextcord.Embed:
+        embed = await info_embed(
             title=entry['title'],
             description=entry['description'][:1000] + '...'
             if len(entry['description']) > 1000

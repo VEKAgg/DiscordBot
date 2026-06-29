@@ -192,7 +192,7 @@ def safe_command(requires_db: bool = False):
         async def wrapper(self, ctx, *args, **kwargs):
             if requires_db and not runtime_state.db_available:
                 embed = nextcord.Embed(
-                    title='⚠️ Database Unavailable',
+                    title='Database Unavailable',
                     description='This command requires the database, which is currently offline. Please try again later.',
                     color=nextcord.Color.red(),
                 )
@@ -205,7 +205,7 @@ def safe_command(requires_db: bool = False):
             except Exception as error:
                 log_error(error, ctx, module=func.__module__)
                 msg = map_exception_to_message(error)
-                embed = nextcord.Embed(title='❌ Error', description=msg, color=nextcord.Color.red())
+                embed = nextcord.Embed(title='Error', description=msg, color=nextcord.Color.red())
                 await safe_send(ctx, embed=embed)
 
         wrapper.__name__ = func.__name__
@@ -223,7 +223,7 @@ def safe_slash_command(requires_db: bool = False):
         async def wrapper(self, interaction, *args, **kwargs):
             if requires_db and not runtime_state.db_available:
                 embed = nextcord.Embed(
-                    title='⚠️ Database Unavailable',
+                    title='Database Unavailable',
                     description='This command requires the database, which is currently offline. Please try again later.',
                     color=nextcord.Color.red(),
                 )
@@ -236,7 +236,7 @@ def safe_slash_command(requires_db: bool = False):
             except Exception as error:
                 log_error(error, interaction, module=func.__module__)
                 msg = map_exception_to_message(error)
-                embed = nextcord.Embed(title='❌ Error', description=msg, color=nextcord.Color.red())
+                embed = nextcord.Embed(title='Error', description=msg, color=nextcord.Color.red())
                 await safe_send(interaction, embed=embed, ephemeral=True)
 
         wrapper.__name__ = func.__name__
