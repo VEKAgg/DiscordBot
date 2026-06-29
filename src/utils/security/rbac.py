@@ -7,6 +7,16 @@ import logging
 from enum import Enum
 from functools import wraps
 
+from src.config.config import (
+    ACTIVE_PRO_IDS,
+    ADMIN_IDS,
+    DONATOR_IDS,
+    FOUNDER_IDS,
+    INTERN_IDS,
+    OWNER_IDS,
+    STAFF_IDS,
+)
+
 logger = logging.getLogger('VEKA.security.rbac')
 
 
@@ -15,19 +25,34 @@ class Role(Enum):
 
     USER = 'user'
     VERIFIED = 'verified'
-    MODERATOR = 'moderator'
+    INTERN = 'intern'
+    DONATOR = 'donator'
+    ACTIVE_PRO = 'active_pro'
+    STAFF = 'staff'
     ADMIN = 'admin'
-    OWNER = 'owner'
+    FOUNDER = 'founder'
 
 
 # Role hierarchy (higher index = more permissions)
-ROLE_HIERARCHY = [Role.USER, Role.VERIFIED, Role.MODERATOR, Role.ADMIN, Role.OWNER]
+ROLE_HIERARCHY = [
+    Role.USER,
+    Role.VERIFIED,
+    Role.INTERN,
+    Role.DONATOR,
+    Role.ACTIVE_PRO,
+    Role.STAFF,
+    Role.ADMIN,
+    Role.FOUNDER,
+]
 
 # Permission mapping
 ROLE_PERMISSIONS = {
     Role.USER: {'quiz', 'networking', 'profile', 'help'},
     Role.VERIFIED: {'quiz', 'networking', 'profile', 'help', 'marketplace', 'portfolio', 'workshops'},
-    Role.MODERATOR: {
+    Role.INTERN: {'quiz', 'networking', 'profile', 'help', 'marketplace', 'portfolio', 'workshops'},
+    Role.DONATOR: {'quiz', 'networking', 'profile', 'help', 'marketplace', 'portfolio', 'workshops'},
+    Role.ACTIVE_PRO: {'quiz', 'networking', 'profile', 'help', 'marketplace', 'portfolio', 'workshops'},
+    Role.STAFF: {
         'quiz',
         'networking',
         'profile',
@@ -35,11 +60,8 @@ ROLE_PERMISSIONS = {
         'marketplace',
         'portfolio',
         'workshops',
-        'kick',
-        'ban',
-        'mute',
-        'warn',
-        'clear',
+        'staff',
+        'diagnostics',
     },
     Role.ADMIN: {
         'quiz',
@@ -49,21 +71,21 @@ ROLE_PERMISSIONS = {
         'marketplace',
         'portfolio',
         'workshops',
-        'kick',
-        'ban',
-        'mute',
-        'warn',
-        'clear',
+        'staff',
+        'diagnostics',
         'admin',
         'config',
         'quiz_add',
         'quiz_delete',
     },
-    Role.OWNER: {
-        # Owner has all permissions
+    Role.FOUNDER: {
+        # Founder has all permissions
         '*'
     },
 }
+
+# Roles that bypass rate limits
+COOLDOWN_BYPASS_ROLES = {Role.INTERN, Role.DONATOR, Role.ACTIVE_PRO, Role.STAFF, Role.ADMIN, Role.FOUNDER}
 
 
 class RBAC:
@@ -71,40 +93,70 @@ class RBAC:
 
     def __init__(self):
         self.role_mappings = {
-            # Discord role name -> Internal role
             'everyone': Role.USER,
             'verified': Role.VERIFIED,
-            'mod': Role.MODERATOR,
-            'moderator': Role.MODERATOR,
+            'intern': Role.INTERN,
+            'donator': Role.DONATOR,
+            'active pro': Role.ACTIVE_PRO,
+            'active_pro': Role.ACTIVE_PRO,
+            'staff': Role.STAFF,
+            'mod': Role.STAFF,
+            'moderator': Role.STAFF,
             'admin': Role.ADMIN,
             'administrator': Role.ADMIN,
-            'owner': Role.OWNER,
+            'founder': Role.FOUNDER,
+            'owner': Role.FOUNDER,
         }
+
+    def _check_id_lists(self, user_id: int) -> Role | None:
+        """Check if user ID is in any of the env-based ID lists. Returns highest matching role."""
+        if user_id in FOUNDER_IDS or user_id in OWNER_IDS:
+            return Role.FOUNDER
+        if user_id in ADMIN_IDS:
+            return Role.ADMIN
+        if user_id in STAFF_IDS:
+            return Role.STAFF
+        if user_id in ACTIVE_PRO_IDS:
+            return Role.ACTIVE_PRO
+        if user_id in DONATOR_IDS:
+            return Role.DONATOR
+        if user_id in INTERN_IDS:
+            return Role.INTERN
+        return None
 
     def get_user_role(self, ctx) -> Role:
         """
         Determine user's role from Discord context
 
         Priority:
-        1. Guild owner -> OWNER
-        2. Administrator permission -> ADMIN
-        3. Specific roles -> MODERATOR, VERIFIED, etc.
-        4. Default -> USER
+        1. .env ID lists (FOUNDER_IDS, OWNER_IDS, etc.)
+        2. Guild owner -> FOUNDER
+        3. Administrator permission -> ADMIN
+        4. Discord role name mapping -> highest matching role
+        5. Default -> USER
         """
         if not ctx.guild:
-            return Role.USER
+            # For DMs, check ID lists only
+            user = ctx.author if hasattr(ctx, 'author') else ctx.user
+            id_role = self._check_id_lists(user.id)
+            return id_role or Role.USER
 
-        member = ctx.author
+        member = ctx.author if hasattr(ctx, 'author') else ctx.user
 
-        # Check if guild owner
+        # 1. Check .env ID lists first
+        id_role = self._check_id_lists(member.id)
+        if id_role:
+            return id_role
+
+        # 2. Check if guild owner
         if ctx.guild.owner_id == member.id:
-            return Role.OWNER
+            return Role.FOUNDER
 
-        # Check administrator permission
+        # 3. Check administrator permission
         if member.guild_permissions.administrator:
             return Role.ADMIN
 
-        # Check roles
+        # 4. Check Discord role names
         user_role = Role.USER
         for discord_role in member.roles:
             role_name = discord_role.name.lower()
@@ -118,20 +170,24 @@ class RBAC:
 
     def has_permission(self, user_role: Role, permission: str) -> bool:
         """Check if role has specific permission"""
-        if user_role == Role.OWNER:
+        if user_role == Role.FOUNDER:
             return True
 
         permissions = ROLE_PERMISSIONS.get(user_role, set())
         return permission in permissions or '*' in permissions
+
+    def has_cooldown_bypass(self, user_role: Role) -> bool:
+        """Check if role bypasses rate limits"""
+        return user_role in COOLDOWN_BYPASS_ROLES
 
     def require_role(self, min_role: Role):
         """
         Decorator to require minimum role level
 
         Usage:
-            @require_role(Role.MODERATOR)
+            @require_role(Role.STAFF)
             @commands.command()
-            async def kick(self, ctx, member: nextcord.Member):
+            async def warn(self, ctx, member: nextcord.Member):
                 pass
         """
 
@@ -188,9 +244,14 @@ rbac = RBAC()
 
 
 # Convenience decorators
-def require_mod():
-    """Require moderator or higher"""
-    return rbac.require_role(Role.MODERATOR)
+def require_verified():
+    """Require verified or higher"""
+    return rbac.require_role(Role.VERIFIED)
+
+
+def require_staff():
+    """Require staff or higher"""
+    return rbac.require_role(Role.STAFF)
 
 
 def require_admin():
@@ -198,6 +259,10 @@ def require_admin():
     return rbac.require_role(Role.ADMIN)
 
 
-def require_verified():
-    """Require verified or higher"""
-    return rbac.require_role(Role.VERIFIED)
+def require_founder():
+    """Require founder role"""
+    return rbac.require_role(Role.FOUNDER)
+
+
+# Alias for backward compatibility
+require_mod = require_staff

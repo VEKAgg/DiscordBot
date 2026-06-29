@@ -21,10 +21,19 @@ _STATIC_CONTRIBUTOR_MAP: dict[str, dict[str, str]] = {
     'src.cogs.admin.basic': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.help': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.health': DEFAULT_CONTRIBUTOR,
+    'src.cogs.admin.moderation': DEFAULT_CONTRIBUTOR,
+    'src.cogs.admin.notifications': DEFAULT_CONTRIBUTOR,
     'src.cogs.networking.networking': DEFAULT_CONTRIBUTOR,
     'src.cogs.marketplace.marketplace': DEFAULT_CONTRIBUTOR,
     'src.cogs.marketplace.reviews': DEFAULT_CONTRIBUTOR,
+    'src.cogs.marketplace_enhanced': DEFAULT_CONTRIBUTOR,
+    'src.cogs.mentorship': DEFAULT_CONTRIBUTOR,
+    'src.cogs.portfolio.portfolio_manager': DEFAULT_CONTRIBUTOR,
     'src.cogs.resources.feeds': DEFAULT_CONTRIBUTOR,
+    'src.cogs.radio': DEFAULT_CONTRIBUTOR,
+    'src.cogs.rpg': DEFAULT_CONTRIBUTOR,
+    'src.cogs.external.info': DEFAULT_CONTRIBUTOR,
+    'src.cogs.external.export': DEFAULT_CONTRIBUTOR,
 }
 
 
@@ -65,57 +74,55 @@ def get_contributor(source: str | None = None) -> dict[str, str]:
     return DEFAULT_CONTRIBUTOR
 
 
-def _build_footer(contributor: dict[str, str]) -> str:
-    name = contributor.get('name', DEFAULT_CONTRIBUTOR['name'])
-    return f'Command made by {name}, you can also contribute: {REPO_URL}'
-
-
-def veka_embed(
+async def veka_embed(
     title: str | None = None,
     description: str | None = None,
     color: nextcord.Color = ORANGE,
     contributor_source: str | None = None,
+    user: nextcord.Member | nextcord.User | None = None,
+    guild: nextcord.Guild | None = None,
     timestamp: bool = True,
     footer: bool = True,
-    include_repo_link: bool = False,
 ) -> nextcord.Embed:
     contributor = get_contributor(contributor_source)
     embed = nextcord.Embed(title=title or '', description=description or '', color=color)
     embed.set_author(name=VEKA_AUTHOR_NAME, url=VEKA_AUTHOR_URL)
     if footer:
-        embed.set_footer(text=_build_footer(contributor))
+        from src.utils.footer import build_footer
+
+        footer_text = await build_footer(user, contributor, guild=guild)
+        if footer_text:
+            embed.set_footer(text=footer_text)
     if timestamp:
         embed.timestamp = datetime.utcnow()
-    if include_repo_link:
-        embed.add_field(name='Contribute', value=REPO_URL, inline=False)
     return embed
 
 
-def success_embed(
+async def success_embed(
     title: str | None = None,
     description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
-    return veka_embed(title=title, description=description, **kwargs)
+    return await veka_embed(title=title, description=description, **kwargs)
 
 
-def error_embed(
+async def error_embed(
     title: str | None = 'Error',
     description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
-    return veka_embed(title=title, description=description, **kwargs)
+    return await veka_embed(title=title, description=description, **kwargs)
 
 
-def info_embed(
+async def info_embed(
     title: str | None = 'Info',
     description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
-    return veka_embed(title=title, description=description, **kwargs)
+    return await veka_embed(title=title, description=description, **kwargs)
 
 
-def alert_embed(
+async def alert_embed(
     title: str,
     description: str,
     severity: str = 'INFO',
@@ -128,4 +135,4 @@ def alert_embed(
         'CRITICAL': nextcord.Color.dark_red(),
     }
     color = colors.get(severity.upper(), ORANGE)
-    return veka_embed(title=f'[{severity.upper()}] {title}', description=description, color=color, **kwargs)
+    return await veka_embed(title=f'[{severity.upper()}] {title}', description=description, color=color, **kwargs)
