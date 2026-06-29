@@ -37,6 +37,7 @@ EXTENSIONS = [
     'src.cogs.rpg',
     'src.cogs.external.info',
     'src.cogs.external.export',
+    'src.cogs.status',
 ]
 
 
@@ -173,13 +174,6 @@ def configure_bot_events(bot: commands.Bot) -> None:
         await bot.notifier.send_startup_summary()  # type: ignore[attr-defined]
 
         db_health_check.start()
-
-        try:
-            await bot.change_presence(
-                activity=nextcord.Activity(type=nextcord.ActivityType.watching, name='VEKA community and resources')
-            )
-        except Exception as exc:
-            logger.warning(f'Unable to set presence: {exc}')
 
         logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available}')
 
