@@ -38,8 +38,11 @@ class PortfolioManager(commands.Cog):
                 if validators.url(url):
                     project_url = url
                 else:
-                    embed = error_embed(
-                        'Invalid URL', 'Invalid URL — project will be saved without a URL.', contributor_source=__name__
+                    embed = await error_embed(
+                        'Invalid URL',
+                        'Invalid URL — project will be saved without a URL.',
+                        contributor_source=__name__,
+                        user=interaction.user,
                     )
                     await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -58,10 +61,11 @@ class PortfolioManager(commands.Cog):
                 tag_list,
             )
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Project Added',
                 description=f'**{title}** has been added to your portfolio!',
                 contributor_source=__name__,
+                user=interaction.user,
             )
             if project_url:
                 embed.add_field(name='URL', value=project_url, inline=False)
@@ -72,7 +76,12 @@ class PortfolioManager(commands.Cog):
 
         except Exception as e:
             logger.error(f'Portfolio add error: {str(e)}')
-            embed = error_embed('Add Error', 'An error occurred while adding the project.', contributor_source=__name__)
+            embed = await error_embed(
+                'Add Error',
+                'An error occurred while adding the project.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @portfolio.subcommand(name='list', description='List projects for yourself or another member')
@@ -88,14 +97,17 @@ class PortfolioManager(commands.Cog):
                 if target == interaction.user
                 else f'{target.display_name} has no projects yet.'
             )
-            embed = info_embed(title='No Projects', description=msg, contributor_source=__name__)
+            embed = await info_embed(
+                title='No Projects', description=msg, contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        embed = info_embed(
+        embed = await info_embed(
             title=f"💼 {target.display_name}'s Portfolio",
             description=f'{len(rows)} projects',
             contributor_source=__name__,
+            user=interaction.user,
         )
         for p in rows:
             tag_str = ', '.join([f'`{t}`' for t in (p['tags'] or [])]) or 'No tags'
@@ -114,7 +126,9 @@ class PortfolioManager(commands.Cog):
     async def portfolio_view_slash(self, interaction: nextcord.Interaction, project_id: str):
         row = await db.fetch_one('SELECT * FROM portfolios WHERE id = $1', project_id)
         if not row:
-            embed = error_embed('Not Found', 'Project not found.', contributor_source=__name__)
+            embed = await error_embed(
+                'Not Found', 'Project not found.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
@@ -122,7 +136,12 @@ class PortfolioManager(commands.Cog):
         owner = interaction.guild.get_member(int(owner_row['discord_id'])) if owner_row else None
         owner_name = owner.display_name if owner else 'Unknown User'
 
-        embed = info_embed(title=f'📁 {row["title"]}', description=row['description'], contributor_source=__name__)
+        embed = await info_embed(
+            title=f'📁 {row["title"]}',
+            description=row['description'],
+            contributor_source=__name__,
+            user=interaction.user,
+        )
         if row.get('url'):
             embed.add_field(name='🔗 URL', value=row['url'], inline=False)
         if row.get('tags'):
@@ -140,11 +159,19 @@ class PortfolioManager(commands.Cog):
         user = await get_or_create_user(str(interaction.user.id))
         result = await db.execute('DELETE FROM portfolios WHERE id = $1 AND user_id = $2', project_id, user['id'])
         if result == 'DELETE 1':
-            embed = success_embed(
-                title='Deleted', description=f'Project `{project_id}` deleted.', contributor_source=__name__
+            embed = await success_embed(
+                title='Deleted',
+                description=f'Project `{project_id}` deleted.',
+                contributor_source=__name__,
+                user=interaction.user,
             )
         else:
-            embed = error_embed('Not Found', 'Project not found or you do not own it.', contributor_source=__name__)
+            embed = await error_embed(
+                'Not Found',
+                'Project not found or you do not own it.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @portfolio.subcommand(name='search', description='Search projects by title, description, or tags')
@@ -162,16 +189,20 @@ class PortfolioManager(commands.Cog):
             query,
         )
         if not rows:
-            embed = info_embed(
-                title='No Results', description=f"No projects found matching '{query}'.", contributor_source=__name__
+            embed = await info_embed(
+                title='No Results',
+                description=f"No projects found matching '{query}'.",
+                contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        embed = info_embed(
+        embed = await info_embed(
             title='🔍 Search Results',
             description=f"{len(rows)} projects matching '{query}'",
             contributor_source=__name__,
+            user=interaction.user,
         )
         for p in rows:
             owner = interaction.guild.get_member(int(p['owner_discord_id']))
@@ -193,10 +224,11 @@ class PortfolioManager(commands.Cog):
 
     @commands.group(name='portfolio', invoke_without_command=True)
     async def portfolio_prefix(self, ctx):
-        embed = info_embed(
+        embed = await info_embed(
             title='💼 Portfolio Commands',
             description="Showcase your projects and view others' work! Use `/portfolio` for the best experience.",
             contributor_source=__name__,
+            user=ctx.author,
         )
         embed.add_field(
             name='Available Commands',

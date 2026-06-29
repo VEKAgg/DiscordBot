@@ -18,27 +18,29 @@ class Help(commands.Cog):
     def _get_user_role(self, interaction: nextcord.Interaction) -> Role:
         return rbac.get_user_role(interaction)
 
-    def _build_help_embed(
+    async def _build_help_embed(
         self, interaction: nextcord.Interaction | None = None, command: str | None = None
     ) -> nextcord.Embed:
         user_role = Role.USER
+        user = None
         if interaction:
+            user = getattr(interaction, 'author', None) or getattr(interaction, 'user', None)
             user_role = self._get_user_role(interaction)
 
         is_staff = ROLE_HIERARCHY.index(user_role) >= ROLE_HIERARCHY.index(Role.STAFF)
         is_founder = user_role == Role.FOUNDER
 
         if command is None:
-            embed = info_embed(
+            embed = await info_embed(
                 title='VEKA Bot Help',
                 description='Here are all available commands. Use `/help command:<name>` for details on a specific command.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=user,
             )
 
             # === UTILITY ===
             utility = '`/help` - Show this help\n`/commands` - List all commands\n`/ping` - Check bot latency\n`/hello` - Greet the bot\n`/health` - Bot health status\n`/botinfo` - Bot info'
-            embed.add_field(name='🔧 Utility', value=utility, inline=False)
+            embed.add_field(name='Utility', value=utility, inline=False)
 
             # === PROFESSIONAL NETWORKING ===
             networking = (
@@ -50,7 +52,7 @@ class Help(commands.Cog):
                 '`/connect decline @member` - Decline connection\n'
                 '`/connect list` - View your connections'
             )
-            embed.add_field(name='🤝 Professional Networking', value=networking, inline=False)
+            embed.add_field(name='Professional Networking', value=networking, inline=False)
 
             # === MARKETPLACE ===
             marketplace = (
@@ -68,7 +70,7 @@ class Help(commands.Cog):
                 '`/featured` - Featured listings\n'
                 '`/marketstats` - Marketplace stats'
             )
-            embed.add_field(name='🏪 Marketplace', value=marketplace, inline=False)
+            embed.add_field(name='Marketplace', value=marketplace, inline=False)
 
             # === REVIEWS ===
             reviews = (
@@ -78,11 +80,11 @@ class Help(commands.Cog):
                 '`/helpful <review_id>` - Mark review helpful\n'
                 '`/bump <listing_id>` - Bump listing'
             )
-            embed.add_field(name='⭐ Reviews & Reputation', value=reviews, inline=False)
+            embed.add_field(name='Reviews & Reputation', value=reviews, inline=False)
 
             # === RESOURCES ===
             resources = '`/resource sources` - List feed categories\n`/resource latest <category>` - Latest entries'
-            embed.add_field(name='📰 RSS / Resources', value=resources, inline=False)
+            embed.add_field(name='RSS / Resources', value=resources, inline=False)
 
             # === MENTORSHIP ===
             mentorship = (
@@ -93,7 +95,7 @@ class Help(commands.Cog):
                 '`/mentor complete @mentee` - Complete mentorship\n'
                 '`/mentor stats` - View stats'
             )
-            embed.add_field(name='🎓 Mentorship', value=mentorship, inline=False)
+            embed.add_field(name='Mentorship', value=mentorship, inline=False)
 
             # === PORTFOLIO ===
             portfolio = (
@@ -103,7 +105,7 @@ class Help(commands.Cog):
                 '`/portfolio delete <id>` - Delete project\n'
                 '`/portfolio search <query>` - Search projects'
             )
-            embed.add_field(name='💼 Portfolio', value=portfolio, inline=False)
+            embed.add_field(name='Portfolio', value=portfolio, inline=False)
 
             # === STAFF ONLY ===
             if is_staff:
@@ -113,7 +115,7 @@ class Help(commands.Cog):
                     '`/reloadcog <name>` - Reload a cog\n'
                     '`/panic` / `/lockdown` - Server lockdown'
                 )
-                embed.add_field(name='🛡️ Staff Commands', value=staff_cmds, inline=False)
+                embed.add_field(name='Staff Commands', value=staff_cmds, inline=False)
 
             # === FOUNDER ONLY ===
             if is_founder:
@@ -122,7 +124,7 @@ class Help(commands.Cog):
                     '`/broadcast <channel> <message>` - Send announcement\n'
                     '`/ping_squad <message>` - Ping notification squad'
                 )
-                embed.add_field(name='👑 Founder Commands', value=founder_cmds, inline=False)
+                embed.add_field(name='Founder Commands', value=founder_cmds, inline=False)
 
             # Role info
             embed.set_footer(
@@ -134,18 +136,19 @@ class Help(commands.Cog):
             cmd = self.bot.get_command(command)
 
             if cmd is None:
-                embed = info_embed(
+                embed = await info_embed(
                     title='Help: Command Not Found',
                     description=f'Command `{command}` not found. Use `/help` to see all available commands.',
                     contributor_source=__name__,
+                    user=user,
                 )
                 return embed
 
-            embed = info_embed(
+            embed = await info_embed(
                 title=f'Help: {cmd.name}',
                 description=cmd.help or 'No description available.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=user,
             )
 
             if cmd.aliases:
@@ -176,7 +179,7 @@ class Help(commands.Cog):
 
         # Build a minimal interaction-like object for role detection
         mini = SimpleNamespace(user=ctx.author, guild=ctx.guild)
-        embed = self._build_help_embed(interaction=mini, command=command)
+        embed = await self._build_help_embed(interaction=mini, command=command)
         try:
             await ctx.send(embed=embed)
         except Exception as e:
@@ -187,14 +190,14 @@ class Help(commands.Cog):
     @safe_slash_command()
     async def help_slash(self, interaction: nextcord.Interaction, command: str = None):
         """Shows help about commands and categories"""
-        embed = self._build_help_embed(interaction=interaction, command=command)
+        embed = await self._build_help_embed(interaction=interaction, command=command)
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='commands', description='List all available commands')
     @safe_slash_command()
     async def commands_slash(self, interaction: nextcord.Interaction):
         """List all available commands with role-based visibility"""
-        embed = self._build_help_embed(interaction=interaction, command=None)
+        embed = await self._build_help_embed(interaction=interaction, command=None)
         await safe_send(interaction, embed=embed, ephemeral=True)
 
 

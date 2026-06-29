@@ -47,8 +47,11 @@ class MarketplaceReviews(commands.Cog):
             )
 
             if not transaction:
-                embed = error_embed(
-                    'Not Found', 'Transaction not found or not completed yet.', contributor_source=__name__
+                embed = await error_embed(
+                    'Not Found',
+                    'Transaction not found or not completed yet.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -60,8 +63,11 @@ class MarketplaceReviews(commands.Cog):
                 reviewee_id = transaction['buyer_id']
                 is_buyer_review = False
             else:
-                embed = error_embed(
-                    'Not Allowed', 'You can only review transactions you participated in.', contributor_source=__name__
+                embed = await error_embed(
+                    'Not Allowed',
+                    'You can only review transactions you participated in.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -73,8 +79,11 @@ class MarketplaceReviews(commands.Cog):
             )
 
             if existing:
-                embed = error_embed(
-                    'Already Reviewed', "You've already reviewed this transaction.", contributor_source=__name__
+                embed = await error_embed(
+                    'Already Reviewed',
+                    "You've already reviewed this transaction.",
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -95,7 +104,12 @@ class MarketplaceReviews(commands.Cog):
 
             await self._update_seller_stats(reviewee_id)
 
-            embed = success_embed(title='Review Submitted', description=f'{rating}/5 ⭐', contributor_source=__name__)
+            embed = await success_embed(
+                title='Review Submitted',
+                description=f'{rating}/5 ⭐',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
             reviewee_discord_id = (
@@ -106,10 +120,11 @@ class MarketplaceReviews(commands.Cog):
             if reviewee:
                 try:
                     role = 'buyer' if is_buyer_review else 'seller'
-                    notify = info_embed(
+                    notify = await info_embed(
                         title='⭐ New Review Received!',
                         description=f'A {role} left you a {rating}/5 star review for **{transaction["title"]}**',
                         contributor_source=__name__,
+                        user=interaction.user,
                     )
                     if safe_comment:
                         notify.add_field(name='Comment', value=safe_comment[:500], inline=False)
@@ -119,8 +134,11 @@ class MarketplaceReviews(commands.Cog):
 
         except Exception as e:
             logger.error(f'Review error: {str(e)}')
-            embed = error_embed(
-                'Review Error', 'An error occurred while submitting the review.', contributor_source=__name__
+            embed = await error_embed(
+                'Review Error',
+                'An error occurred while submitting the review.',
+                contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -134,10 +152,11 @@ class MarketplaceReviews(commands.Cog):
             stats = await db.fetch_one('SELECT * FROM marketplace_seller_stats WHERE user_id = $1', user['id'])
 
             if not stats or stats['total_sales'] == 0:
-                embed = info_embed(
+                embed = await info_embed(
                     title='No Sales',
                     description=f"{target.display_name} hasn't made any sales yet.",
                     contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -154,7 +173,9 @@ class MarketplaceReviews(commands.Cog):
                 user['id'],
             )
 
-            embed = info_embed(title=f"🏪 {target.display_name}'s Seller Profile", contributor_source=__name__)
+            embed = await info_embed(
+                title=f"🏪 {target.display_name}'s Seller Profile", contributor_source=__name__, user=interaction.user
+            )
             embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
 
             embed.add_field(
@@ -202,7 +223,9 @@ class MarketplaceReviews(commands.Cog):
 
         except Exception as e:
             logger.error(f'Seller profile error: {str(e)}')
-            embed = error_embed('Seller Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Seller Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='reviews', description='View reviews you have received')
@@ -224,16 +247,20 @@ class MarketplaceReviews(commands.Cog):
             )
 
             if not reviews:
-                embed = info_embed(
-                    title='No Reviews', description="You haven't received any reviews yet.", contributor_source=__name__
+                embed = await info_embed(
+                    title='No Reviews',
+                    description="You haven't received any reviews yet.",
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            embed = info_embed(
+            embed = await info_embed(
                 title='📝 Your Reviews',
                 description=f"You've received {len(reviews)} review(s)",
                 contributor_source=__name__,
+                user=interaction.user,
             )
 
             for review in reviews[:5]:
@@ -249,7 +276,9 @@ class MarketplaceReviews(commands.Cog):
 
         except Exception as e:
             logger.error(f'View reviews error: {str(e)}')
-            embed = error_embed('Reviews Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Reviews Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='helpful', description='Mark a review as helpful')
@@ -271,12 +300,19 @@ class MarketplaceReviews(commands.Cog):
                 review_id,
             )
 
-            embed = success_embed(title='Thanks!', description='Thanks for your feedback!', contributor_source=__name__)
+            embed = await success_embed(
+                title='Thanks!',
+                description='Thanks for your feedback!',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Helpful vote error: {str(e)}')
-            embed = error_embed('Vote Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Vote Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='bump', description='Bump your listing to the top (once per day)')
@@ -292,12 +328,19 @@ class MarketplaceReviews(commands.Cog):
             )
 
             if not listing:
-                embed = error_embed('Not Found', 'Listing not found or not active.', contributor_source=__name__)
+                embed = await error_embed(
+                    'Not Found', 'Listing not found or not active.', contributor_source=__name__, user=interaction.user
+                )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
             if listing['seller_id'] != user['id']:
-                embed = error_embed('Not Allowed', 'You can only bump your own listings.', contributor_source=__name__)
+                embed = await error_embed(
+                    'Not Allowed',
+                    'You can only bump your own listings.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
@@ -306,24 +349,30 @@ class MarketplaceReviews(commands.Cog):
             if listing['bumped_at'] and listing['bumped_at'] > datetime.utcnow() - timedelta(hours=24):
                 time_left = listing['bumped_at'] + timedelta(hours=24) - datetime.utcnow()
                 hours = int(time_left.total_seconds() // 3600)
-                embed = error_embed(
-                    'Too Soon', f'You can bump this listing again in {hours} hours.', contributor_source=__name__
+                embed = await error_embed(
+                    'Too Soon',
+                    f'You can bump this listing again in {hours} hours.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
             await db.execute('UPDATE marketplace_listings SET bumped_at = NOW() WHERE id = $1', listing_id)
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Listing Bumped',
                 description=f'**{listing["title"]}** has been bumped to the top!',
                 contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Bump error: {str(e)}')
-            embed = error_embed('Bump Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Bump Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     # ==================== PREFIX COMMANDS ====================

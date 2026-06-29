@@ -34,7 +34,9 @@ class Mentorship(commands.Cog):
         role = role.lower()
         if role not in [r.lower() for r in MENTORSHIP_ROLES]:
             roles = ', '.join(MENTORSHIP_ROLES)
-            embed = error_embed('Invalid Role', f'Available roles: {roles}', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Role', f'Available roles: {roles}', user=interaction.user, contributor_source=__name__
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
@@ -49,22 +51,31 @@ class Mentorship(commands.Cog):
                 )
             except Exception as e:
                 logger.error(f'Error creating role: {str(e)}')
-                embed = error_embed(
-                    'Role Error', 'Failed to create role. Please check my permissions.', contributor_source=__name__
+                embed = await error_embed(
+                    'Role Error',
+                    'Failed to create role. Please check my permissions.',
+                    user=interaction.user,
+                    contributor_source=__name__,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
         try:
             await interaction.user.add_roles(guild_role)
-            embed = success_embed(
-                title='Role Added', description=f'You are now registered as a {role_name}!', contributor_source=__name__
+            embed = await success_embed(
+                title='Role Added',
+                description=f'You are now registered as a {role_name}!',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f'Error adding role: {str(e)}')
-            embed = error_embed(
-                'Role Error', 'Failed to add role. Please check my permissions.', contributor_source=__name__
+            embed = await error_embed(
+                'Role Error',
+                'Failed to add role. Please check my permissions.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -82,24 +93,31 @@ class Mentorship(commands.Cog):
     ):
         if category and category not in MENTORSHIP_CATEGORIES:
             categories = ', '.join(MENTORSHIP_CATEGORIES)
-            embed = error_embed('Invalid Category', f'Available categories: {categories}', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Category',
+                f'Available categories: {categories}',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         mentors = await self.mentorship_service.find_mentors(category or '')
 
         if not mentors:
-            embed = info_embed(
+            embed = await info_embed(
                 title='No Mentors Found',
                 description='No mentors found.' + (f' for category: {category}' if category else ''),
+                user=interaction.user,
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        embed = info_embed(
+        embed = await info_embed(
             title=f'Available Mentors{f" - {category}" if category else ""}',
             description='Here are the available mentors:',
+            user=interaction.user,
             contributor_source=__name__,
         )
 
@@ -128,29 +146,41 @@ class Mentorship(commands.Cog):
     ):
         if category not in MENTORSHIP_CATEGORIES:
             categories = ', '.join(MENTORSHIP_CATEGORIES)
-            embed = error_embed('Invalid Category', f'Available categories: {categories}', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Category',
+                f'Available categories: {categories}',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         mentor_role = nextcord.utils.get(interaction.guild.roles, name='Mentor')
         if not mentor_role or mentor_role not in mentor.roles:
-            embed = error_embed('Not a Mentor', 'This user is not registered as a mentor.', contributor_source=__name__)
+            embed = await error_embed(
+                'Not a Mentor',
+                'This user is not registered as a mentor.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         try:
             await self.mentorship_service.create_mentorship_request(str(mentor.id), str(interaction.user.id), category)
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Mentorship Request Sent',
                 description=f'Request sent to {mentor.mention} for {category} mentorship!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-            mentor_embed = info_embed(
+            mentor_embed = await info_embed(
                 title='New Mentorship Request',
                 description=f'{interaction.user.mention} has requested your mentorship in {category}!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             mentor_embed.add_field(
@@ -164,13 +194,14 @@ class Mentorship(commands.Cog):
                 pass
 
         except ValueError as e:
-            embed = error_embed('Request Failed', str(e), contributor_source=__name__)
+            embed = await error_embed('Request Failed', str(e), user=interaction.user, contributor_source=__name__)
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f'Error creating mentorship request: {str(e)}')
-            embed = error_embed(
+            embed = await error_embed(
                 'Request Failed',
                 'An error occurred while creating the mentorship request.',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
@@ -185,9 +216,10 @@ class Mentorship(commands.Cog):
             )
 
             if not pending_mentorship:
-                embed = error_embed(
+                embed = await error_embed(
                     'No Pending Request',
                     'No pending mentorship request found from this user.',
+                    user=interaction.user,
                     contributor_source=__name__,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
@@ -197,17 +229,19 @@ class Mentorship(commands.Cog):
                 pending_mentorship['id'], str(interaction.user.id)
             )
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Mentorship Started',
                 description=f'Mentorship between {interaction.user.mention} and {mentee.mention} has begun!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             embed.add_field(name='Category', value=mentorship['category'])
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-            mentee_embed = success_embed(
+            mentee_embed = await success_embed(
                 title='Mentorship Request Accepted',
                 description=f'{interaction.user.mention} has accepted your mentorship request!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             try:
@@ -216,12 +250,15 @@ class Mentorship(commands.Cog):
                 pass
 
         except ValueError as e:
-            embed = error_embed('Accept Failed', str(e), contributor_source=__name__)
+            embed = await error_embed('Accept Failed', str(e), user=interaction.user, contributor_source=__name__)
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f'Error accepting mentorship: {str(e)}')
-            embed = error_embed(
-                'Accept Failed', 'An error occurred while accepting the mentorship.', contributor_source=__name__
+            embed = await error_embed(
+                'Accept Failed',
+                'An error occurred while accepting the mentorship.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -235,8 +272,11 @@ class Mentorship(commands.Cog):
             )
 
             if not active_mentorship:
-                embed = error_embed(
-                    'No Active Mentorship', 'No active mentorship found with this user.', contributor_source=__name__
+                embed = await error_embed(
+                    'No Active Mentorship',
+                    'No active mentorship found with this user.',
+                    user=interaction.user,
+                    contributor_source=__name__,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -245,18 +285,20 @@ class Mentorship(commands.Cog):
                 active_mentorship['id'], str(interaction.user.id)
             )
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Mentorship Completed',
                 description=f'Mentorship between {interaction.user.mention} and {mentee.mention} has been completed!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             embed.add_field(name='Category', value=mentorship['category'])
             embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentor_session']))
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-            mentee_embed = success_embed(
+            mentee_embed = await success_embed(
                 title='Mentorship Completed',
                 description=f'Your mentorship with {interaction.user.mention} has been completed!',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             mentee_embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentee_completion']))
@@ -266,12 +308,15 @@ class Mentorship(commands.Cog):
                 pass
 
         except ValueError as e:
-            embed = error_embed('Complete Failed', str(e), contributor_source=__name__)
+            embed = await error_embed('Complete Failed', str(e), user=interaction.user, contributor_source=__name__)
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f'Error completing mentorship: {str(e)}')
-            embed = error_embed(
-                'Complete Failed', 'An error occurred while completing the mentorship.', contributor_source=__name__
+            embed = await error_embed(
+                'Complete Failed',
+                'An error occurred while completing the mentorship.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -282,7 +327,7 @@ class Mentorship(commands.Cog):
             user_stats = await self.mentorship_service.get_user_stats(str(interaction.user.id))
             overall_stats = await self.mentorship_service.get_mentorship_stats()
 
-            embed = info_embed(title='Mentorship Statistics', contributor_source=__name__)
+            embed = await info_embed(title='Mentorship Statistics', user=interaction.user, contributor_source=__name__)
 
             embed.add_field(
                 name='Your Stats as Mentor',
@@ -312,8 +357,11 @@ class Mentorship(commands.Cog):
 
         except Exception as e:
             logger.error(f'Error getting mentorship stats: {str(e)}')
-            embed = error_embed(
-                'Stats Error', 'An error occurred while fetching mentorship statistics.', contributor_source=__name__
+            embed = await error_embed(
+                'Stats Error',
+                'An error occurred while fetching mentorship statistics.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -322,9 +370,10 @@ class Mentorship(commands.Cog):
     @commands.group(name='mentor', invoke_without_command=True)
     async def mentor_prefix(self, ctx):
         """Mentorship commands"""
-        embed = info_embed(
+        embed = await info_embed(
             title='Mentorship Commands',
             description='Connect with mentors and mentees! Use `/mentor` for the best experience.',
+            user=ctx.author,
             contributor_source=__name__,
         )
         embed.add_field(

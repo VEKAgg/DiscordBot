@@ -41,13 +41,18 @@ class Marketplace(commands.Cog):
     ):
         """Create a new listing in the marketplace."""
         if price < 0:
-            embed = error_embed('Invalid Price', 'Price cannot be negative.', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Price', 'Price cannot be negative.', user=interaction.user, contributor_source=__name__
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         if len(title) < 3 or len(title) > 100:
-            embed = error_embed(
-                'Invalid Title', 'Title must be between 3 and 100 characters.', contributor_source=__name__
+            embed = await error_embed(
+                'Invalid Title',
+                'Title must be between 3 and 100 characters.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -72,7 +77,12 @@ class Marketplace(commands.Cog):
         await db.execute('INSERT INTO users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING', str(interaction.user.id))
         user = await db.fetch_one('SELECT id FROM users WHERE discord_id = $1', str(interaction.user.id))
         if user is None:
-            embed = error_embed('User Error', 'Could not find or create your user record.', contributor_source=__name__)
+            embed = await error_embed(
+                'User Error',
+                'Could not find or create your user record.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
@@ -90,9 +100,10 @@ class Marketplace(commands.Cog):
             image_url or None,
         )
 
-        embed = success_embed(
+        embed = await success_embed(
             title='Listing Created',
             description=f'Your item **{title}** has been posted for **${price:.2f}**.',
+            user=interaction.user,
             contributor_source=__name__,
         )
         embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
@@ -127,17 +138,19 @@ class Marketplace(commands.Cog):
         listings = await db.fetch_many(query, *args)
 
         if not listings:
-            embed = info_embed(
+            embed = await info_embed(
                 'No Listings Found',
                 'There are no active listings that match your criteria.',
+                user=interaction.user,
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        embed = info_embed(
+        embed = await info_embed(
             title='Marketplace Listings',
             description='Use `/marketplace view <id>` for more details on an item.',
+            user=interaction.user,
             contributor_source=__name__,
         )
 
@@ -165,14 +178,17 @@ class Marketplace(commands.Cog):
         )
 
         if not listing:
-            embed = error_embed('Not Found', 'The listing could not be found.', contributor_source=__name__)
+            embed = await error_embed(
+                'Not Found', 'The listing could not be found.', user=interaction.user, contributor_source=__name__
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         seller = self.bot.get_user(int(listing['discord_id']))
-        embed = info_embed(
+        embed = await info_embed(
             title=f'{listing["emoji"] or "📦"} {listing["title"]}',
             description=listing['description'] or 'No description provided.',
+            user=interaction.user,
             contributor_source=__name__,
         )
         embed.add_field(name='Price', value=f'${listing["price"]:.2f}', inline=True)
@@ -201,11 +217,21 @@ class Marketplace(commands.Cog):
         )
 
         if not listings:
-            embed = info_embed('No Listings', "You don't have any marketplace listings.", contributor_source=__name__)
+            embed = await info_embed(
+                'No Listings',
+                "You don't have any marketplace listings.",
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        embed = info_embed('Your Listings', 'Here are your recent marketplace listings.', contributor_source=__name__)
+        embed = await info_embed(
+            'Your Listings',
+            'Here are your recent marketplace listings.',
+            user=interaction.user,
+            contributor_source=__name__,
+        )
         for listing in listings:
             embed.add_field(
                 name=listing['title'],
@@ -228,26 +254,39 @@ class Marketplace(commands.Cog):
         )
 
         if not listing:
-            embed = error_embed('Not Found', 'The listing could not be found.', contributor_source=__name__)
+            embed = await error_embed(
+                'Not Found', 'The listing could not be found.', user=interaction.user, contributor_source=__name__
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         if listing['discord_id'] != str(interaction.user.id):
-            embed = error_embed(
-                'Permission Denied', 'You can only withdraw your own listings.', contributor_source=__name__
+            embed = await error_embed(
+                'Permission Denied',
+                'You can only withdraw your own listings.',
+                user=interaction.user,
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         if listing['status'] != 'active':
-            embed = error_embed('Invalid Action', 'Only active listings can be withdrawn.', contributor_source=__name__)
+            embed = await error_embed(
+                'Invalid Action',
+                'Only active listings can be withdrawn.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         await db.execute("UPDATE marketplace_listings SET status = 'withdrawn' WHERE id = $1", listing_id)
 
-        embed = success_embed(
-            'Listing Withdrawn', f'Listing `{listing_id}` has been withdrawn successfully.', contributor_source=__name__
+        embed = await success_embed(
+            'Listing Withdrawn',
+            f'Listing `{listing_id}` has been withdrawn successfully.',
+            user=interaction.user,
+            contributor_source=__name__,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 

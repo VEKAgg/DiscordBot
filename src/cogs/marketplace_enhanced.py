@@ -42,16 +42,20 @@ class MarketplaceEnhanced(commands.Cog):
             listings = await self._run_search(filters)
 
             if not listings:
-                embed = info_embed(
-                    title='No Results', description='No items found matching your search.', contributor_source=__name__
+                embed = await info_embed(
+                    title='No Results',
+                    description='No items found matching your search.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            embed = info_embed(
+            embed = await info_embed(
                 title=f'🔍 Search Results ({len(listings)} items)',
                 description=f'Query: **{search_term or "All items"}**',
                 contributor_source=__name__,
+                user=interaction.user,
             )
 
             for listing in listings[:10]:
@@ -72,7 +76,9 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'Search error: {str(e)}')
-            embed = error_embed('Search Error', 'An error occurred while searching.', contributor_source=__name__)
+            embed = await error_embed(
+                'Search Error', 'An error occurred while searching.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='watch', description='Add a listing to your watchlist')
@@ -83,7 +89,9 @@ class MarketplaceEnhanced(commands.Cog):
             listing = await db.fetch_one('SELECT title, price FROM marketplace_listings WHERE id = $1', listing_id)
 
             if not listing:
-                embed = error_embed('Not Found', 'Listing not found.', contributor_source=__name__)
+                embed = await error_embed(
+                    'Not Found', 'Listing not found.', contributor_source=__name__, user=interaction.user
+                )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
@@ -93,16 +101,19 @@ class MarketplaceEnhanced(commands.Cog):
                 listing_id,
             )
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Added to Watchlist',
                 description=f"**{listing['title']}** added to your watchlist! You'll be notified of price changes.",
                 contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Watchlist error: {str(e)}')
-            embed = error_embed('Watchlist Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Watchlist Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='unwatch', description='Remove a listing from your watchlist')
@@ -114,14 +125,19 @@ class MarketplaceEnhanced(commands.Cog):
                 'DELETE FROM marketplace_watchlist WHERE user_id = $1 AND listing_id = $2', user['id'], listing_id
             )
 
-            embed = success_embed(
-                title='Removed', description='Item removed from your watchlist.', contributor_source=__name__
+            embed = await success_embed(
+                title='Removed',
+                description='Item removed from your watchlist.',
+                contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
         except Exception as e:
             logger.error(f'Unwatch error: {str(e)}')
-            embed = error_embed('Unwatch Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Unwatch Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='watchlist', description='View all items you are watching')
@@ -141,18 +157,20 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if not items:
-                embed = info_embed(
+                embed = await info_embed(
                     title='Your Watchlist',
                     description="You're not watching any items. Use `/watch` to track items!",
                     contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            embed = info_embed(
+            embed = await info_embed(
                 title='📋 Your Watchlist',
                 description=f"You're tracking {len(items)} item(s)",
                 contributor_source=__name__,
+                user=interaction.user,
             )
 
             for item in items:
@@ -164,7 +182,9 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'View watchlist error: {str(e)}')
-            embed = error_embed('Watchlist Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Watchlist Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='offer', description='Make an offer on a listing')
@@ -182,28 +202,39 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if not listing:
-                embed = error_embed(
-                    'Not Found', 'Listing not found or no longer available.', contributor_source=__name__
+                embed = await error_embed(
+                    'Not Found',
+                    'Listing not found or no longer available.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
             if str(interaction.user.id) == listing['seller_discord_id']:
-                embed = error_embed(
-                    'Invalid Action', "You can't make an offer on your own item!", contributor_source=__name__
+                embed = await error_embed(
+                    'Invalid Action',
+                    "You can't make an offer on your own item!",
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
             offered_price = InputValidator.validate_price(price)
             if offered_price is None:
-                embed = error_embed('Invalid Price', 'Invalid price format.', contributor_source=__name__)
+                embed = await error_embed(
+                    'Invalid Price', 'Invalid price format.', contributor_source=__name__, user=interaction.user
+                )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
             if not listing['is_negotiable']:
-                embed = error_embed(
-                    'Not Negotiable', 'This seller is not accepting offers on this item.', contributor_source=__name__
+                embed = await error_embed(
+                    'Not Negotiable',
+                    'This seller is not accepting offers on this item.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -213,7 +244,9 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if not is_clean:
-                embed = error_embed('Offer Blocked', fraud_reason, contributor_source=__name__)
+                embed = await error_embed(
+                    'Offer Blocked', fraud_reason, contributor_source=__name__, user=interaction.user
+                )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
@@ -229,20 +262,22 @@ class MarketplaceEnhanced(commands.Cog):
                 expires,
             )
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Offer Sent',
                 description=f'Your offer of **${offered_price}** has been sent! The seller has 3 days to respond.',
                 contributor_source=__name__,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
             seller = interaction.guild.get_member(int(listing['seller_discord_id']))
             if seller:
                 try:
-                    seller_embed = info_embed(
+                    seller_embed = await info_embed(
                         title='💰 New Offer Received!',
                         description=f'Someone offered **${offered_price}** for **{listing["title"]}**',
                         contributor_source=__name__,
+                        user=interaction.user,
                     )
                     if message:
                         seller_embed.add_field(name='Message', value=message[:500], inline=False)
@@ -254,7 +289,12 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'Offer error: {str(e)}')
-            embed = error_embed('Offer Error', 'An error occurred while making the offer.', contributor_source=__name__)
+            embed = await error_embed(
+                'Offer Error',
+                'An error occurred while making the offer.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='myoffers', description='View offers on your listings or offers you have made')
@@ -282,7 +322,7 @@ class MarketplaceEnhanced(commands.Cog):
                 user['id'],
             )
 
-            embed = info_embed(title='💰 Your Offers', contributor_source=__name__)
+            embed = await info_embed(title='💰 Your Offers', contributor_source=__name__, user=interaction.user)
 
             if received_offers:
                 offers_text = ''
@@ -309,7 +349,9 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'View offers error: {str(e)}')
-            embed = error_embed('Offers Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Offers Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='featured', description='View featured and trending listings')
@@ -331,18 +373,20 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if not featured:
-                embed = info_embed(
+                embed = await info_embed(
                     title='No Featured Listings',
                     description='No featured listings yet. Be the first to post something amazing!',
                     contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            embed = info_embed(
+            embed = await info_embed(
                 title='🔥 Featured & Trending',
                 description='Popular items from trusted sellers',
                 contributor_source=__name__,
+                user=interaction.user,
             )
 
             for i, listing in enumerate(featured[:5], 1):
@@ -360,7 +404,9 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'Featured error: {str(e)}')
-            embed = error_embed('Featured Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Featured Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='marketstats', description='View marketplace statistics')
@@ -377,8 +423,11 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if stats is None:
-                embed = error_embed(
-                    'Stats Error', 'Could not retrieve marketplace statistics.', contributor_source=__name__
+                embed = await error_embed(
+                    'Stats Error',
+                    'Could not retrieve marketplace statistics.',
+                    contributor_source=__name__,
+                    user=interaction.user,
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
@@ -401,7 +450,9 @@ class MarketplaceEnhanced(commands.Cog):
                    LIMIT 5"""
             )
 
-            embed = info_embed(title='📊 Marketplace Statistics', contributor_source=__name__)
+            embed = await info_embed(
+                title='📊 Marketplace Statistics', contributor_source=__name__, user=interaction.user
+            )
 
             embed.add_field(
                 name='📦 Listings',
@@ -431,7 +482,9 @@ class MarketplaceEnhanced(commands.Cog):
 
         except Exception as e:
             logger.error(f'Stats error: {str(e)}')
-            embed = error_embed('Stats Error', 'An error occurred.', contributor_source=__name__)
+            embed = await error_embed(
+                'Stats Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     # ==================== PREFIX COMMANDS ====================
