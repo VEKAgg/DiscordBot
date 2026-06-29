@@ -24,6 +24,9 @@ DEFAULT_CONTRIBUTOR = {'name': 'shifu', 'discord_id': '941009204045557842'}
 CONTRIBUTION_COOLDOWN_HOURS = 24
 NEW_USER_DAYS = 30
 
+# External server CTA
+_JOIN_VEKA_CTA = 'Join the main VEKA community: {invite_url}'
+
 # ============================================================
 # Footer templates — no emojis anywhere
 # ============================================================
@@ -137,6 +140,7 @@ def _is_new_user(member: nextcord.Member) -> bool:
 async def build_footer(
     user: nextcord.Member | nextcord.User | None,
     contributor: dict[str, str] | None = None,
+    guild: nextcord.Guild | None = None,
 ) -> str:
     """
     Build dynamic footer text based on user role and conditions.
@@ -146,29 +150,44 @@ async def build_footer(
     - Active Pro: active pro message
     - New user (joined < 30 days): rotating tip
     - Regular user: contribution link (once/day) or ad
+    - External servers: append "Join VEKA" CTA
     """
+    from src.config.config import MAIN_GUILD_ID, MAIN_SERVER_INVITE_URL
+
     if user is None:
         contrib = contributor or DEFAULT_CONTRIBUTOR
-        return _COMPACT_FOOTER.format(**contrib)
+        footer = _COMPACT_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     contrib = contributor or DEFAULT_CONTRIBUTOR
 
-    # Resolve guild from Member or User
-    guild = getattr(user, 'guild', None)
+    # Resolve guild from Member or User if not provided
+    if guild is None:
+        guild = getattr(user, 'guild', None)
 
     role = _get_user_role(user, guild)
 
-    # Staff+ get no footer
+    # Staff+ get no footer (but still show CTA for external servers)
     if ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF):
+        if guild and guild.id != MAIN_GUILD_ID:
+            return _JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)
         return ''
 
     # Donator footer
     if role == Role.DONATOR:
-        return _DONATOR_FOOTER.format(**contrib)
+        footer = _DONATOR_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     # Active Pro footer
     if role == Role.ACTIVE_PRO:
-        return _ACTIVE_PRO_FOOTER.format(**contrib)
+        footer = _ACTIVE_PRO_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     # New user check (by server join date)
     if isinstance(user, nextcord.Member) and _is_new_user(user):
@@ -177,7 +196,10 @@ async def build_footer(
         tip = _NEW_USER_TIPS[tip_idx]
         # Advance tip index for next time
         await _upsert_footer_state(user.id, tip_index=tip_idx + 1)
-        return _NEW_USER_FOOTER.format(**contrib, tip=tip)
+        footer = _NEW_USER_FOOTER.format(**contrib, tip=tip)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     # Regular user: contribution link once/day, then ads
     state = await _get_footer_state(user.id)
@@ -192,37 +214,64 @@ async def build_footer(
 
     if show_contribution:
         await _upsert_footer_state(user.id, last_contribution_prompt=now)
-        return _FULL_FOOTER.format(**contrib, repo=REPO_URL)
+        footer = _FULL_FOOTER.format(**contrib, repo=REPO_URL)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     # Ad rotation
     ad = _ADS[user.id % len(_ADS)]
-    return f'{_COMPACT_FOOTER.format(**contrib)} | {ad}'
+    footer = f'{_COMPACT_FOOTER.format(**contrib)} | {ad}'
+    if guild and guild.id != MAIN_GUILD_ID:
+        footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+    return footer
 
 
 def build_footer_sync(
     user: nextcord.Member | nextcord.User | None,
     contributor: dict[str, str] | None = None,
+    guild: nextcord.Guild | None = None,
 ) -> str:
     """
     Synchronous fallback for contexts where async DB access is not possible.
     Uses role-based logic only (no DB persistence, no tip rotation).
     """
+    from src.config.config import MAIN_GUILD_ID, MAIN_SERVER_INVITE_URL
+
     if user is None:
         contrib = contributor or DEFAULT_CONTRIBUTOR
-        return _COMPACT_FOOTER.format(**contrib)
+        footer = _COMPACT_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
     contrib = contributor or DEFAULT_CONTRIBUTOR
-    guild = getattr(user, 'guild', None)
+    if guild is None:
+        guild = getattr(user, 'guild', None)
     role = _get_user_role(user, guild)
 
     if ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF):
+        if guild and guild.id != MAIN_GUILD_ID:
+            return _JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)
         return ''
     if role == Role.DONATOR:
-        return _DONATOR_FOOTER.format(**contrib)
+        footer = _DONATOR_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
     if role == Role.ACTIVE_PRO:
-        return _ACTIVE_PRO_FOOTER.format(**contrib)
+        footer = _ACTIVE_PRO_FOOTER.format(**contrib)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
     if isinstance(user, nextcord.Member) and _is_new_user(user):
         tip = _NEW_USER_TIPS[0]
-        return _NEW_USER_FOOTER.format(**contrib, tip=tip)
+        footer = _NEW_USER_FOOTER.format(**contrib, tip=tip)
+        if guild and guild.id != MAIN_GUILD_ID:
+            footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+        return footer
 
-    return _FULL_FOOTER.format(**contrib, repo=REPO_URL)
+    footer = _FULL_FOOTER.format(**contrib, repo=REPO_URL)
+    if guild and guild.id != MAIN_GUILD_ID:
+        footer = f'{footer} | {_JOIN_VEKA_CTA.format(invite_url=MAIN_SERVER_INVITE_URL)}'
+    return footer

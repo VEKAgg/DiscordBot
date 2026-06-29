@@ -517,6 +517,7 @@ class RPGManager(commands.Cog):
                 description='Could not fetch user data.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -542,6 +543,7 @@ class RPGManager(commands.Cog):
             description=description,
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -558,6 +560,7 @@ class RPGManager(commands.Cog):
                 description='No activity recorded yet. Start chatting to earn XP!',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
@@ -591,6 +594,7 @@ class RPGManager(commands.Cog):
             description=description,
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -618,6 +622,7 @@ class RPGManager(commands.Cog):
             description=f'Leaderboard will auto-update in {channel.mention} every {LEADERBOARD_UPDATE_INTERVAL // 60} minutes.',
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -648,6 +653,7 @@ class RPGManager(commands.Cog):
                 description='Could not fetch activity data.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -658,6 +664,7 @@ class RPGManager(commands.Cog):
                 description='No activity recorded for this user yet.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -705,6 +712,7 @@ class RPGManager(commands.Cog):
             description=description,
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
