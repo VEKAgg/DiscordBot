@@ -58,18 +58,22 @@ class Marketplace(commands.Cog):
             return
 
         # Fetch category ID based on the provided name
-        category_record = await db.fetch_one('SELECT id FROM marketplace_categories WHERE name = $1 LIMIT 1', category)
+        category_record = await db.fetch_one('SELECT id FROM marketplace_categories WHERE name = $1', category)
         if not category_record:
-            # Fallback to inserting category if it doesn't exist to ensure robustness
-            cat_id = f'CAT_{category.upper()}'
+            # Fallback: insert with SERIAL auto-generated id, then re-fetch
             await db.execute(
-                "INSERT INTO marketplace_categories (id, name, emoji, is_active) VALUES ($1, $2, '📦', TRUE) ON CONFLICT DO NOTHING",
-                cat_id,
+                "INSERT INTO marketplace_categories (name, emoji, is_active) VALUES ($1, '📦', TRUE) ON CONFLICT DO NOTHING",
                 category,
             )
-            category_id = cat_id
-        else:
-            category_id = category_record['id']
+            category_record = await db.fetch_one('SELECT id FROM marketplace_categories WHERE name = $1', category)
+            if not category_record:
+                embed = error_embed(
+                    'Category Error', 'Could not find or create the category.', contributor_source=__name__
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
+        category_id = category_record['id']
 
         listing_id = f'MP{int(datetime.datetime.utcnow().timestamp())}'
 
