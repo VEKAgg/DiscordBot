@@ -7,7 +7,7 @@ from nextcord.ext import commands
 from src.config.config import ENVIRONMENT
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_only
 
 logger = logging.getLogger('VEKA.admin.health')
 
@@ -107,7 +107,7 @@ class Health(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def featurestatus(self, interaction: nextcord.Interaction):
         feature_status = {
@@ -129,7 +129,7 @@ class Health(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='startupchecks', description='Show results of initial boot checks')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def startupchecks(self, interaction: nextcord.Interaction):
         embed = info_embed(
@@ -150,7 +150,7 @@ class Health(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='reloadcog', description='Reload a bot cog extension')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
         extension = self._resolve_extension(cog_name)

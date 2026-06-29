@@ -47,13 +47,32 @@ class RateLimiter:
                 return limit
         return self.default_limits['default']
 
-    async def check(self, ctx) -> bool:
+    def _has_bypass(self, member) -> bool:
+        """Check if a member has cooldown bypass via their role"""
+        if member is None:
+            return False
+        try:
+            from src.utils.security.rbac import rbac
+
+            ctx_like = type('Ctx', (), {'author': member, 'guild': getattr(member, 'guild', None)})()
+            role = rbac.get_user_role(ctx_like)
+            return rbac.has_cooldown_bypass(role)
+        except Exception:
+            return False
+
+    async def check(self, ctx, member=None) -> bool:
         """
         Check if user can execute command
         Returns True if allowed, False if rate limited
         """
         user_id = str(ctx.author.id)
         command = ctx.command.name if ctx.command else 'unknown'
+
+        # Check for cooldown bypass
+        target = member or ctx.author
+        if self._has_bypass(target):
+            return True
+
         key = self._get_key(user_id, command)
 
         async with self.lock:
@@ -79,11 +98,15 @@ class RateLimiter:
                 await ctx.send(f'⏱️ Please wait {retry_after:.0f} seconds before using this command again.')
                 return False
 
-    async def is_rate_limited(self, user_id: str, command: str) -> tuple[bool, float]:
+    async def is_rate_limited(self, user_id: str, command: str, member=None) -> tuple[bool, float]:
         """
         Check if user is rate limited without consuming token
         Returns (is_limited, retry_after_seconds)
         """
+        # Check for cooldown bypass
+        if self._has_bypass(member):
+            return False, 0
+
         key = self._get_key(user_id, command)
 
         async with self.lock:
@@ -155,7 +178,8 @@ def rate_limit(command_type: str = 'default'):
 
             if ctx:
                 user_id = str(ctx.author.id)
-                is_limited, retry_after = await rate_limiter.is_rate_limited(user_id, command_type)
+                member = ctx.author if hasattr(ctx, 'author') else ctx.user
+                is_limited, retry_after = await rate_limiter.is_rate_limited(user_id, command_type, member=member)
 
                 if is_limited:
                     await ctx.send(f'⏱️ Rate limited! Try again in {retry_after:.0f} seconds.')
