@@ -23,6 +23,7 @@ class Basic(commands.Cog):
             description=f'Hello there, {ctx.author.mention}! How can I help you today?',
             contributor_source=__name__,
             user=ctx.author,
+            guild=ctx.guild,
         )
         await ctx.send(embed=embed)
 
@@ -36,6 +37,7 @@ class Basic(commands.Cog):
             description=f'Bot latency: **{latency}ms**',
             contributor_source=__name__,
             user=ctx.author,
+            guild=ctx.guild,
         )
         await ctx.send(embed=embed)
 
@@ -48,6 +50,7 @@ class Basic(commands.Cog):
             description=f'Hello there, {interaction.user.mention}! How can I help you today?',
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -61,6 +64,7 @@ class Basic(commands.Cog):
             description=f'Bot latency: **{latency}ms**',
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 

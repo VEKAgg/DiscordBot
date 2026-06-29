@@ -22,6 +22,7 @@ from src.config.config import (
 )
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.guild_gate import owner_in_external_only
 from src.utils.safety import admin_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.radio')
@@ -329,12 +330,14 @@ class RadioManager(commands.Cog):
             description=description,
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @radio_group.subcommand(name='start', description='Start the radio stream (admin only)')
     @safe_slash_command()
     @admin_only()
+    @owner_in_external_only()
     async def radio_start(self, interaction: nextcord.Interaction):
         """Manually start the radio in the configured channel."""
         if self._is_connected():
@@ -343,6 +346,7 @@ class RadioManager(commands.Cog):
                 description='The radio is already streaming. Use `/radio stop` first.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -353,6 +357,7 @@ class RadioManager(commands.Cog):
                 description='Set `RADIO_VOICE_CHANNEL_ID` in your `.env` file to use the radio.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -366,6 +371,7 @@ class RadioManager(commands.Cog):
                 description='The radio is now streaming.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
         else:
             embed = await error_embed(
@@ -373,12 +379,14 @@ class RadioManager(commands.Cog):
                 description='Could not connect to the voice channel. Check logs for details.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @radio_group.subcommand(name='stop', description='Stop the radio stream (admin only)')
     @safe_slash_command()
     @admin_only()
+    @owner_in_external_only()
     async def radio_stop(self, interaction: nextcord.Interaction):
         """Manually stop the radio."""
         if not self._is_connected():
@@ -387,6 +395,7 @@ class RadioManager(commands.Cog):
                 description='The radio is not currently streaming.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -400,12 +409,14 @@ class RadioManager(commands.Cog):
             description='The radio stream has been stopped.',
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @radio_group.subcommand(name='move', description='Move the radio to a different voice channel (admin only)')
     @safe_slash_command()
     @admin_only()
+    @owner_in_external_only()
     async def radio_move(
         self,
         interaction: nextcord.Interaction,
@@ -427,6 +438,7 @@ class RadioManager(commands.Cog):
                 description=f'Now streaming in **{channel.name}**',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
         else:
             embed = await error_embed(
@@ -434,6 +446,7 @@ class RadioManager(commands.Cog):
                 description=f'Could not connect to **{channel.name}**. Check logs for details.',
                 contributor_source=__name__,
                 user=interaction.user,
+                guild=interaction.guild,
             )
         await safe_send(interaction, embed=embed, ephemeral=True)
 

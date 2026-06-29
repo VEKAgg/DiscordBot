@@ -12,6 +12,25 @@ from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_
 logger = logging.getLogger('VEKA.admin.health')
 
 
+def _get_system_stats() -> dict:
+    """Get CPU, memory, and thread stats via psutil."""
+    try:
+        import psutil
+
+        process = psutil.Process()
+        mem = process.memory_info()
+        cpu_count = psutil.cpu_count()
+        return {
+            'cpu_percent': psutil.cpu_percent(interval=0.1),
+            'cpu_count': cpu_count or 0,
+            'mem_used_mb': round(mem.rss / 1024 / 1024, 1),
+            'mem_percent': round(process.memory_percent(), 1),
+            'threads': process.num_threads(),
+        }
+    except ImportError:
+        return {'cpu_percent': 0, 'cpu_count': 0, 'mem_used_mb': 0, 'mem_percent': 0, 'threads': 0}
+
+
 class Health(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -50,6 +69,7 @@ class Health(commands.Cog):
             description='Current runtime and infrastructure status for VEKA.',
             contributor_source=__name__,
             user=user,
+            guild=getattr(target, 'guild', None),
         )
         embed.add_field(name='Status', value=status, inline=False)
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
@@ -64,6 +84,21 @@ class Health(commands.Cog):
         embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
         embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
+
+        # System stats
+        stats = _get_system_stats()
+        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
+        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
+        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
+        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+
+        # Export status
+        export_active = runtime_state.alert_state_cache.get('export_active', False)
+        export_progress = runtime_state.alert_state_cache.get('export_progress', '')
+        if export_active:
+            embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
+        else:
+            embed.add_field(name='Active Export', value='None', inline=True)
 
         try:
             if isinstance(target, nextcord.Interaction):
@@ -96,6 +131,7 @@ class Health(commands.Cog):
             description='Basic runtime and environment details for the VEKA bot.',
             contributor_source=__name__,
             user=interaction.user,
+            guild=interaction.guild,
         )
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
         embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
@@ -104,6 +140,19 @@ class Health(commands.Cog):
         embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
         embed.add_field(name='Status', value='Degraded' if self._is_degraded() else 'Healthy', inline=False)
+
+        # System stats
+        stats = _get_system_stats()
+        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
+        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
+        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
+        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+
+        # Export status
+        export_active = runtime_state.alert_state_cache.get('export_active', False)
+        export_progress = runtime_state.alert_state_cache.get('export_progress', '')
+        if export_active:
+            embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 

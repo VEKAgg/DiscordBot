@@ -102,3 +102,10 @@ ACTIVITY_ROLES: dict[str, int] = {
     'active_star': 2000,  # role name: 'Active Star'
 }
 ACTIVITY_ROLE_INACTIVITY_DAYS = 14
+
+# --- Main Server Configuration ---
+MAIN_GUILD_ID = 1088553066334273537
+MAIN_SERVER_INVITE_URL = os.getenv('MAIN_SERVER_INVITE_URL', 'https://discord.gg/veka')
+
+# --- Owner ID (hardcoded for guild gating) ---
+OWNER_DISCORD_ID = 941009204045557842

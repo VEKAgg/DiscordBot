@@ -30,6 +30,10 @@ _STATIC_CONTRIBUTOR_MAP: dict[str, dict[str, str]] = {
     'src.cogs.mentorship': DEFAULT_CONTRIBUTOR,
     'src.cogs.portfolio.portfolio_manager': DEFAULT_CONTRIBUTOR,
     'src.cogs.resources.feeds': DEFAULT_CONTRIBUTOR,
+    'src.cogs.radio': DEFAULT_CONTRIBUTOR,
+    'src.cogs.rpg': DEFAULT_CONTRIBUTOR,
+    'src.cogs.external.info': DEFAULT_CONTRIBUTOR,
+    'src.cogs.external.export': DEFAULT_CONTRIBUTOR,
 }
 
 
@@ -76,6 +80,7 @@ async def veka_embed(
     color: nextcord.Color = ORANGE,
     contributor_source: str | None = None,
     user: nextcord.Member | nextcord.User | None = None,
+    guild: nextcord.Guild | None = None,
     timestamp: bool = True,
     footer: bool = True,
 ) -> nextcord.Embed:
@@ -85,7 +90,7 @@ async def veka_embed(
     if footer:
         from src.utils.footer import build_footer
 
-        footer_text = await build_footer(user, contributor)
+        footer_text = await build_footer(user, contributor, guild=guild)
         if footer_text:
             embed.set_footer(text=footer_text)
     if timestamp:
