@@ -12,6 +12,7 @@ dependencies = [
     "feedparser==6.0.12",
     "beautifulsoup4==4.15.0",
     "validators==0.35.0",
+    "yt-dlp>=2024.1.1",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +28,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["F", "I", "UP", "B", "W", "ARG"]
-ignore = ["E501"]
+ignore = ["E501", "B008"]
 
 [tool.ruff.format]
 quote-style = "single"
