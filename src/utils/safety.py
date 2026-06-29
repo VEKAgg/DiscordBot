@@ -1,10 +1,11 @@
-import asyncio
-import functools
-import logging
-from collections.abc import Callable, Coroutine
-from typing import Any
+"""
+Safety Utilities for VEKA Bot
+Provides error handling, admin checks, and safe message sending
+"""
 
-import aiohttp
+import logging
+from functools import wraps
+
 import nextcord
 from nextcord.ext import commands
 
@@ -13,9 +14,13 @@ from src.core.runtime_state import runtime_state
 
 logger = logging.getLogger('VEKA.safety')
 
+# ============================================================
+# Custom Exceptions
+# ============================================================
+
 
 class DatabaseUnavailableError(RuntimeError):
-    """Raised when the database is unavailable."""
+    """Raised when a command requires a database but it is unavailable."""
 
 
 class ValidationError(ValueError):
@@ -23,214 +28,276 @@ class ValidationError(ValueError):
 
 
 class ExternalRequestError(RuntimeError):
-    """Raised for network or external service issues."""
+    """Raised when an external service (RSS, API) fails."""
 
 
-def is_response_sent(interaction: nextcord.Interaction) -> bool:
-    return interaction.response.is_done()
+# ============================================================
+# Formatting / context helpers
+# ============================================================
 
 
-def format_context(source: Any) -> str:
-    details = []
+def format_context(source) -> str:
+    """Extract command, guild, channel, user from a Context or Interaction."""
     if isinstance(source, commands.Context):
-        details.append(f'command={source.command}')
-        details.append(f'guild_id={getattr(source.guild, "id", None)}')
-        details.append(f'channel_id={getattr(source.channel, "id", None)}')
-        details.append(f'user_id={getattr(source.author, "id", None)}')
-    elif isinstance(source, nextcord.Interaction):
-        details.append(f'command={source.application_command.name if source.application_command else None}')
-        details.append(f'guild_id={getattr(source.guild, "id", None)}')
-        details.append(f'channel_id={getattr(source.channel, "id", None)}')
-        details.append(f'user_id={getattr(source.user, "id", None)}')
-    else:
-        details.append(f'source={type(source).__name__}')
-    return ' | '.join(str(item) for item in details if item is not None)
+        return (
+            f'command={source.command} '
+            f'guild_id={source.guild.id if source.guild else None} '
+            f'channel_id={source.channel.id} '
+            f'user_id={source.author.id}'
+        )
+    if isinstance(source, nextcord.Interaction):
+        return (
+            f'command={source.application_command.name if source.application_command else None} '
+            f'guild_id={source.guild.id if source.guild else None} '
+            f'channel_id={source.channel.id if source.channel else None} '
+            f'user_id={source.user.id}'
+        )
+    return str(source)
 
 
-def map_exception_to_message(error: BaseException) -> str:
+def map_exception_to_message(error: Exception) -> str:
+    """Map an exception to a user-friendly message string."""
     if isinstance(error, DatabaseUnavailableError):
-        return 'The database is temporarily unavailable. Please try again later.'
+        return 'The database is currently unavailable. Please try again later.'
     if isinstance(error, ValidationError):
-        return str(error) or 'Invalid input. Please check your command and try again.'
-    if isinstance(error, asyncio.TimeoutError | aiohttp.ClientError):
-        return 'External service unavailable or timed out. Please try again later.'
+        return f'Invalid input: {error}'
+    if isinstance(error, ExternalRequestError):
+        return 'An external service is currently unavailable. Please try again later.'
+    if isinstance(error, commands.CommandNotFound):
+        return 'Command not found. Use `/help` to see available commands.'
     if isinstance(error, commands.MissingPermissions):
         return 'You do not have permission to use this command.'
-    if isinstance(error, commands.MissingRole):
-        return 'You do not have the required role to use this command.'
     if isinstance(error, commands.CommandOnCooldown):
-        return f'This command is on cooldown. Try again in {error.retry_after:.1f}s.'
-    return 'An internal error occurred while processing your request.'
+        return f'This command is on cooldown. Try again in {error.retry_after:.0f} seconds.'
+    return 'An unexpected error occurred. Please try again later.'
 
 
-def _is_admin_user(user: nextcord.abc.User, guild: nextcord.Guild | None = None) -> bool:
+# ============================================================
+# Admin / permission checks
+# ============================================================
+
+
+def _is_admin_user(user, guild=None) -> bool:
+    """Check if a user has admin privileges via ID lists or Discord permissions."""
     if user is None:
         return False
-    if getattr(user, 'id', None) in OWNER_IDS or getattr(user, 'id', None) in ADMIN_IDS:
+    if user.id in OWNER_IDS or user.id in ADMIN_IDS:
         return True
     if isinstance(user, nextcord.Member):
         if user.guild_permissions.administrator:
             return True
-    elif guild is not None and hasattr(user, 'id'):
+    elif guild is not None:
         member = guild.get_member(user.id)
         if member and member.guild_permissions.administrator:
             return True
     return False
 
 
+def _is_staff_user(user, guild=None) -> bool:
+    """Check if a user has staff privileges via ID lists or RBAC role."""
+    if user is None:
+        return False
+    # Admin/owner implies staff
+    if _is_admin_user(user, guild):
+        return True
+    try:
+        from types import SimpleNamespace
+
+        from src.utils.security.rbac import Role, rbac
+
+        ctx = SimpleNamespace(author=user, guild=guild)
+        role = rbac.get_user_role(ctx)
+        return ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF)
+    except Exception:
+        return False
+
+
+# Import here to avoid circular import at module level
+from src.utils.security.rbac import ROLE_HIERARCHY  # noqa: E402
+
+
 def admin_only():
+    """Decorator: only allow admin/owner users (by ID or Discord permission)."""
+
     def predicate(ctx_or_interaction):
         if isinstance(ctx_or_interaction, commands.Context):
-            return _is_admin_user(ctx_or_interaction.author, ctx_or_interaction.guild)  # type: ignore[arg-type]
+            return _is_admin_user(ctx_or_interaction.author, ctx_or_interaction.guild)
         if isinstance(ctx_or_interaction, nextcord.Interaction):
-            return _is_admin_user(ctx_or_interaction.user, ctx_or_interaction.guild)  # type: ignore[arg-type]
+            return _is_admin_user(ctx_or_interaction.user, ctx_or_interaction.guild)
         return False
 
     return commands.check(predicate)
 
 
-async def safe_send(
-    target: commands.Context | nextcord.Interaction,
-    content: str | None = None,
-    embed: nextcord.Embed | None = None,
-    ephemeral: bool = False,
-) -> None:
-    if isinstance(target, nextcord.Interaction):
-        try:
-            if is_response_sent(target):
-                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral)  # type: ignore[arg-type]
-            else:
-                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral)  # type: ignore[arg-type]
-        except Exception as exc:
-            logger.error('Failed to send interaction response: %s | %s', exc, format_context(target), exc_info=True)
-    elif isinstance(target, commands.Context):
-        try:
-            await target.send(content=content, embed=embed)  # type: ignore[arg-type]
-        except Exception as exc:
-            logger.error('Failed to send context response: %s | %s', exc, format_context(target), exc_info=True)
-    else:
-        logger.warning('Safe send called with unsupported target type: %s', type(target).__name__)
+def staff_only():
+    """Decorator: only allow staff or higher users (by ID, Discord role, or admin status)."""
+
+    def predicate(ctx_or_interaction):
+        if isinstance(ctx_or_interaction, commands.Context):
+            return _is_staff_user(ctx_or_interaction.author, ctx_or_interaction.guild)
+        if isinstance(ctx_or_interaction, nextcord.Interaction):
+            return _is_staff_user(ctx_or_interaction.user, ctx_or_interaction.guild)
+        return False
+
+    return commands.check(predicate)
 
 
-def log_error(error: BaseException, source: Any, module: str | None = None) -> None:
-    context = format_context(source)
-    module_name = f'{module} | ' if module else ''
-    logger.error('%sError handling request: %s | %s', module_name, error, context, exc_info=True)
+# ============================================================
+# Safe sending
+# ============================================================
 
 
-def safe_command(
-    requires_db: bool = False,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
-    def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any):
-            ctx = args[1] if len(args) > 1 else None
-            try:
-                if requires_db and not runtime_state.db_available:
-                    raise DatabaseUnavailableError()
-                return await func(*args, **kwargs)
-            except commands.CommandError:
-                raise
-            except Exception as error:
-                log_error(error, ctx, module=getattr(func, '__module__', None))
-                message = map_exception_to_message(error)
-                from src.utils.embeds import error_embed
-
-                embed = error_embed(
-                    title='Command Error', description=message, contributor_source=getattr(func, '__module__', None)
-                )
-                if isinstance(ctx, commands.Context):
-                    await safe_send(ctx, embed=embed)
-                return None
-
-        return wrapper
-
-    return decorator
-
-
-def safe_slash_command(
-    requires_db: bool = False,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
-    def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
-        @functools.wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any):
-            interaction = args[1] if len(args) > 1 else None
-            try:
-                if requires_db and not runtime_state.db_available:
-                    raise DatabaseUnavailableError()
-                return await func(*args, **kwargs)
-            except commands.CommandError:
-                raise
-            except Exception as error:
-                log_error(error, interaction, module=getattr(func, '__module__', None))
-                message = map_exception_to_message(error)
-                from src.utils.embeds import error_embed
-
-                embed = error_embed(
-                    title='Command Error', description=message, contributor_source=getattr(func, '__module__', None)
-                )
-                if isinstance(interaction, nextcord.Interaction):
-                    await safe_send(interaction, embed=embed, ephemeral=True)
-                return None
-
-        return wrapper
-
-    return decorator
-
-
-async def run_safe_task(
-    coro: Coroutine[Any, Any, Any],
-    *,
-    name: str | None = None,
-    logger_obj: logging.Logger | None = None,
-    bot: nextcord.Client | None = None,
-) -> Any | None:
-    if logger_obj is None:
-        logger_obj = logger
-    task_name = name or getattr(coro, '__name__', 'anonymous_task')
+async def safe_send(target, content=None, *, embed=None, ephemeral=False):
+    """Send a message safely, handling both Context and Interaction."""
     try:
-        result = await coro
+        if isinstance(target, commands.Context):
+            await target.send(content=content, embed=embed)
+        elif isinstance(target, nextcord.Interaction):
+            if target.response.is_done():
+                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+            else:
+                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+    except Exception as exc:
+        logger.error('safe_send failed: %s', exc, exc_info=True)
 
-        # Reset failure count on success
-        fail_key = f'task_fails_{task_name}'
-        if runtime_state.alert_state_cache.get(fail_key, 0) > 0:
-            runtime_state.alert_state_cache[fail_key] = 0
-            if bot and hasattr(bot, 'notifier'):
-                bot.notifier.clear_cooldown(f'task_alert_{task_name}')
-                await bot.notifier.send_alert(
-                    title='Task Recovered',
-                    description=f'Background task `{task_name}` has recovered and completed successfully.',
-                    severity='INFO',
+
+# ============================================================
+# Error logging
+# ============================================================
+
+
+def log_error(error: Exception, source, module: str = 'unknown') -> None:
+    """Structured error logging."""
+    ctx_str = format_context(source)
+    logger.error(
+        'Unhandled error in %s | %s | %s: %s',
+        module,
+        ctx_str,
+        type(error).__name__,
+        error,
+        exc_info=True,
+    )
+
+
+# ============================================================
+# Command wrappers
+# ============================================================
+
+
+def safe_command(requires_db: bool = False):
+    """Decorator for prefix commands: catches exceptions and sends error embed."""
+
+    def decorator(func):
+        @commands.command()
+        async def wrapper(self, ctx, *args, **kwargs):
+            if requires_db and not runtime_state.db_available:
+                embed = nextcord.Embed(
+                    title='⚠️ Database Unavailable',
+                    description='This command requires the database, which is currently offline. Please try again later.',
+                    color=nextcord.Color.red(),
                 )
+                await safe_send(ctx, embed=embed)
+                return
+            try:
+                return await func(self, ctx, *args, **kwargs)
+            except commands.CommandError:
+                raise
+            except Exception as error:
+                log_error(error, ctx, module=func.__module__)
+                msg = map_exception_to_message(error)
+                embed = nextcord.Embed(title='❌ Error', description=msg, color=nextcord.Color.red())
+                await safe_send(ctx, embed=embed)
 
-        return result
-    except Exception as error:
-        logger_obj.error('Background task failed: %s | %s', task_name, error, exc_info=True)
+        wrapper.__name__ = func.__name__
+        wrapper.__doc__ = func.__doc__
+        return wrapper
 
-        fail_key = f'task_fails_{task_name}'
-        fails = runtime_state.alert_state_cache.get(fail_key, 0) + 1
-        runtime_state.alert_state_cache[fail_key] = fails
+    return decorator
 
-        if fails >= 3 and bot and hasattr(bot, 'notifier'):
+
+def safe_slash_command(requires_db: bool = False):
+    """Decorator for slash commands: catches exceptions and sends ephemeral error embed."""
+
+    def decorator(func):
+        @nextcord.slash_command()
+        async def wrapper(self, interaction, *args, **kwargs):
+            if requires_db and not runtime_state.db_available:
+                embed = nextcord.Embed(
+                    title='⚠️ Database Unavailable',
+                    description='This command requires the database, which is currently offline. Please try again later.',
+                    color=nextcord.Color.red(),
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+            try:
+                return await func(self, interaction, *args, **kwargs)
+            except commands.CommandError:
+                raise
+            except Exception as error:
+                log_error(error, interaction, module=func.__module__)
+                msg = map_exception_to_message(error)
+                embed = nextcord.Embed(title='❌ Error', description=msg, color=nextcord.Color.red())
+                await safe_send(interaction, embed=embed, ephemeral=True)
+
+        wrapper.__name__ = func.__name__
+        wrapper.__doc__ = func.__doc__
+        return wrapper
+
+    return decorator
+
+
+# ============================================================
+# Background task wrapper
+# ============================================================
+
+
+async def run_safe_task(coro, name: str, logger_obj, bot=None):
+    """Run a coroutine with failure tracking and alerting."""
+    try:
+        await coro
+    except Exception as exc:
+        cache = runtime_state.alert_state_cache
+        key = f'task_fail:{name}'
+        count = cache.get(key, 0) + 1
+        cache[key] = count
+
+        logger_obj.error('Task %s failed (consecutive failures: %d): %s', name, count, exc, exc_info=True)
+
+        if count == 3 and bot and hasattr(bot, 'notifier') and bot.notifier:
             await bot.notifier.send_alert(
-                title='Background Task Failing',
-                description=f'Task `{task_name}` has failed {fails} consecutive times.\n**Error:** {str(error)[:500]}',
+                title=f'Background Task Failing: {name}',
+                description=f'Task `{name}` has failed {count} consecutive times.\nLast error: `{exc}`',
                 severity='ERROR',
-                dedupe_key=f'task_alert_{task_name}',
-                cooldown_minutes=60,
+                dedupe_key=key,
+                cooldown_minutes=30,
             )
+        return
 
-        return None
+    # On success, clear failure count and send recovery if needed
+    cache = runtime_state.alert_state_cache
+    key = f'task_fail:{name}'
+    prev_failures = cache.pop(key, 0)
+
+    if prev_failures >= 3 and bot and hasattr(bot, 'notifier') and bot.notifier:
+        bot.notifier.clear_cooldown(key)
+        await bot.notifier.send_alert(
+            title=f'Task Recovered: {name}',
+            description=f'Task `{name}` has recovered after {prev_failures} failures.',
+            severity='INFO',
+            dedupe_key=f'task_recovered:{name}',
+            cooldown_minutes=60,
+        )
 
 
-def safe_background_task(
-    name: str | None = None,
-) -> Callable[[Callable[..., Coroutine[Any, Any, Any]]], Callable[..., Coroutine[Any, Any, Any]]]:
-    def decorator(func: Callable[..., Coroutine[Any, Any, Any]]):
-        @functools.wraps(func)
-        async def wrapper(self, *args: Any, **kwargs: Any):
-            bot = getattr(self, 'bot', None)
-            return await run_safe_task(func(self, *args, **kwargs), name=name or func.__name__, bot=bot)
+def safe_background_task(name: str):
+    """Decorator for background tasks: wraps with run_safe_task."""
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            bot = self.bot if hasattr(self, 'bot') else None
+            logger_obj = logging.getLogger(f'VEKA.task.{name}')
+            await run_safe_task(func(self, *args, **kwargs), name, logger_obj, bot)
 
         return wrapper
 

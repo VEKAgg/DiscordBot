@@ -1,10 +1,12 @@
 import logging
+from types import SimpleNamespace
 
 import nextcord
 from nextcord.ext import commands
 
 from src.utils.embeds import info_embed
 from src.utils.safety import safe_send, safe_slash_command
+from src.utils.security.rbac import Role, rbac
 
 logger = logging.getLogger('VEKA.admin.help')
 
@@ -13,88 +15,119 @@ class Help(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    def _build_help_embed(self, command: str | None = None) -> nextcord.Embed:
+    def _get_user_role(self, interaction: nextcord.Interaction) -> Role:
+        return rbac.get_user_role(interaction)
+
+    def _build_help_embed(
+        self, interaction: nextcord.Interaction | None = None, command: str | None = None
+    ) -> nextcord.Embed:
+        user_role = Role.USER
+        if interaction:
+            user_role = self._get_user_role(interaction)
+
+        is_staff = ROLE_HIERARCHY.index(user_role) >= ROLE_HIERARCHY.index(Role.STAFF)
+        is_founder = user_role == Role.FOUNDER
+
         if command is None:
             embed = info_embed(
-                title='🌟 VEKA Bot Help',
-                description='Here are all the available command categories. Use `/help command:<command>` for detailed information about a specific command.',
+                title='VEKA Bot Help',
+                description='Here are all available commands. Use `/help command:<name>` for details on a specific command.',
                 contributor_source=__name__,
                 include_repo_link=True,
             )
 
-            networking = """
-            `/profile setup` - Create your professional profile
-            `/profile edit` - Edit your profile
-            `/profile view [member]` - View a profile
-            `/connect request @member [message]` - Send a connection request
-            `/connect accept @member` - Accept a connection
-            `/connect decline @member` - Decline a connection
-            `/connect list` - View your connections
-            """
-            embed.add_field(name='🤝 Professional Networking', value=networking.strip(), inline=False)
+            # === UTILITY ===
+            utility = '`/help` - Show this help\n`/commands` - List all commands\n`/ping` - Check bot latency\n`/hello` - Greet the bot\n`/health` - Bot health status\n`/botinfo` - Bot info'
+            embed.add_field(name='🔧 Utility', value=utility, inline=False)
 
-            marketplace = """
-            `/marketplace post` - Create a new listing
-            `/marketplace browse [category]` - Browse active listings
-            `/marketplace view <id>` - View listing details
-            `/marketplace mylistings` - View your listings
-            `/marketplace withdraw <id>` - Withdraw a listing
-            `/search <query>` - Advanced search with filters
-            `/watch <id>` - Add listing to watchlist
-            `/unwatch <id>` - Remove from watchlist
-            `/watchlist` - View your watchlist
-            `/offer <id> <price> [message]` - Make an offer
-            `/myoffers` - View your offers
-            `/featured` - View featured listings
-            `/marketstats` - Marketplace statistics
-            `/review <id> <rating> [comment]` - Leave a review
-            `/seller [member]` - View seller profile
-            `/reviews` - View your reviews
-            `/bump <listing_id>` - Bump listing to top
-            """
-            embed.add_field(name='🏪 Marketplace', value=marketplace.strip(), inline=False)
+            # === PROFESSIONAL NETWORKING ===
+            networking = (
+                '`/profile setup` - Create your profile\n'
+                '`/profile edit` - Edit your profile\n'
+                '`/profile view [member]` - View a profile\n'
+                '`/connect request @member [msg]` - Send connection request\n'
+                '`/connect accept @member` - Accept connection\n'
+                '`/connect decline @member` - Decline connection\n'
+                '`/connect list` - View your connections'
+            )
+            embed.add_field(name='🤝 Professional Networking', value=networking, inline=False)
 
-            resources = """
-            `/resource sources` - List available feed categories
-            `/resource latest <category>` - Show latest entries from a category
-            """
-            embed.add_field(name='📰 RSS / Resources', value=resources.strip(), inline=False)
+            # === MARKETPLACE ===
+            marketplace = (
+                '`/marketplace post` - Create a listing\n'
+                '`/marketplace browse [category]` - Browse listings\n'
+                '`/marketplace view <id>` - View listing\n'
+                '`/marketplace mylistings` - Your listings\n'
+                '`/marketplace withdraw <id>` - Withdraw listing\n'
+                '`/search <query>` - Advanced search\n'
+                '`/watch <id>` - Add to watchlist\n'
+                '`/unwatch <id>` - Remove from watchlist\n'
+                '`/watchlist` - Your watchlist\n'
+                '`/offer <id> <price> [msg]` - Make an offer\n'
+                '`/myoffers` - Your offers\n'
+                '`/featured` - Featured listings\n'
+                '`/marketstats` - Marketplace stats'
+            )
+            embed.add_field(name='🏪 Marketplace', value=marketplace, inline=False)
 
-            mentorship = """
-            `/mentor register <role>` - Register as mentor or mentee
-            `/mentor list [category]` - List available mentors
-            `/mentor request @mentor <category>` - Request mentorship
-            `/mentor accept @mentee` - Accept a mentorship request
-            `/mentor complete @mentee` - Complete a mentorship
-            `/mentor stats` - View mentorship statistics
-            """
-            embed.add_field(name='🎓 Mentorship', value=mentorship.strip(), inline=False)
+            # === REVIEWS ===
+            reviews = (
+                '`/review <id> <1-5> [comment]` - Leave review\n'
+                '`/seller [member]` - View seller profile\n'
+                '`/reviews` - Your reviews\n'
+                '`/helpful <review_id>` - Mark review helpful\n'
+                '`/bump <listing_id>` - Bump listing'
+            )
+            embed.add_field(name='⭐ Reviews & Reputation', value=reviews, inline=False)
 
-            portfolio = """
-            `/portfolio add` - Add a new project
-            `/portfolio list [@user]` - List projects
-            `/portfolio view <id>` - View project details
-            `/portfolio delete <id>` - Delete your project
-            `/portfolio search <query>` - Search projects
-            """
-            embed.add_field(name='💼 Portfolio', value=portfolio.strip(), inline=False)
+            # === RESOURCES ===
+            resources = '`/resource sources` - List feed categories\n`/resource latest <category>` - Latest entries'
+            embed.add_field(name='📰 RSS / Resources', value=resources, inline=False)
 
-            fun = """
-            `/roll [NdN]` - Roll dice (default 1d6)
-            `/flip` - Coin flip
-            `/8ball <question>` - Magic 8-ball
-            `/rps <choice>` - Rock, Paper, Scissors
-            `/choose <a>, <b>, ...` - Random choice from list
-            """
-            embed.add_field(name='🎲 Fun', value=fun.strip(), inline=False)
+            # === MENTORSHIP ===
+            mentorship = (
+                '`/mentor register <role>` - Register as mentor/mentee\n'
+                '`/mentor list [category]` - List mentors\n'
+                '`/mentor request @mentor <category>` - Request mentorship\n'
+                '`/mentor accept @mentee` - Accept request\n'
+                '`/mentor complete @mentee` - Complete mentorship\n'
+                '`/mentor stats` - View stats'
+            )
+            embed.add_field(name='🎓 Mentorship', value=mentorship, inline=False)
 
-            utility = """
-            `/help [command]` - Show this help message
-            `/ping` - Check bot's response time
-            `/health` - Show bot health status
-            `/botinfo` - Show bot info
-            """
-            embed.add_field(name='🔧 Utility', value=utility.strip(), inline=False)
+            # === PORTFOLIO ===
+            portfolio = (
+                '`/portfolio add` - Add project\n'
+                '`/portfolio list [@user]` - List projects\n'
+                '`/portfolio view <id>` - View project\n'
+                '`/portfolio delete <id>` - Delete project\n'
+                '`/portfolio search <query>` - Search projects'
+            )
+            embed.add_field(name='💼 Portfolio', value=portfolio, inline=False)
+
+            # === STAFF ONLY ===
+            if is_staff:
+                staff_cmds = (
+                    '`/featurestatus` - Feature status\n'
+                    '`/startupchecks` - Boot checks\n'
+                    '`/reloadcog <name>` - Reload a cog\n'
+                    '`/panic` / `/lockdown` - Server lockdown'
+                )
+                embed.add_field(name='🛡️ Staff Commands', value=staff_cmds, inline=False)
+
+            # === FOUNDER ONLY ===
+            if is_founder:
+                founder_cmds = (
+                    '`/panic` / `/lockdown` - Toggle server lockdown\n'
+                    '`/broadcast <channel> <message>` - Send announcement\n'
+                    '`/ping_squad <message>` - Ping notification squad'
+                )
+                embed.add_field(name='👑 Founder Commands', value=founder_cmds, inline=False)
+
+            # Role info
+            embed.set_footer(
+                text=f'Your role: {user_role.value.title()} | Roles with cooldown bypass: Intern, Donator, Active Pro, Staff, Founder'
+            )
 
         else:
             command = command.lower().strip('!')
@@ -109,7 +142,7 @@ class Help(commands.Cog):
                 return embed
 
             embed = info_embed(
-                title=f'📖 Help: {cmd.name}',
+                title=f'Help: {cmd.name}',
                 description=cmd.help or 'No description available.',
                 contributor_source=__name__,
                 include_repo_link=True,
@@ -124,12 +157,12 @@ class Help(commands.Cog):
             embed.add_field(name='Usage', value=f'`{usage}`', inline=False)
 
             examples = {
-                'ping': "`!ping` - Check the bot's response time",
-                'help': '`!help` - Show the help command overview\n`!help ping` - Show usage for ping',
-                'profile': '`!profile` - View your professional profile\n`!setupprofile` - Set up your profile',
-                'connect': '`!connect @user` - Send a connection request',
-                'marketplace': '`!marketplace post` - Create a new listing\n`!marketplace browse` - Browse active listings',
-                'review': '`!review 123 5 Great seller` - Leave a marketplace review',
+                'ping': '`/ping` - Check bot latency',
+                'help': '`/help` - Show overview\n`/help ping` - Show ping usage',
+                'profile': '`/profile setup` - Create profile\n`/profile view` - View profile',
+                'connect': '`/connect request @user` - Send request',
+                'marketplace': '`/marketplace post` - Create listing\n`/marketplace browse` - Browse',
+                'review': '`/review 123 5 Great seller` - Leave review',
             }
 
             if cmd.name in examples:
@@ -138,21 +171,35 @@ class Help(commands.Cog):
         return embed
 
     @commands.command(name='help')
-    async def help(self, ctx, command: str = None):
+    async def help_prefix(self, ctx, command: str = None):
         """Shows help about commands and categories"""
-        embed = self._build_help_embed(command)
+
+        # Build a minimal interaction-like object for role detection
+        mini = SimpleNamespace(user=ctx.author, guild=ctx.guild)
+        embed = self._build_help_embed(interaction=mini, command=command)
         try:
             await ctx.send(embed=embed)
         except Exception as e:
             logger.error(f'Error in help command: {str(e)}')
-            await ctx.send('An error occurred while showing the help message. Please try again later.')
+            await ctx.send('An error occurred while showing the help message.')
 
     @nextcord.slash_command(name='help', description='Shows help about commands and categories')
     @safe_slash_command()
     async def help_slash(self, interaction: nextcord.Interaction, command: str = None):
         """Shows help about commands and categories"""
-        embed = self._build_help_embed(command)
+        embed = self._build_help_embed(interaction=interaction, command=command)
         await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @nextcord.slash_command(name='commands', description='List all available commands')
+    @safe_slash_command()
+    async def commands_slash(self, interaction: nextcord.Interaction):
+        """List all available commands with role-based visibility"""
+        embed = self._build_help_embed(interaction=interaction, command=None)
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+
+# Import at module level for use in _build_help_embed
+from src.utils.security.rbac import ROLE_HIERARCHY  # noqa: E402
 
 
 def setup(bot):
