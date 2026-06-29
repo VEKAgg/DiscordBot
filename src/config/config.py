@@ -27,10 +27,10 @@ DATABASE_URL = os.getenv('DATABASE_URL') or (
     f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
 )
 
-# Mentorship Configuration (stubs for unloaded cog)
-MENTORSHIP_CATEGORIES: list[str] = []
-MENTORSHIP_ROLES: dict[str, str] = {}
-POINTS_CONFIG: dict[str, int] = {}
+# Mentorship Configuration
+MENTORSHIP_CATEGORIES: list[str] = ['programming', 'design', 'career', 'devops', 'data_science', 'other']
+MENTORSHIP_ROLES: dict[str, str] = {'mentor': 'Mentor', 'mentee': 'Mentee'}
+POINTS_CONFIG: dict[str, int] = {'mentor_session': 50, 'mentee_completion': 25, 'first_mentorship': 100}
 
 # RSS Feed Configuration
 RSS_FEEDS = {

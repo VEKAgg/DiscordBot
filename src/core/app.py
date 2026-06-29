@@ -26,7 +26,12 @@ EXTENSIONS = [
     'src.cogs.admin.health',
     'src.cogs.networking.networking',
     'src.cogs.marketplace.marketplace',
+    'src.cogs.marketplace.reviews',
     'src.cogs.resources.feeds',
+    'src.cogs.fun',
+    'src.cogs.mentorship',
+    'src.cogs.marketplace_enhanced',
+    'src.cogs.portfolio.portfolio_manager',
 ]
 
 

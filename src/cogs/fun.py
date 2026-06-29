@@ -11,27 +11,107 @@ class Fun(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    # ==================== PREFIX COMMANDS ====================
+
     @commands.command(name='roll')
     async def roll(self, ctx, dice: str = '1d6'):
         """Roll dice in NdN format, e.g., 3d6"""
+        embed = self._roll_dice(dice)
+        if embed:
+            await ctx.send(embed=embed)
+
+    @commands.command(name='flip')
+    async def flip(self, ctx):
+        """Flip a coin"""
+        result = random.choice(['Heads', 'Tails'])
+        emoji = '🌝' if result == 'Heads' else '🌚'
+        embed = nextcord.Embed(
+            title=f'{emoji} Coin Flip', description=f'The coin landed on **{result}**!', color=nextcord.Color.orange()
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name='8ball')
+    async def eight_ball(self, ctx, *, question: str):
+        """Ask the magic 8-ball a question"""
+        embed = self._magic_8ball(question)
+        await ctx.send(embed=embed)
+
+    @commands.command(name='rps')
+    async def rps(self, ctx, choice: str):
+        """Play Rock, Paper, Scissors"""
+        embed = self._rps_game(choice)
+        if embed:
+            await ctx.send(embed=embed)
+
+    @commands.command(name='choose')
+    async def choose(self, ctx, *, choices: str):
+        """Choose between multiple options (comma-separated)"""
+        embed = self._choose_option(choices)
+        if embed:
+            await ctx.send(embed=embed)
+
+    # ==================== SLASH COMMANDS ====================
+
+    @nextcord.slash_command(name='roll', description='Roll dice in NdN format (e.g. 3d6)')
+    async def roll_slash(self, interaction: nextcord.Interaction, dice: str = '1d6'):
+        """Roll dice in NdN format, e.g., 3d6"""
+        embed = self._roll_dice(dice)
+        if embed:
+            await interaction.response.send_message(embed=embed)
+
+    @nextcord.slash_command(name='flip', description='Flip a coin')
+    async def flip_slash(self, interaction: nextcord.Interaction):
+        """Flip a coin"""
+        result = random.choice(['Heads', 'Tails'])
+        emoji = '🌝' if result == 'Heads' else '🌚'
+        embed = nextcord.Embed(
+            title=f'{emoji} Coin Flip', description=f'The coin landed on **{result}**!', color=nextcord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @nextcord.slash_command(name='8ball', description='Ask the magic 8-ball a question')
+    async def eight_ball_slash(self, interaction: nextcord.Interaction, question: str):
+        """Ask the magic 8-ball a question"""
+        embed = self._magic_8ball(question)
+        await interaction.response.send_message(embed=embed)
+
+    @nextcord.slash_command(name='rps', description='Play Rock, Paper, Scissors')
+    async def rps_slash(
+        self,
+        interaction: nextcord.Interaction,
+        choice: str = nextcord.SlashOption(
+            name='choice', description='Your choice', choices={'Rock': 'rock', 'Paper': 'paper', 'Scissors': 'scissors'}
+        ),
+    ):
+        """Play Rock, Paper, Scissors"""
+        embed = self._rps_game(choice)
+        if embed:
+            await interaction.response.send_message(embed=embed)
+
+    @nextcord.slash_command(name='choose', description='Choose between comma-separated options')
+    async def choose_slash(self, interaction: nextcord.Interaction, options: str):
+        """Choose between multiple options (comma-separated)"""
+        embed = self._choose_option(options)
+        if embed:
+            await interaction.response.send_message(embed=embed)
+
+    # ==================== SHARED LOGIC ====================
+
+    def _roll_dice(self, dice: str) -> nextcord.Embed | None:
         try:
             number, sides = map(int, dice.lower().split('d'))
             if number <= 0 or sides <= 0:
-                await ctx.send('❌ Please use positive numbers!')
-                return
+                return None
             if number > 100:
-                await ctx.send("❌ You can't roll more than 100 dice at once!")
-                return
+                return None
             if sides > 100:
-                await ctx.send("❌ Dice can't have more than 100 sides!")
-                return
+                return None
 
             rolls = [random.randint(1, sides) for _ in range(number)]
             total = sum(rolls)
 
             embed = nextcord.Embed(title='🎲 Dice Roll Results', color=nextcord.Color.orange())
 
-            # Format rolls nicely
             if len(rolls) <= 15:
                 roll_str = ' + '.join(map(str, rolls))
                 if len(rolls) > 1:
@@ -41,26 +121,12 @@ class Fun(commands.Cog):
                 embed.add_field(name='Rolls', value=f'Rolled {number}d{sides} (too many to display)', inline=False)
 
             embed.add_field(name='Total', value=f'**{total}**', inline=False)
-
-            await ctx.send(embed=embed)
+            return embed
 
         except ValueError:
-            await ctx.send('❌ Format has to be in NdN! Example: 3d6')
+            return None
 
-    @commands.command(name='flip')
-    async def flip(self, ctx):
-        """Flip a coin"""
-        result = random.choice(['Heads', 'Tails'])
-        emoji = '🌝' if result == 'Heads' else '🌚'
-
-        embed = nextcord.Embed(
-            title=f'{emoji} Coin Flip', description=f'The coin landed on **{result}**!', color=nextcord.Color.orange()
-        )
-        await ctx.send(embed=embed)
-
-    @commands.command(name='8ball')
-    async def eight_ball(self, ctx, *, question: str):
-        """Ask the magic 8-ball a question"""
+    def _magic_8ball(self, question: str) -> nextcord.Embed:
         responses = [
             'It is certain.',
             'It is decidedly so.',
@@ -83,28 +149,21 @@ class Fun(commands.Cog):
             'Outlook not so good.',
             'Very doubtful.',
         ]
-
         response = random.choice(responses)
-
         embed = nextcord.Embed(title='🔮 Magic 8-Ball', color=nextcord.Color.orange())
         embed.add_field(name='Question', value=question, inline=False)
         embed.add_field(name='Answer', value=response, inline=False)
+        return embed
 
-        await ctx.send(embed=embed)
-
-    @commands.command(name='rps')
-    async def rps(self, ctx, choice: str):
-        """Play Rock, Paper, Scissors"""
+    def _rps_game(self, choice: str) -> nextcord.Embed | None:
         choice = choice.lower()
         choices = ['rock', 'paper', 'scissors']
 
         if choice not in choices:
-            await ctx.send('❌ Please choose rock, paper, or scissors!')
-            return
+            return None
 
         bot_choice = random.choice(choices)
 
-        # Determine winner
         if choice == bot_choice:
             result = "It's a tie!"
             color = nextcord.Color.orange()
@@ -119,35 +178,27 @@ class Fun(commands.Cog):
             result = 'I win!'
             color = nextcord.Color.red()
 
-        # Get emojis
         emojis = {'rock': '🪨', 'paper': '📄', 'scissors': '✂️'}
 
         embed = nextcord.Embed(title='✂️ Rock, Paper, Scissors', description=result, color=color)
         embed.add_field(name='Your Choice', value=f'{emojis[choice]} {choice.capitalize()}', inline=True)
         embed.add_field(name='My Choice', value=f'{emojis[bot_choice]} {bot_choice.capitalize()}', inline=True)
+        return embed
 
-        await ctx.send(embed=embed)
-
-    @commands.command(name='choose')
-    async def choose(self, ctx, *, choices: str):
-        """Choose between multiple options (comma-separated)"""
+    def _choose_option(self, choices: str) -> nextcord.Embed | None:
         options = [option.strip() for option in choices.split(',') if option.strip()]
 
         if len(options) < 2:
-            await ctx.send('❌ Please provide at least two options separated by commas!')
-            return
+            return None
 
         chosen = random.choice(options)
 
         embed = nextcord.Embed(
             title='🎯 Choice Maker', description=f'I choose...\n\n**{chosen}**!', color=nextcord.Color.orange()
         )
-
-        # List all options
         options_text = '\n'.join([f'• {option}' for option in options])
         embed.add_field(name='Options', value=options_text, inline=False)
-
-        await ctx.send(embed=embed)
+        return embed
 
 
 def setup(bot):
