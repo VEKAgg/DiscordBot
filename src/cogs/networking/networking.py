@@ -52,12 +52,12 @@ class Networking(commands.Cog):
             return 'Not set'
         return '\n'.join(f'<{link}>' for link in links.splitlines())
 
-    def _format_profile(self, target: nextcord.Member, profile: dict) -> nextcord.Embed:
-        embed = info_embed(
+    async def _format_profile(self, target: nextcord.Member, profile: dict, user: nextcord.Member) -> nextcord.Embed:
+        embed = await info_embed(
             title=f"{target.display_name}'s Professional Profile",
             description='A concise overview of community networking details.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=user,
         )
         embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
         embed.add_field(name='Title', value=profile.get('title') or 'Not set', inline=False)
@@ -83,11 +83,11 @@ class Networking(commands.Cog):
             if target == interaction.user
             else f'{target.display_name} has not set up a profile yet.'
         )
-        embed = error_embed(
+        embed = await error_embed(
             title='Profile Not Found',
             description=message,
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -113,19 +113,19 @@ class Networking(commands.Cog):
                 'looking_for': looking_for.strip() if looking_for else None,
             }
             await self.svc.upsert_profile(str(interaction.user.id), profile_data)
-            embed = success_embed(
+            embed = await success_embed(
                 title='Profile Saved',
                 description='Your professional profile is now up to date.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
         except ValueError as exc:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Invalid Profile Data',
                 description=str(exc),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -142,11 +142,11 @@ class Networking(commands.Cog):
     ):
         """Update profile fields while preserving existing values."""
         if not any([title, skills, bio, links, looking_for]):
-            embed = error_embed(
+            embed = await error_embed(
                 title='Nothing to Update',
                 description='Provide at least one field to edit: title, skills, bio, links, or looking_for.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -166,19 +166,19 @@ class Networking(commands.Cog):
                 raise ValueError('A title is required for your profile.')
 
             await self.svc.upsert_profile(str(interaction.user.id), profile_data)
-            embed = success_embed(
+            embed = await success_embed(
                 title='Profile Updated',
                 description='Your profile changes have been saved.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
         except ValueError as exc:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Invalid Profile Data',
                 description=str(exc),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -196,7 +196,7 @@ class Networking(commands.Cog):
             await self._send_profile_missing(interaction, target)  # type: ignore[arg-type]
             return
 
-        embed = self._format_profile(target, profile)  # type: ignore[arg-type]
+        embed = await self._format_profile(target, profile, user=interaction.user)  # type: ignore[arg-type]
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @connect.subcommand(name='request', description='Send a connection request')
@@ -210,21 +210,21 @@ class Networking(commands.Cog):
         """Send a connection request to another member."""
         try:
             await self.svc.create_request(str(interaction.user.id), str(member.id), message or '')
-            embed = success_embed(
+            embed = await success_embed(
                 title='Connection Request Sent',
                 description=f'Your request has been sent to {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             if message:
                 embed.add_field(name='Message', value=message, inline=False)
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-            notify = info_embed(
+            notify = await info_embed(
                 title='New Connection Request',
                 description=f'{interaction.user.mention} would like to connect with you.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=member,
             )
             if message:
                 notify.add_field(name='Message', value=message, inline=False)
@@ -238,11 +238,11 @@ class Networking(commands.Cog):
             except nextcord.Forbidden:
                 logger.info('Unable to DM %s for connection request', member.id)
         except ValueError as exc:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Unable to Send Request',
                 description=str(exc),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -252,11 +252,11 @@ class Networking(commands.Cog):
         """Accept a pending connection request from another member."""
         request = await self.svc.get_pending_request(str(member.id), str(interaction.user.id))
         if not request:
-            embed = error_embed(
+            embed = await error_embed(
                 title='No Pending Request',
                 description=f'No pending request found from {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -264,19 +264,19 @@ class Networking(commands.Cog):
         await self.svc.update_request_status(request['id'], 'accepted')
         await self.svc.create_connection(str(interaction.user.id), str(member.id))
 
-        embed = success_embed(
+        embed = await success_embed(
             title='Connection Accepted',
             description=f'You are now connected with {member.display_name}.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-        notify = success_embed(
+        notify = await success_embed(
             title='Connection Accepted',
             description=f'{interaction.user.mention} accepted your connection request.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=member,
         )
         try:
             await member.send(embed=notify)
@@ -289,29 +289,29 @@ class Networking(commands.Cog):
         """Decline a pending connection request from another member."""
         request = await self.svc.get_pending_request(str(member.id), str(interaction.user.id))
         if not request:
-            embed = error_embed(
+            embed = await error_embed(
                 title='No Pending Request',
                 description=f'No pending request found from {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
         await self.svc.update_request_status(request['id'], 'declined')
-        embed = success_embed(
+        embed = await success_embed(
             title='Connection Declined',
             description=f'You declined the request from {member.display_name}.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-        notify = error_embed(
+        notify = await error_embed(
             title='Connection Declined',
             description=f'{interaction.user.mention} declined your connection request.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=member,
         )
         try:
             await member.send(embed=notify)
@@ -332,11 +332,11 @@ class Networking(commands.Cog):
             r for r in requests if r['requester_discord_id'] == str(interaction.user.id) and r['status'] == 'pending'
         ]
 
-        embed = info_embed(
+        embed = await info_embed(
             title='Connection Status',
             description='Overview of your pending and accepted networking connections.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
 
         if pending_incoming:
@@ -379,14 +379,14 @@ class Networking(commands.Cog):
                 if target == ctx.author
                 else f'{target.display_name} has not set up a profile yet.'
             )
-            embed = error_embed(
+            embed = await error_embed(
                 title='Profile Not Found',
                 description=msg,
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
         else:
-            embed = self._format_profile(target, profile)
+            embed = await self._format_profile(target, profile, user=ctx.author)
         await ctx.send(embed=embed)
 
     @commands.command(name='setupprofile', description='Set up your professional profile')
@@ -399,21 +399,21 @@ class Networking(commands.Cog):
     async def connect_fallback(self, ctx, member: nextcord.Member, *, message: str = None):
         try:
             await self.svc.create_request(str(ctx.author.id), str(member.id), message or '')
-            embed = success_embed(
+            embed = await success_embed(
                 title='Connection Request Sent',
                 description=f'Your request has been sent to {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
             if message:
                 embed.add_field(name='Message', value=message, inline=False)
             await ctx.send(embed=embed)
         except ValueError as exc:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Unable to Send Request',
                 description=str(exc),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
             await ctx.send(embed=embed)
 
@@ -422,21 +422,21 @@ class Networking(commands.Cog):
     async def accept_fallback(self, ctx, member: nextcord.Member):
         request = await self.svc.get_pending_request(str(member.id), str(ctx.author.id))
         if not request:
-            embed = error_embed(
+            embed = await error_embed(
                 title='No Pending Request',
                 description=f'No pending request found from {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
             await ctx.send(embed=embed)
             return
         await self.svc.update_request_status(request['id'], 'accepted')
         await self.svc.create_connection(str(ctx.author.id), str(member.id))
-        embed = success_embed(
+        embed = await success_embed(
             title='Connection Accepted',
             description=f'You are now connected with {member.display_name}.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=ctx.author,
         )
         await ctx.send(embed=embed)
 
@@ -445,20 +445,20 @@ class Networking(commands.Cog):
     async def decline_fallback(self, ctx, member: nextcord.Member):
         request = await self.svc.get_pending_request(str(member.id), str(ctx.author.id))
         if not request:
-            embed = error_embed(
+            embed = await error_embed(
                 title='No Pending Request',
                 description=f'No pending request found from {member.display_name}.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
             await ctx.send(embed=embed)
             return
         await self.svc.update_request_status(request['id'], 'declined')
-        embed = success_embed(
+        embed = await success_embed(
             title='Connection Declined',
             description=f'You declined the request from {member.display_name}.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=ctx.author,
         )
         await ctx.send(embed=embed)
 
@@ -467,19 +467,19 @@ class Networking(commands.Cog):
     async def connections_fallback(self, ctx):
         connections = await self.svc.get_connections(str(ctx.author.id))
         if not connections:
-            embed = info_embed(
+            embed = await info_embed(
                 title='Your Connections',
                 description='You have no connections yet. Use `/connect request` to reach out to someone.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=ctx.author,
             )
             await ctx.send(embed=embed)
             return
-        embed = info_embed(
+        embed = await info_embed(
             title='Your Connections',
             description=f'You have {len(connections)} accepted connection(s).',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=ctx.author,
         )
         for conn in connections:
             other_id = (

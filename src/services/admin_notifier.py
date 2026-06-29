@@ -57,7 +57,7 @@ class AdminNotifier:
         if not self._should_alert(dedupe_key, cooldown_minutes):
             return
 
-        embed = alert_embed(title=title, description=description, severity=severity, contributor_source=__name__)
+        embed = await alert_embed(title=title, description=description, severity=severity, contributor_source=__name__)
         assert self._channel is not None  # guaranteed by _get_channel check above
         try:
             await self._channel.send(embed=embed)
