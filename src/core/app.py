@@ -33,6 +33,8 @@ EXTENSIONS = [
     'src.cogs.mentorship',
     'src.cogs.marketplace_enhanced',
     'src.cogs.portfolio.portfolio_manager',
+    'src.cogs.radio',
+    'src.cogs.rpg',
 ]
 
 
@@ -41,6 +43,7 @@ def get_intents() -> nextcord.Intents:
     intents.message_content = True
     intents.members = True
     intents.guilds = True
+    intents.voice_states = True
     return intents
 
 

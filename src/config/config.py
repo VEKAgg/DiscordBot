@@ -67,3 +67,38 @@ RSS_FEEDS = {
 
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
+
+# --- Radio Configuration ---
+RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/watch?v=jfKfPfyJRdk')
+_radio_channel = os.getenv('RADIO_VOICE_CHANNEL_ID', '')
+RADIO_VOICE_CHANNEL_ID = int(_radio_channel) if _radio_channel.strip().isdigit() else None
+RADIO_REFRESH_INTERVAL = 7200  # seconds (2 hours) — refresh stream URL before YouTube expiry
+RADIO_STABILITY_INTERVAL = 30  # seconds between stability checks
+RADIO_RECOVERY_PINGS_REQUIRED = 3  # consecutive healthy checks before rejoining
+
+# --- RPG / Leaderboard Configuration ---
+_leaderboard_channel = os.getenv('LEADERBOARD_CHANNEL_ID', '')
+LEADERBOARD_CHANNEL_ID = int(_leaderboard_channel) if _leaderboard_channel.strip().isdigit() else None
+LEADERBOARD_UPDATE_INTERVAL = 1800  # seconds (30 minutes)
+LEADERBOARD_TOP_N = 10
+MESSAGE_XP_COOLDOWN = 10  # seconds between message XP awards
+
+RPG_POINTS: dict[str, int] = {
+    'message': 1,
+    'command': 2,
+    'voice_per_minute': 1,
+    'daily_claim': 5,
+}
+
+XP_MULTIPLIERS: dict[str, float] = {
+    'donator': 1.2,
+    'active_pro': 1.1,
+}
+
+# Activity roles — dynamic, auto-assigned/removed based on activity thresholds
+ACTIVITY_ROLES: dict[str, int] = {
+    'active_member': 100,  # role name: 'Active Member'
+    'active_plus': 500,  # role name: 'Active+'
+    'active_star': 2000,  # role name: 'Active Star'
+}
+ACTIVITY_ROLE_INACTIVITY_DAYS = 14
