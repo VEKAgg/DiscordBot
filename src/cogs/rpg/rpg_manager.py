@@ -545,13 +545,14 @@ class RPGManager(commands.Cog):
             user=interaction.user,
             guild=interaction.guild,
         )
-        await safe_send(interaction, embed=embed, ephemeral=True)
+        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
+        await safe_send(interaction, embed=embed)
 
     @nextcord.slash_command(name='leaderboard', description='View the community leaderboard')
     @safe_slash_command()
     async def leaderboard_command(self, interaction: nextcord.Interaction):
         """Show top 10 leaderboard and the user's rank."""
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer()
 
         data = await self._get_leaderboard_data()
         if not data:
@@ -562,11 +563,10 @@ class RPGManager(commands.Cog):
                 user=interaction.user,
                 guild=interaction.guild,
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed)
             return
 
-        # Build leaderboard text
-        medals = ['1st', '2nd', '3rd']
+        medals = ['\U0001f947', '\U0001f948', '\U0001f949']
         lines = []
         for i, row in enumerate(data):
             medal = medals[i] if i < 3 else f'#{i + 1}'
@@ -574,9 +574,8 @@ class RPGManager(commands.Cog):
             member = self.bot.get_user(uid)
             name = member.display_name if member else row.get('username') or f'User {uid}'
             level = row.get('level') or calculate_level(row.get('points', 0))
-            lines.append(f'**{medal}** — {name} | Level {level} | {row["points"]:,} XP')
+            lines.append(f'**{medal}** {name} — Level {level} | {row["points"]:,} XP')
 
-        # Add user's own rank
         user_rank = await self._get_user_rank(interaction.user.id)
         user_row = await db.fetch_one(
             'SELECT points, level FROM users WHERE discord_id = $1',
@@ -585,7 +584,7 @@ class RPGManager(commands.Cog):
         if user_row:
             user_level = user_row['level'] or calculate_level(user_row['points'] or 0)
             rank_text = f'#{user_rank}' if user_rank else 'Unranked'
-            lines.append(f'\n**Your Rank**: {rank_text} | Level {user_level} | {user_row["points"] or 0:,} XP')
+            lines.append(f'\n**Your Rank**: {rank_text} — Level {user_level} | {user_row["points"] or 0:,} XP')
 
         description = '\n'.join(lines)
 
@@ -596,7 +595,13 @@ class RPGManager(commands.Cog):
             user=interaction.user,
             guild=interaction.guild,
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        if data:
+            top_uid = int(data[0]['discord_id'])
+            top_member = self.bot.get_user(top_uid)
+            if top_member:
+                embed.set_thumbnail(url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url)
+        embed.timestamp = datetime.now(UTC)
+        await interaction.followup.send(embed=embed)
 
     @nextcord.slash_command(name='setupleaderboard', description='Set the leaderboard channel (admin only)')
     @safe_slash_command()
@@ -690,30 +695,33 @@ class RPGManager(commands.Cog):
             else:
                 last_active_text = f'{delta.days}d ago'
 
-        # Check current activity role
         activity_role = 'None'
         for role_key, threshold in reversed(_ACTIVITY_ROLE_THRESHOLDS):
             if points >= threshold:
                 activity_role = _ACTIVITY_ROLE_NAMES[role_key]
                 break
 
-        description = (
-            f'**{target.display_name}**\n\n'
-            f'**Level**: {level} | **XP**: {points:,}\n'
-            f'**Messages**: {messages:,}\n'
-            f'**Voice Time**: {voice_min:,} min\n'
-            f'**Commands Used**: {commands_count:,}\n'
-            f'**Activity Role**: {activity_role}\n'
-            f'**Last Active**: {last_active_text}'
-        )
+        next_level_pts = points_to_next_level(points)
+        progress = _progress_bar(points)
 
         embed = await success_embed(
             title='Activity Stats',
-            description=description,
+            description=f'**{target.display_name}**',
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
+        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
+        embed.add_field(name='Level', value=str(level), inline=True)
+        embed.add_field(name='XP', value=f'{points:,}', inline=True)
+        embed.add_field(name='Next Level', value=f'{next_level_pts:,} XP', inline=True)
+        embed.add_field(name='Progress', value=f'{progress}', inline=False)
+        embed.add_field(name='Messages', value=f'{messages:,}', inline=True)
+        embed.add_field(name='Voice Time', value=f'{voice_min:,} min', inline=True)
+        embed.add_field(name='Commands Used', value=f'{commands_count:,}', inline=True)
+        embed.add_field(name='Activity Role', value=activity_role, inline=True)
+        embed.add_field(name='Last Active', value=last_active_text, inline=True)
+
         await safe_send(interaction, embed=embed, ephemeral=True)
 
 

@@ -53,7 +53,10 @@ class Notifications(commands.Cog):
                 title='Daily Bump Reminder',
                 description=(
                     f'{role_mention}\n\n'
-                    "It's time to bump the server! Use `/bump` to keep our community growing.\n\n"
+                    "It's time to bump the server!\n\n"
+                    'Use `/bump` with these bots to keep our community growing:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot\n\n'
                     'Every bump helps new members discover us. Thank you for your support!'
                 ),
                 contributor_source=__name__,
@@ -146,12 +149,7 @@ class Notifications(commands.Cog):
         message: str,
     ):
         """Send an announcement to any channel"""
-        embed = await info_embed(
-            title='Announcement',
-            description=message,
-            contributor_source=__name__,
-        )
-        embed.set_author(name='VEKA Bot Broadcast', icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        embed = nextcord.Embed(description=message, color=nextcord.Color.orange())
 
         try:
             await channel.send(embed=embed)
@@ -172,12 +170,7 @@ class Notifications(commands.Cog):
     @require_founder()
     async def broadcast_prefix(self, ctx, channel: nextcord.TextChannel, *, message: str):
         """Send announcement to a channel (Founder only)"""
-        embed = await info_embed(
-            title='Announcement',
-            description=message,
-            contributor_source=__name__,
-        )
-        embed.set_author(name='VEKA Bot Broadcast', icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        embed = nextcord.Embed(description=message, color=nextcord.Color.orange())
 
         try:
             await channel.send(embed=embed)
