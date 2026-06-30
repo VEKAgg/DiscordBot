@@ -28,6 +28,7 @@ jobs:
             echo "INTERN_IDS=${{ vars.INTERN_IDS }}"
             echo "DONATOR_IDS=${{ vars.DONATOR_IDS }}"
             echo "ACTIVE_PRO_IDS=${{ vars.ACTIVE_PRO_IDS }}"
+            echo "MARKETPLACE_CHANNEL_ID=${{ vars.MARKETPLACE_CHANNEL_ID }}"
             echo "ADMIN_ALERT_CHANNEL_ID=${{ vars.ADMIN_ALERT_CHANNEL_ID }}"
             echo "RADIO_VOICE_CHANNEL_ID=${{ vars.RADIO_VOICE_CHANNEL_ID }}"
             echo "LEADERBOARD_CHANNEL_ID=${{ vars.LEADERBOARD_CHANNEL_ID }}"

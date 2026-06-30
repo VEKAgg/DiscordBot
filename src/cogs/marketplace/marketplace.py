@@ -4,6 +4,7 @@ import logging
 import nextcord
 from nextcord.ext import commands
 
+from src.config.config import MARKETPLACE_CHANNEL_ID
 from src.database.database import db
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import safe_send, safe_slash_command
@@ -112,6 +113,35 @@ class Marketplace(commands.Cog):
         )
         embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
         await safe_send(interaction, embed=embed, ephemeral=False)
+
+        if MARKETPLACE_CHANNEL_ID:
+            channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
+            if channel:
+                listing_embed = await info_embed(
+                    title=f'📦 New Listing: {title}',
+                    description=description or 'No description provided.',
+                    user=interaction.user,
+                    contributor_source=__name__,
+                )
+                listing_embed.add_field(name='Price', value=f'${price:.2f}', inline=True)
+                listing_embed.add_field(
+                    name='Condition',
+                    value=condition.replace('_', ' ').title(),
+                    inline=True,
+                )
+                listing_embed.add_field(name='Category', value=category, inline=True)
+                listing_embed.add_field(name='Seller', value=interaction.user.mention, inline=True)
+                listing_embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
+                listing_embed.add_field(name='Status', value='Active', inline=True)
+                if image_url:
+                    listing_embed.set_image(url=image_url)
+                listing_embed.set_footer(text='Use /marketplace view <id> for details')
+                try:
+                    await channel.send(embed=listing_embed)
+                except Exception as exc:
+                    logger.warning('Failed to post listing to marketplace channel: %s', exc)
+            else:
+                logger.warning('Marketplace channel %s not found', MARKETPLACE_CHANNEL_ID)
 
     @marketplace.subcommand(name='browse', description='Browse active marketplace listings')
     @safe_slash_command(requires_db=True)
