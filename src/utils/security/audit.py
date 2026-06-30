@@ -8,8 +8,6 @@ from datetime import datetime
 from functools import wraps
 from typing import Any
 
-from src.database.database import db
-
 logger = logging.getLogger('VEKA.security.audit')
 
 
@@ -26,6 +24,9 @@ class AuditLogger:
     """
 
     def __init__(self):
+        from src.database.database import db
+
+        self._db = db
         self.enabled = True
 
     async def record(
@@ -56,7 +57,7 @@ class AuditLogger:
 
             details_json = json.dumps(details) if details else None
 
-            await db.execute(
+            await self._db.execute(
                 """INSERT INTO audit_logs
                    (user_id, action, details, guild_id, channel_id, severity, created_at)
                    VALUES ($1, $2, $3, $4, $5, $6, $7)""",
@@ -116,11 +117,11 @@ class AuditLogger:
         query += f' LIMIT ${param_count + 1}'
         params.append(limit)
 
-        return await db.fetch_many(query, *params)
+        return await self._db.fetch_many(query, *params)
 
     async def get_user_actions(self, user_id: str, hours: int = 24) -> dict[str, int]:
         """Get count of actions by user in last N hours"""
-        results = await db.fetch_many(
+        results = await self._db.fetch_many(
             """SELECT action, COUNT(*) as count
                FROM audit_logs
                WHERE user_id = $1
@@ -139,7 +140,7 @@ class AuditLogger:
         Returns True if suspicious activity detected
         """
         # Check for rapid command execution
-        recent_commands = await db.fetch_one(
+        recent_commands = await self._db.fetch_one(
             """SELECT COUNT(*) as count
                FROM audit_logs
                WHERE user_id = $1
@@ -158,7 +159,7 @@ class AuditLogger:
             return True
 
         # Check for marketplace fraud patterns
-        recent_transactions = await db.fetch_one(
+        recent_transactions = await self._db.fetch_one(
             """SELECT COUNT(*) as count
                FROM audit_logs
                WHERE user_id = $1

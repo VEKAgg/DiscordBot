@@ -1,5 +1,6 @@
 import logging
 from types import SimpleNamespace
+from typing import Any
 
 import nextcord
 from nextcord.ext import commands
@@ -25,9 +26,7 @@ class Help(commands.Cog):
         guild = getattr(interaction, 'guild', None)
         return guild is not None and guild.id == MAIN_GUILD_ID
 
-    async def _build_help_embed(
-        self, interaction: nextcord.Interaction | None = None, command: str | None = None
-    ) -> nextcord.Embed:
+    async def _build_help_embed(self, interaction: Any = None, command: str | None = None) -> nextcord.Embed:
         user_role = Role.USER
         user = None
         if interaction:
