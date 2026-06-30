@@ -34,6 +34,7 @@ def _get_system_stats() -> dict:
 
 class Health(commands.Cog):
     @nextcord.slash_command(name='admin', description='Staff and admin commands')
+    @safe_slash_command()
     async def admin(self, interaction: nextcord.Interaction):
         pass
 

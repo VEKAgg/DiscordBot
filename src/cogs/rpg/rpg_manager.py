@@ -129,7 +129,13 @@ class RPGManager(commands.Cog):
         )
 
     async def _award_points(
-        self, user_id: int, activity_type: str, base_points: int, guild_id: int = 0, channel_id: int = 0
+        self,
+        user_id: int,
+        activity_type: str,
+        base_points: int,
+        guild_id: int = 0,
+        channel_id: int = 0,
+        quantity: int = 1,
     ) -> int:
         """Award points to a user with role-based multipliers. Returns actual points awarded."""
         try:
@@ -149,7 +155,7 @@ class RPGManager(commands.Cog):
                     if role_lower in XP_MULTIPLIERS:
                         multiplier = max(multiplier, XP_MULTIPLIERS[role_lower])
 
-            actual_points = max(1, int(base_points * multiplier))
+            actual_points = max(1, int(base_points * quantity * multiplier))
 
             await db.execute(
                 """
@@ -177,17 +183,20 @@ class RPGManager(commands.Cog):
             # Update activity totals
             if activity_type == 'message':
                 await db.execute(
-                    'UPDATE users SET total_messages = total_messages + 1 WHERE discord_id = $1',
+                    'UPDATE users SET total_messages = total_messages + $1 WHERE discord_id = $2',
+                    quantity,
                     str(user_id),
                 )
             elif activity_type == 'voice':
                 await db.execute(
-                    'UPDATE users SET total_voice_minutes = total_voice_minutes + 1 WHERE discord_id = $1',
+                    'UPDATE users SET total_voice_minutes = total_voice_minutes + $1 WHERE discord_id = $2',
+                    quantity,
                     str(user_id),
                 )
             elif activity_type == 'command':
                 await db.execute(
-                    'UPDATE users SET total_commands = total_commands + 1 WHERE discord_id = $1',
+                    'UPDATE users SET total_commands = total_commands + $1 WHERE discord_id = $2',
+                    quantity,
                     str(user_id),
                 )
 
@@ -408,15 +417,14 @@ class RPGManager(commands.Cog):
             if join_time:
                 minutes = int((time.monotonic() - join_time) / 60)
                 if minutes >= 1:
-                    # Award XP for each minute spent
-                    for _ in range(min(minutes, 60)):  # Cap at 60 minutes per session
-                        await self._award_points(
-                            user_id,
-                            'voice',
-                            RPG_POINTS['voice_per_minute'],
-                            guild_id=member.guild.id,
-                            channel_id=before.channel.id if before.channel else 0,
-                        )
+                    await self._award_points(
+                        user_id,
+                        'voice',
+                        RPG_POINTS['voice_per_minute'],
+                        guild_id=member.guild.id,
+                        channel_id=before.channel.id if before.channel else 0,
+                        quantity=min(minutes, 60),
+                    )
 
         # User moved channels — track as if they left and rejoined
         elif before is not None and after is not None and before.channel != after.channel:
@@ -424,14 +432,14 @@ class RPGManager(commands.Cog):
             if join_time:
                 minutes = int((time.monotonic() - join_time) / 60)
                 if minutes >= 1:
-                    for _ in range(min(minutes, 60)):
-                        await self._award_points(
-                            user_id,
-                            'voice',
-                            RPG_POINTS['voice_per_minute'],
-                            guild_id=member.guild.id,
-                            channel_id=before.channel.id if before.channel else 0,
-                        )
+                    await self._award_points(
+                        user_id,
+                        'voice',
+                        RPG_POINTS['voice_per_minute'],
+                        guild_id=member.guild.id,
+                        channel_id=before.channel.id if before.channel else 0,
+                        quantity=min(minutes, 60),
+                    )
             self._voice_join_times[user_id] = time.monotonic()
 
     @commands.Cog.listener()
@@ -683,7 +691,7 @@ class RPGManager(commands.Cog):
 
             for entry in inactive_users:
                 user_id = int(entry['discord_id'])
-                member = guild.get_member(user_id) if guild else self.bot.get_user(user_id)
+                member = guild.get_member(user_id) if guild else None
                 if member is None:
                     continue
 
