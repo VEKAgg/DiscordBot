@@ -213,7 +213,13 @@ class Networking(commands.Cog):
             return 'Not set'
         return '\n'.join(f'<{link}>' for link in links.splitlines())
 
-    async def _format_profile(self, target: nextcord.Member, profile: dict, user: nextcord.Member) -> nextcord.Embed:
+    async def _format_profile(
+        self,
+        target: nextcord.Member,
+        profile: dict,
+        user: nextcord.Member,
+        viewer: nextcord.Member | None = None,
+    ) -> nextcord.Embed:
         embed = await info_embed(
             title=f"{target.display_name}'s Professional Profile",
             description='A concise overview of community networking details.',
@@ -226,6 +232,24 @@ class Networking(commands.Cog):
         embed.add_field(name='About', value=profile.get('bio') or profile.get('experience') or 'Not set', inline=False)
         embed.add_field(name='Looking For', value=profile.get('looking_for') or 'Not set', inline=False)
         embed.add_field(name='Links', value=self._links_display(profile.get('links')), inline=False)
+
+        conn_count = await self.svc.get_connection_count(str(target.id))
+        embed.add_field(name='Connections', value=str(conn_count), inline=True)
+
+        if viewer and viewer != target:
+            mutual = await self.svc.get_mutual_connections(str(viewer.id), str(target.id))
+            if mutual:
+                mutual_names = []
+                for mid in mutual[:10]:
+                    member = viewer.guild.get_member(int(mid)) if viewer.guild else None
+                    mutual_names.append(member.display_name if member else f'User {mid}')
+                mutual_text = '\n'.join(f'\u2022 {name}' for name in mutual_names)
+                if len(mutual) > 10:
+                    mutual_text += f'\n...and {len(mutual) - 10} more'
+            else:
+                mutual_text = 'None'
+            embed.add_field(name='Mutual Connections', value=mutual_text, inline=False)
+
         embed.set_footer(text=f'Last updated: {profile.get("last_updated", "Never")}')
         return embed
 
@@ -357,7 +381,12 @@ class Networking(commands.Cog):
             await self._send_profile_missing(interaction, target)  # type: ignore[arg-type]
             return
 
-        embed = await self._format_profile(target, profile, user=interaction.user)  # type: ignore[arg-type]
+        embed = await self._format_profile(
+            target,
+            profile,
+            user=interaction.user,
+            viewer=interaction.user,
+        )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @connect.subcommand(name='request', description='Send a connection request')
@@ -456,7 +485,7 @@ class Networking(commands.Cog):
                 user=ctx.author,
             )
         else:
-            embed = await self._format_profile(target, profile, user=ctx.author)
+            embed = await self._format_profile(target, profile, user=ctx.author, viewer=ctx.author)
         await ctx.send(embed=embed)
 
     @commands.command(name='setupprofile', description='Set up your professional profile')

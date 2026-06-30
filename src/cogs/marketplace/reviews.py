@@ -20,11 +20,8 @@ class MarketplaceReviews(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ==================== SLASH COMMANDS ====================
+    # ==================== SLASH COMMANDS (delegated via /marketplace group) ====================
 
-    @nextcord.slash_command(name='review', description='Leave a review for a transaction')
-    @rate_limit('marketplace')
-    @safe_slash_command(requires_db=True)
     async def review_slash(
         self,
         interaction: nextcord.Interaction,
@@ -142,8 +139,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='seller', description="View a seller's reputation and statistics")
-    @safe_slash_command(requires_db=True)
     async def seller_slash(self, interaction: nextcord.Interaction, member: nextcord.Member = None):
         try:
             target = member or interaction.user
@@ -228,8 +223,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='reviews', description='View reviews you have received')
-    @safe_slash_command(requires_db=True)
     async def reviews_slash(self, interaction: nextcord.Interaction):
         try:
             user = await get_user(str(interaction.user.id))
@@ -281,8 +274,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='helpful', description='Mark a review as helpful')
-    @safe_slash_command(requires_db=True)
     async def helpful_slash(self, interaction: nextcord.Interaction, review_id: int):
         try:
             await db.execute(
