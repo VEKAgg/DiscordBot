@@ -178,7 +178,13 @@ class Marketplace(commands.Cog):
             if isinstance(channel, nextcord.ForumChannel):
                 # Forum channels have no .send(); each listing becomes a thread.
                 thread_name = f'📦 {title} - ${price:.2f}'[:100]
-                await channel.create_thread(name=thread_name, embed=listing_embed)
+                # Forums may require a tag; match the category, else use the first one.
+                available_tags = channel.available_tags
+                applied_tags = []
+                if available_tags:
+                    match = next((t for t in available_tags if t.name.lower() == category.lower()), None)
+                    applied_tags = [match or available_tags[0]]
+                await channel.create_thread(name=thread_name, embed=listing_embed, applied_tags=applied_tags)
             else:
                 await channel.send(embed=listing_embed)
         except Exception as exc:
