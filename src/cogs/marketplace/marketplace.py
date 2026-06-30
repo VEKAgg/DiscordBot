@@ -7,7 +7,7 @@ from nextcord.ext import commands
 from src.config.config import MARKETPLACE_CHANNEL_ID
 from src.database.database import db
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.marketplace')
 
@@ -38,7 +38,7 @@ class Marketplace(commands.Cog):
             choices={'New': 'new', 'Like New': 'like_new', 'Good': 'good', 'Fair': 'fair', 'Poor': 'poor'},
         ),
         description: str = '',
-        image_url: str = '',
+        image: nextcord.Attachment | None = None,
     ):
         """Create a new listing in the marketplace."""
         if price < 0:
@@ -57,6 +57,8 @@ class Marketplace(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
+
+        image_url = image.url if image else ''
 
         # Fetch category ID based on the provided name
         category_record = await db.fetch_one('SELECT id FROM marketplace_categories WHERE name = $1', category)
@@ -114,34 +116,54 @@ class Marketplace(commands.Cog):
         embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
         await safe_send(interaction, embed=embed, ephemeral=False)
 
-        if MARKETPLACE_CHANNEL_ID:
-            channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
-            if channel:
-                listing_embed = await info_embed(
-                    title=f'📦 New Listing: {title}',
-                    description=description or 'No description provided.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                listing_embed.add_field(name='Price', value=f'${price:.2f}', inline=True)
-                listing_embed.add_field(
-                    name='Condition',
-                    value=condition.replace('_', ' ').title(),
-                    inline=True,
-                )
-                listing_embed.add_field(name='Category', value=category, inline=True)
-                listing_embed.add_field(name='Seller', value=interaction.user.mention, inline=True)
-                listing_embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
-                listing_embed.add_field(name='Status', value='Active', inline=True)
-                if image_url:
-                    listing_embed.set_image(url=image_url)
-                listing_embed.set_footer(text='Use /marketplace view <id> for details')
-                try:
-                    await channel.send(embed=listing_embed)
-                except Exception as exc:
-                    logger.warning('Failed to post listing to marketplace channel: %s', exc)
-            else:
-                logger.warning('Marketplace channel %s not found', MARKETPLACE_CHANNEL_ID)
+        if interaction.user:
+            await self._post_listing_to_channel(
+                listing_id=listing_id,
+                title=title,
+                price=price,
+                condition=condition,
+                category=category,
+                description=description,
+                image_url=image_url,
+                seller=interaction.user,
+            )
+
+    async def _post_listing_to_channel(
+        self,
+        listing_id: str,
+        title: str,
+        price: float,
+        condition: str,
+        category: str,
+        seller: nextcord.User | nextcord.Member,
+        description: str = '',
+        image_url: str = '',
+    ) -> None:
+        if not MARKETPLACE_CHANNEL_ID:
+            return
+        channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
+        if not channel:
+            logger.warning('Marketplace channel %s not found', MARKETPLACE_CHANNEL_ID)
+            return
+        listing_embed = await info_embed(
+            title=f'📦 New Listing: {title}',
+            description=description or 'No description provided.',
+            user=seller,
+            contributor_source=__name__,
+        )
+        listing_embed.add_field(name='Price', value=f'${price:.2f}', inline=True)
+        listing_embed.add_field(name='Condition', value=condition.replace('_', ' ').title(), inline=True)
+        listing_embed.add_field(name='Category', value=category, inline=True)
+        listing_embed.add_field(name='Seller', value=seller.mention, inline=True)
+        listing_embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
+        listing_embed.add_field(name='Status', value='Active', inline=True)
+        if image_url:
+            listing_embed.set_image(url=image_url)
+        listing_embed.set_footer(text='Use /marketplace view <id> for details')
+        try:
+            await channel.send(embed=listing_embed)
+        except Exception as exc:
+            logger.warning('Failed to post listing to marketplace channel: %s', exc)
 
     @marketplace.subcommand(name='browse', description='Browse active marketplace listings')
     @safe_slash_command(requires_db=True)
@@ -323,6 +345,72 @@ class Marketplace(commands.Cog):
             contributor_source=__name__,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @commands.command(name='marketplace_sync')
+    @admin_only()
+    @safe_command(requires_db=True)
+    async def mp_sync(self, ctx: commands.Context):
+        """Repost all active listings to the marketplace channel."""
+        if not MARKETPLACE_CHANNEL_ID:
+            embed = await error_embed(
+                'Not Configured',
+                'Marketplace channel is not set. Add MARKETPLACE_CHANNEL_ID to .env',
+                contributor_source=__name__,
+            )
+            await safe_send(ctx, embed=embed)
+            return
+
+        channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
+        if not channel:
+            embed = await error_embed(
+                'Channel Not Found',
+                f'Marketplace channel `{MARKETPLACE_CHANNEL_ID}` not found.',
+                contributor_source=__name__,
+            )
+            await safe_send(ctx, embed=embed)
+            return
+
+        listings = await db.fetch_many(
+            """SELECT l.id, l.title, l.price, l.condition, l.description, l.image_url,
+                      c.name as cat_name, u.discord_id
+               FROM marketplace_listings l
+               JOIN users u ON l.seller_id = u.id
+               JOIN marketplace_categories c ON l.category_id = c.id
+               WHERE l.status = 'active'
+               ORDER BY l.created_at ASC""",
+        )
+
+        if not listings:
+            embed = await info_embed('No Listings', 'No active listings to sync.', contributor_source=__name__)
+            await safe_send(ctx, embed=embed)
+            return
+
+        synced = 0
+        failed = 0
+        for listing in listings:
+            seller = self.bot.get_user(int(listing['discord_id'])) or ctx.guild.get_member(int(listing['discord_id']))
+            if not seller:
+                failed += 1
+                continue
+            await self._post_listing_to_channel(
+                listing_id=listing['id'],
+                title=listing['title'],
+                price=listing['price'],
+                condition=listing['condition'],
+                category=listing['cat_name'],
+                description=listing['description'] or '',
+                image_url=listing['image_url'] or '',
+                seller=seller,
+            )
+            synced += 1
+
+        embed = await success_embed(
+            'Sync Complete',
+            f'Posted {synced} listing(s) to <#{MARKETPLACE_CHANNEL_ID}>'
+            + (f'. {failed} skipped (seller not found).' if failed else '.'),
+            contributor_source=__name__,
+        )
+        await safe_send(ctx, embed=embed)
 
 
 def setup(bot):
