@@ -77,7 +77,7 @@ class StatusRotator(commands.Cog):
         """Stop the rotation loop."""
         self.rotate_status.stop()
 
-    def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming:
+    def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming | nextcord.Game:
         """Build a nextcord activity from a status definition."""
         text = status_def['text']
 

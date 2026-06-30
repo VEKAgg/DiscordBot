@@ -67,7 +67,7 @@ class Marketplace(commands.Cog):
             )
             category_record = await db.fetch_one('SELECT id FROM marketplace_categories WHERE name = $1', category)
             if not category_record:
-                embed = error_embed(
+                embed = await error_embed(
                     'Category Error', 'Could not find or create the category.', contributor_source=__name__
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
