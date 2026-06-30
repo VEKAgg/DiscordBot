@@ -8,7 +8,7 @@ multipliers, manages dynamic activity roles, and maintains a leaderboard.
 import logging
 import math
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import nextcord
 from nextcord.ext import commands, tasks
@@ -16,17 +16,24 @@ from nextcord.ext import commands, tasks
 from src.config.config import (
     ACTIVITY_ROLE_INACTIVITY_DAYS,
     ACTIVITY_ROLES,
+    INACTIVITY_CHECK_HOUR,
+    INACTIVITY_CHECK_MINUTE,
+    INACTIVITY_MONTH_DAYS,
+    INACTIVITY_WEEK_DAYS,
+    IST_UTC_OFFSET,
     LEADERBOARD_CHANNEL_ID,
     LEADERBOARD_TOP_N,
     LEADERBOARD_UPDATE_INTERVAL,
     LIVE_ROLE_ID,
+    LOGS_CHANNEL_ID,
     MESSAGE_XP_COOLDOWN,
     RPG_POINTS,
     XP_MULTIPLIERS,
 )
 from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.utils.embeds import error_embed, info_embed, success_embed
+from src.services import inactivity_service
+from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed
 from src.utils.safety import admin_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.rpg')
@@ -85,11 +92,18 @@ class RPGManager(commands.Cog):
         self._message_cooldowns: dict[int, float] = {}  # user_id -> last_message_time
         self._voice_join_times: dict[int, float] = {}  # user_id -> join_timestamp
         self._leaderboard_message: nextcord.Message | None = None
+        # Activity duration tracking (streaming / gaming / listening)
+        self._activity_start_times: dict[str, dict[int, float]] = {
+            'streaming': {},
+            'gaming': {},
+            'listening': {},
+        }
 
     async def cog_load(self):
         """Start background tasks."""
         self.update_leaderboard.start()
         self.evaluate_activity_roles.start()
+        self.check_inactivity.start()
         # Restore leaderboard message reference if channel is configured
         if LEADERBOARD_CHANNEL_ID:
             await self._restore_leaderboard_message()
@@ -98,6 +112,7 @@ class RPGManager(commands.Cog):
         """Stop background tasks."""
         self.update_leaderboard.stop()
         self.evaluate_activity_roles.stop()
+        self.check_inactivity.stop()
 
     # ============================================================
     # DB helpers
@@ -141,7 +156,9 @@ class RPGManager(commands.Cog):
                 UPDATE users
                 SET points = points + $1,
                     experience = experience + $1,
-                    last_active = NOW()
+                    last_active = NOW(),
+                    inactive_week_notified = FALSE,
+                    inactive_month_notified = FALSE
                 WHERE discord_id = $2
                 """,
                 actual_points,
@@ -244,31 +261,102 @@ class RPGManager(commands.Cog):
     # ============================================================
 
     async def _build_leaderboard_embed(self) -> nextcord.Embed | None:
-        """Build the leaderboard embed."""
-        data = await self._get_leaderboard_data()
-        if not data:
+        """Build the full leaderboard embed with all stat categories."""
+        xp_data = await self._get_leaderboard_data()
+        if not xp_data:
             return None
-
-        description_lines = []
-        medals = ['1st', '2nd', '3rd']
-        for i, row in enumerate(data):
-            medal = medals[i] if i < 3 else f'#{i + 1}'
-            user_id = int(row['discord_id'])
-            member = self.bot.get_user(user_id)
-            name = member.display_name if member else row.get('username') or f'User {user_id}'
-            level = row.get('level') or calculate_level(row.get('points', 0))
-            description_lines.append(f'**{medal}** — {name} | Level {level} | {row["points"]:,} XP')
-
-        description = '\n'.join(description_lines)
 
         embed = nextcord.Embed(
             title='Community Leaderboard',
-            description=description,
             color=nextcord.Color.gold(),
         )
         embed.set_author(name='VEKA Bot', url='https://veka.gg')
         embed.timestamp = datetime.now(UTC)
+
+        # XP leaderboard
+        medals = ['1st', '2nd', '3rd']
+        lines = []
+        for i, row in enumerate(xp_data):
+            medal = medals[i] if i < 3 else f'#{i + 1}'
+            uid = int(row['discord_id'])
+            member = self.bot.get_user(uid)
+            name = member.display_name if member else row.get('username') or f'User {uid}'
+            level = row.get('level') or calculate_level(row.get('points', 0))
+            lines.append(f'**{medal}** — {name} | Level {level} | {row["points"]:,} XP')
+        embed.add_field(name='⭐ XP (All Time)', value='\n'.join(lines), inline=False)
+
+        # Stat leaderboards
+        stat_configs = [
+            ('total_messages', '💬 Messages', None),
+            ('total_voice_minutes', '🔊 Voice Minutes', None),
+            ('total_streaming_minutes', '📺 Streaming Minutes', None),
+            ('total_gaming_minutes', '🎮 Gaming Minutes', None),
+            ('total_listening_minutes', '🎵 Listening Minutes', None),
+        ]
+
+        for column, title, _period in stat_configs:
+            rows = await self._get_stat_leaderboard(column)
+            if not rows:
+                continue
+            stat_lines = []
+            for i, row in enumerate(rows):
+                medal = medals[i] if i < 3 else f'#{i + 1}'
+                uid = int(row['discord_id'])
+                member = self.bot.get_user(uid)
+                name = member.display_name if member else f'User {uid}'
+                val = row.get(column) or 0
+                stat_lines.append(f'**{medal}** — {name}: {val:,}')
+            embed.add_field(name=title, value='\n'.join(stat_lines), inline=False)
+
         return embed
+
+    async def _get_stat_leaderboard(self, column: str, period: str | None = None, limit: int = 10) -> list[dict]:
+        """Fetch top N users for a given stat column, optionally filtered by period."""
+        try:
+            if period == 'month':
+                rows = await db.fetch(
+                    """
+                    SELECT u.discord_id, SUM(a.points_awarded) AS stat_val
+                    FROM users u
+                    JOIN user_activity_log a ON a.user_id = u.discord_id
+                    WHERE a.activity_type = $1
+                      AND a.created_at >= NOW() - INTERVAL '30 days'
+                    GROUP BY u.discord_id
+                    ORDER BY stat_val DESC
+                    LIMIT $2
+                    """,
+                    column.replace('total_', '').replace('_minutes', ''),
+                    limit,
+                )
+            elif period == 'week':
+                rows = await db.fetch(
+                    """
+                    SELECT u.discord_id, SUM(a.points_awarded) AS stat_val
+                    FROM users u
+                    JOIN user_activity_log a ON a.user_id = u.discord_id
+                    WHERE a.activity_type = $1
+                      AND a.created_at >= NOW() - INTERVAL '7 days'
+                    GROUP BY u.discord_id
+                    ORDER BY stat_val DESC
+                    LIMIT $2
+                    """,
+                    column.replace('total_', '').replace('_minutes', ''),
+                    limit,
+                )
+            else:
+                rows = await db.fetch(
+                    f"""
+                    SELECT discord_id, {column}
+                    FROM users
+                    WHERE {column} > 0
+                    ORDER BY {column} DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            return [dict(row) for row in rows]
+        except Exception:
+            return []
 
     # ============================================================
     # Event listeners for XP
@@ -362,37 +450,39 @@ class RPGManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: nextcord.Member, after: nextcord.Member):
-        """Auto-assign/remove live role when members start/stop streaming."""
-        if not LIVE_ROLE_ID or after.bot:
+        """Track activity durations (streaming/gaming/listening) and live role."""
+        if after.bot:
             return
 
         was_streaming = self._is_streaming(before)
         is_streaming = self._is_streaming(after)
+        is_gaming = self._has_activity_type(after, nextcord.ActivityType.playing)
+        is_listening = self._has_activity_type(after, nextcord.ActivityType.listening)
 
-        if was_streaming == is_streaming:
-            return
+        # --- Live role (streaming start/stop) ---
+        if LIVE_ROLE_ID and was_streaming != is_streaming:
+            live_role = after.guild.get_role(LIVE_ROLE_ID)
+            if live_role:
+                try:
+                    if is_streaming and live_role not in after.roles:
+                        await after.add_roles(live_role, reason='Started streaming')
+                        logger.info('Added live role to %s', after)
+                        stream_url = self._get_stream_url(after)
+                        if stream_url:
+                            from src.services.networking_service import NetworkingService
 
-        live_role = after.guild.get_role(LIVE_ROLE_ID)
-        if not live_role:
-            return
+                            svc = NetworkingService()
+                            await svc.append_profile_link(str(after.id), stream_url)
+                    elif not was_streaming and live_role in after.roles:
+                        await after.remove_roles(live_role, reason='Stopped streaming')
+                        logger.info('Removed live role from %s', after)
+                except Exception as exc:
+                    logger.warning('Failed to update live role for %s: %s', after, exc)
 
-        try:
-            if is_streaming and live_role not in after.roles:
-                await after.add_roles(live_role, reason='Started streaming')
-                logger.info('Added live role to %s', after)
-
-                stream_url = self._get_stream_url(after)
-                if stream_url:
-                    from src.services.networking_service import NetworkingService
-
-                    svc = NetworkingService()
-                    await svc.append_profile_link(str(after.id), stream_url)
-
-            elif not was_streaming and live_role in after.roles:
-                await after.remove_roles(live_role, reason='Stopped streaming')
-                logger.info('Removed live role from %s', after)
-        except Exception as exc:
-            logger.warning('Failed to update live role for %s: %s', after, exc)
+        # --- Activity duration tracking ---
+        await self._track_activity_duration(after, 'streaming', is_streaming)
+        await self._track_activity_duration(after, 'gaming', is_gaming)
+        await self._track_activity_duration(after, 'listening', is_listening)
 
     @staticmethod
     def _is_streaming(member: nextcord.Member) -> bool:
@@ -407,6 +497,32 @@ class RPGManager(commands.Cog):
             if activity.type == nextcord.ActivityType.streaming:
                 return activity.url
         return None
+
+    @staticmethod
+    def _has_activity_type(member: nextcord.Member, activity_type: nextcord.ActivityType) -> bool:
+        return any(a.type == activity_type for a in member.activities)
+
+    async def _track_activity_duration(self, member: nextcord.Member, category: str, is_active: bool) -> None:
+        """Record start/stop of an activity and persist elapsed minutes."""
+        uid = member.id
+        bucket = self._activity_start_times[category]
+
+        if is_active and uid not in bucket:
+            bucket[uid] = time.monotonic()
+        elif not is_active and uid in bucket:
+            start = bucket.pop(uid)
+            minutes = int((time.monotonic() - start) / 60)
+            if minutes < 1:
+                return
+            column = f'total_{category}_minutes'
+            try:
+                await db.execute(
+                    f'UPDATE users SET {column} = {column} + $1 WHERE discord_id = $2',
+                    minutes,
+                    str(uid),
+                )
+            except Exception as exc:
+                logger.debug('Failed to update %s for %s: %s', column, member, exc)
 
     # ============================================================
     # Background tasks
@@ -538,6 +654,90 @@ class RPGManager(commands.Cog):
     async def before_evaluate_activity_roles(self):
         await self.bot.wait_until_ready()
 
+    # ------------------------------------------------------------
+    # Inactivity monitoring — daily at 9:00 AM IST
+    # ------------------------------------------------------------
+
+    @tasks.loop(minutes=1)
+    async def check_inactivity(self):
+        """Run inactivity check once per day at the configured IST hour."""
+        now = datetime.now(timezone(timedelta(hours=IST_UTC_OFFSET)))
+        if now.hour != INACTIVITY_CHECK_HOUR or now.minute != INACTIVITY_CHECK_MINUTE:
+            return
+        if not runtime_state.db_available or not LOGS_CHANNEL_ID:
+            return
+
+        try:
+            inactive_users = await inactivity_service.get_inactive_users(
+                INACTIVITY_WEEK_DAYS,
+                INACTIVITY_MONTH_DAYS,
+            )
+            if not inactive_users:
+                return
+
+            logs_channel = self.bot.get_channel(LOGS_CHANNEL_ID)
+            if logs_channel is None:
+                logs_channel = await self.bot.fetch_channel(LOGS_CHANNEL_ID)
+
+            guild = self.bot.guilds[0] if self.bot.guilds else None
+
+            for entry in inactive_users:
+                user_id = int(entry['discord_id'])
+                member = guild.get_member(user_id) if guild else self.bot.get_user(user_id)
+                if member is None:
+                    continue
+
+                days = entry['days_inactive']
+                last_seen = entry['last_active']
+
+                # 1-week threshold — log to logs channel
+                if entry['notify_week']:
+                    embed = alert_embed(
+                        '⏰ Inactivity Alert — 1 Week',
+                        f'{member.mention} has been inactive for **{days} days**.\n'
+                        f'Last active: {last_seen.strftime("%Y-%m-%d %H:%M UTC")}',
+                    )
+                    await safe_send(logs_channel, embed=embed)
+                    await inactivity_service.mark_week_notified(entry['discord_id'])
+
+                # 1-month threshold — DM the user + log to logs channel
+                if entry['notify_month']:
+                    try:
+                        dm_embed = info_embed(
+                            '👋 We miss you!',
+                            (
+                                f"Hey there! We noticed you haven't been around **VEKA** in a while — "
+                                f'about **{days} days** to be exact.\n\n'
+                                "Everything okay? We'd love to see you back in the community. "
+                                "If there's anything going on or you need help with anything, "
+                                'feel free to reach out to our mods!'
+                            ),
+                        )
+                        await member.send(embed=dm_embed)
+                    except nextcord.Forbidden:
+                        logger.debug('Cannot DM %s — DMs disabled', member)
+                    except Exception as exc:
+                        logger.warning('Failed to DM inactive user %s: %s', member, exc)
+
+                    embed = alert_embed(
+                        '⚠️ Inactivity Alert — 1 Month',
+                        (
+                            f'{member.mention} has been inactive for **{days} days**.\n'
+                            f'Last active: {last_seen.strftime("%Y-%m-%d %H:%M UTC")}\n'
+                            'A friendly DM has been sent to the user.'
+                        ),
+                    )
+                    await safe_send(logs_channel, embed=embed)
+                    await inactivity_service.mark_month_notified(entry['discord_id'])
+
+            logger.info('Inactivity check complete — %d users processed', len(inactive_users))
+        except Exception as exc:
+            logger.error('Inactivity check failed: %s', exc, exc_info=True)
+
+    @check_inactivity.before_loop
+    async def before_check_inactivity(self):
+        await self.bot.wait_until_ready()
+
     # ============================================================
     # Commands
     # ============================================================
@@ -599,15 +799,96 @@ class RPGManager(commands.Cog):
 
     @nextcord.slash_command(name='leaderboard', description='View the community leaderboard')
     @safe_slash_command()
-    async def leaderboard_command(self, interaction: nextcord.Interaction):
-        """Show top 10 leaderboard and the user's rank."""
+    async def leaderboard_command(
+        self,
+        interaction: nextcord.Interaction,
+        stat: str = nextcord.SlashOption(
+            description='Stat to rank by',
+            required=False,
+            choices=['xp', 'messages', 'voice', 'streaming', 'gaming', 'listening'],
+        ),
+        period: str = nextcord.SlashOption(
+            description='Time period',
+            required=False,
+            choices=['alltime', 'month', 'week'],
+        ),
+    ):
+        """Show top 10 leaderboard for a given stat and period."""
         await interaction.response.defer()
 
-        data = await self._get_leaderboard_data()
-        if not data:
+        stat = stat or 'xp'
+        period = period or 'alltime'
+
+        # XP leaderboard (existing behaviour)
+        if stat == 'xp':
+            data = await self._get_leaderboard_data()
+            if not data:
+                embed = await info_embed(
+                    title='Leaderboard',
+                    description='No activity recorded yet. Start chatting to earn XP!',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                    guild=interaction.guild,
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            medals = ['\U0001f947', '\U0001f948', '\U0001f949']
+            lines = []
+            for i, row in enumerate(data):
+                medal = medals[i] if i < 3 else f'#{i + 1}'
+                uid = int(row['discord_id'])
+                member = self.bot.get_user(uid)
+                name = member.display_name if member else row.get('username') or f'User {uid}'
+                level = row.get('level') or calculate_level(row.get('points', 0))
+                lines.append(f'**{medal}** {name} — Level {level} | {row["points"]:,} XP')
+
+            user_rank = await self._get_user_rank(interaction.user.id)
+            user_row = await db.fetch_one(
+                'SELECT points, level FROM users WHERE discord_id = $1',
+                str(interaction.user.id),
+            )
+            if user_row:
+                user_level = user_row['level'] or calculate_level(user_row['points'] or 0)
+                rank_text = f'#{user_rank}' if user_rank else 'Unranked'
+                lines.append(f'\n**Your Rank**: {rank_text} — Level {user_level} | {user_row["points"] or 0:,} XP')
+
+            description = '\n'.join(lines)
+
+            embed = await success_embed(
+                title='Community Leaderboard — XP',
+                description=description,
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=interaction.guild,
+            )
+            if data:
+                top_uid = int(data[0]['discord_id'])
+                top_member = self.bot.get_user(top_uid)
+                if top_member:
+                    embed.set_thumbnail(
+                        url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
+                    )
+            embed.timestamp = datetime.now(UTC)
+            await interaction.followup.send(embed=embed)
+            return
+
+        # Stat-based leaderboard
+        stat_map = {
+            'messages': 'total_messages',
+            'voice': 'total_voice_minutes',
+            'streaming': 'total_streaming_minutes',
+            'gaming': 'total_gaming_minutes',
+            'listening': 'total_listening_minutes',
+        }
+        column = stat_map[stat]
+        period_label = {'alltime': 'All Time', 'month': 'Past Month', 'week': 'Past Week'}
+        rows = await self._get_stat_leaderboard(column, period if period != 'alltime' else None)
+
+        if not rows:
             embed = await info_embed(
-                title='Leaderboard',
-                description='No activity recorded yet. Start chatting to earn XP!',
+                title=f'Leaderboard — {stat.title()}',
+                description='No data recorded yet for this category.',
                 contributor_source=__name__,
                 user=interaction.user,
                 guild=interaction.guild,
@@ -617,35 +898,25 @@ class RPGManager(commands.Cog):
 
         medals = ['\U0001f947', '\U0001f948', '\U0001f949']
         lines = []
-        for i, row in enumerate(data):
+        for i, row in enumerate(rows):
             medal = medals[i] if i < 3 else f'#{i + 1}'
             uid = int(row['discord_id'])
             member = self.bot.get_user(uid)
-            name = member.display_name if member else row.get('username') or f'User {uid}'
-            level = row.get('level') or calculate_level(row.get('points', 0))
-            lines.append(f'**{medal}** {name} — Level {level} | {row["points"]:,} XP')
-
-        user_rank = await self._get_user_rank(interaction.user.id)
-        user_row = await db.fetch_one(
-            'SELECT points, level FROM users WHERE discord_id = $1',
-            str(interaction.user.id),
-        )
-        if user_row:
-            user_level = user_row['level'] or calculate_level(user_row['points'] or 0)
-            rank_text = f'#{user_rank}' if user_rank else 'Unranked'
-            lines.append(f'\n**Your Rank**: {rank_text} — Level {user_level} | {user_row["points"] or 0:,} XP')
+            name = member.display_name if member else f'User {uid}'
+            val = row.get(column) or row.get('stat_val') or 0
+            lines.append(f'**{medal}** {name}: {val:,}')
 
         description = '\n'.join(lines)
 
         embed = await success_embed(
-            title='Community Leaderboard',
+            title=f'Community Leaderboard — {stat.title()} ({period_label[period]})',
             description=description,
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        if data:
-            top_uid = int(data[0]['discord_id'])
+        if rows:
+            top_uid = int(rows[0]['discord_id'])
             top_member = self.bot.get_user(top_uid)
             if top_member:
                 embed.set_thumbnail(url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url)
