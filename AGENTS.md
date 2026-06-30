@@ -48,7 +48,7 @@ All config lives in `pyproject.toml` under `[tool.ruff]` and `[tool.mypy]`. Pre-
 ## Architecture
 
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, builds bot, loads extensions, `bot.run()`
-- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py:27`). Only these: `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.resources.feeds`. Many stubs under `src/cogs/` are NOT loaded (fun, quiz, mentorship, gamification, portfolio, workshops). Add a cog's module path (full dotted path, e.g. `src.cogs.xxx`) to `EXTENSIONS` to enable it.
+- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py:23-41`): `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.admin.moderation`, `src.cogs.admin.notifications`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.marketplace.reviews`, `src.cogs.resources.feeds`, `src.cogs.mentorship`, `src.cogs.marketplace_enhanced`, `src.cogs.portfolio.portfolio_manager`, `src.cogs.radio.radio`, `src.cogs.rpg.rpg_manager`, `src.cogs.external.info`, `src.cogs.external.export`, `src.cogs.status`. Unloaded stubs: `gamification/` (intentionally disabled), `quiz.py`, `workshops/`. Add a cog's dotted module path to `EXTENSIONS` to enable it.
 - **Degraded-mode:** DB/cog failures don't crash the bot. `bot.runtime_state` (`src/core/runtime_state.py`) tracks `db_available`, `loaded_cogs`, `failed_cogs`, `degraded_features`.
 - **Layering:** `src/cogs/` (thin command handlers) → `src/services/` (business logic) → `src/database/` (data access).
 - **Each cog** needs a module-level `setup(bot)` function.
@@ -60,6 +60,7 @@ All config lives in `pyproject.toml` under `[tool.ruff]` and `[tool.mypy]`. Pre-
 - **`$1`/`$2` parameter style** (asyncpg native).
 - All methods raise `DatabaseUnavailableError` on failure and flip `runtime_state.db_available`.
 - Migrations: `.sql` files in `migrations/`, auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`.
+- Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) to avoid PostgreSQL rejecting them as unknown server_settings.
 
 ## Conventions
 
@@ -68,9 +69,9 @@ All config lives in `pyproject.toml` under `[tool.ruff]` and `[tool.mypy]`. Pre-
 - All user-facing output uses embed helpers from `src/utils/embeds.py`: `veka_embed`, `success_embed`, `error_embed`, `info_embed`, `alert_embed`. Pass `contributor_source=__name__`.
 - Logging: `logging.getLogger('VEKA.<area>')`.
 - Rate limiting: `@rate_limit('bucket_name')` from `src.utils.security`.
-- RBAC from `src.utils.security`: `@require_mod()`, `@require_admin()`, `@require_verified()`. Also `admin_only()` in `safety.py` (parallel auth via `ADMIN_IDS`/`OWNER_IDS`).
+- RBAC from `src.utils.security`: `@require_mod()`, `@require_admin()`, `@require_verified()`. Also `admin_only()`/`staff_only()` in `safety.py` (parallel auth via `ADMIN_IDS`/`OWNER_IDS`).
 - Single `.env` file for config. Command prefix is hardcoded `!` in `src/config/config.py`.
 
 ## CI/CD
 
-`.github/workflows/deploy-discord-bot.yml` — deploys on push to `main`/`production` **only when commit message starts with `Merge pull request`**. Self-hosted runner. Gates on log line `"is ready. DB available"` appearing within 60s.
+`.github/workflows/deploy-discord-bot.yml` — deploys on push to `main`/`production` **only when commit message starts with `Merge pull request`**. Self-hosted runner. Gates on log line `"is ready. DB available=True"` appearing within 60s.
