@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 import nextcord
 from nextcord.ext import commands
 
+from src.database.database import db
 from src.services.networking_service import NetworkingService
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import safe_command, safe_send, safe_slash_command
@@ -245,6 +246,31 @@ class Networking(commands.Cog):
         else:
             rep_text = 'No reviews yet'
         embed.add_field(name='Reputation', value=rep_text, inline=True)
+
+        user_row = await db.fetch_one(
+            'SELECT last_active FROM users WHERE discord_id = $1',
+            str(target.id),
+        )
+        if user_row and user_row['last_active']:
+            last_active = user_row['last_active']
+            if last_active.tzinfo is None:
+                from datetime import UTC
+
+                last_active = last_active.replace(tzinfo=UTC)
+            from datetime import datetime
+
+            delta = datetime.now(UTC) - last_active
+            if delta.days == 0:
+                last_active_text = f'{delta.seconds // 3600}h {(delta.seconds % 3600) // 60}m ago'
+            elif delta.days == 1:
+                last_active_text = 'Yesterday'
+            elif delta.days < 30:
+                last_active_text = f'{delta.days} days ago'
+            else:
+                last_active_text = last_active.strftime('%d %b %Y')
+        else:
+            last_active_text = 'Never'
+        embed.add_field(name='Last Active', value=last_active_text, inline=True)
 
         if viewer and viewer != target:
             mutual = await self.svc.get_mutual_connections(str(viewer.id), str(target.id))
