@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nextcord
 from nextcord.ext import commands
@@ -61,7 +61,7 @@ class Health(commands.Cog):
     async def send_health_status(self, target):
         status = 'Degraded' if self._is_degraded() else 'Healthy'
         db_status = 'Available' if runtime_state.db_available else 'Unavailable'
-        uptime = datetime.utcnow() - runtime_state.startup_time
+        uptime = datetime.now(UTC) - runtime_state.startup_time
 
         user = target.author if hasattr(target, 'author') else target.user if hasattr(target, 'user') else None
         embed = await info_embed(
@@ -127,7 +127,7 @@ class Health(commands.Cog):
     @nextcord.slash_command(name='botinfo', description='Show bot information and runtime data')
     @safe_slash_command()
     async def botinfo(self, interaction: nextcord.Interaction):
-        uptime = datetime.utcnow() - runtime_state.startup_time
+        uptime = datetime.now(UTC) - runtime_state.startup_time
         embed = await info_embed(
             title='VEKA Bot Info',
             description='Runtime and environment details for the VEKA bot.',
