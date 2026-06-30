@@ -25,6 +25,9 @@ ACTIVE_PRO_IDS = [int(item) for item in os.getenv('ACTIVE_PRO_IDS', '').split(',
 _admin_alert_channel = os.getenv('ADMIN_ALERT_CHANNEL_ID', '')
 ADMIN_ALERT_CHANNEL_ID = int(_admin_alert_channel) if _admin_alert_channel.strip().isdigit() else None
 
+_marketplace_channel = os.getenv('MARKETPLACE_CHANNEL_ID', '')
+MARKETPLACE_CHANNEL_ID = int(_marketplace_channel) if _marketplace_channel.strip().isdigit() else None
+
 STAFF_BOT_COMMANDS_CHANNEL_ID = 1328775724668031126
 STAFF_CHANNEL_ID = 1091908318324334704
 PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226
