@@ -175,7 +175,12 @@ class Marketplace(commands.Cog):
             listing_embed.set_image(url=image_url)
         listing_embed.set_footer(text='Use /marketplace view <id> for details')
         try:
-            await channel.send(embed=listing_embed)
+            if isinstance(channel, nextcord.ForumChannel):
+                # Forum channels have no .send(); each listing becomes a thread.
+                thread_name = f'📦 {title} - ${price:.2f}'[:100]
+                await channel.create_thread(name=thread_name, embed=listing_embed)
+            else:
+                await channel.send(embed=listing_embed)
         except Exception as exc:
             logger.warning('Failed to post listing to marketplace channel: %s', exc)
 
