@@ -38,7 +38,11 @@ class Marketplace(commands.Cog):
             choices={'New': 'new', 'Like New': 'like_new', 'Good': 'good', 'Fair': 'fair', 'Poor': 'poor'},
         ),
         description: str = '',
-        image: nextcord.Attachment | None = None,
+        image: nextcord.Attachment | None = nextcord.SlashOption(
+            name='image',
+            description='Upload an image of the item',
+            required=False,
+        ),
     ):
         """Create a new listing in the marketplace."""
         if price < 0:
