@@ -362,7 +362,12 @@ class MarketplaceReviews(commands.Cog):
 
             embed = await success_embed(
                 title='Listing Bumped',
-                description=f'**{listing["title"]}** has been bumped to the top!',
+                description=(
+                    f'**{listing["title"]}** has been bumped to the top!\n\n'
+                    'Also bump with our partner bots to reach even more people:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot'
+                ),
                 contributor_source=__name__,
                 user=interaction.user,
             )
@@ -639,7 +644,18 @@ class MarketplaceReviews(commands.Cog):
 
             await db.execute('UPDATE marketplace_listings SET bumped_at = NOW() WHERE id = $1', listing_id)
 
-            await ctx.send(f'✅ **{listing["title"]}** has been bumped to the top!')
+            embed = await success_embed(
+                title='Listing Bumped',
+                description=(
+                    f'**{listing["title"]}** has been bumped to the top!\n\n'
+                    'Also bump with our partner bots to reach even more people:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot'
+                ),
+                contributor_source=__name__,
+                user=ctx.author,
+            )
+            await ctx.send(embed=embed)
 
         except Exception as e:
             logger.error(f'Bump error: {str(e)}')

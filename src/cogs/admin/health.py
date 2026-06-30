@@ -66,39 +66,41 @@ class Health(commands.Cog):
         user = target.author if hasattr(target, 'author') else target.user if hasattr(target, 'user') else None
         embed = await info_embed(
             title='VEKA Bot Health',
-            description='Current runtime and infrastructure status for VEKA.',
+            description='Current runtime status and system history.',
             contributor_source=__name__,
             user=user,
             guild=getattr(target, 'guild', None),
         )
-        embed.add_field(name='Status', value=status, inline=False)
-        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
+
+        # Current status
+        embed.add_field(name='Status', value=status, inline=True)
         embed.add_field(name='Database', value=db_status, inline=True)
-        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
-        embed.add_field(name='Failed Cogs', value=str(len(runtime_state.failed_cogs)), inline=True)
-        embed.add_field(
-            name='Degraded Features', value=', '.join(runtime_state.degraded_features) or 'None', inline=False
-        )
-        embed.add_field(name='Bot Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+
+        # Runtime
+        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
         embed.add_field(name='Version', value=runtime_state.version, inline=True)
-        embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
-        embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
 
-        # System stats
-        stats = _get_system_stats()
-        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
-        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
-        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
-        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+        # Cog health
+        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
+        embed.add_field(name='Failed Cogs', value=str(len(runtime_state.failed_cogs)), inline=True)
+        degraded = ', '.join(runtime_state.degraded_features) or 'None'
+        embed.add_field(name='Degraded Features', value=degraded, inline=False)
+
+        # Error history
+        last_error = runtime_state.last_db_error or 'None recorded'
+        embed.add_field(name='Last DB Error', value=last_error, inline=False)
+
+        if runtime_state.last_recovery_time:
+            recov = runtime_state.last_recovery_time.strftime('%Y-%m-%d %H:%M:%S UTC')
+            embed.add_field(name='Last Recovery', value=recov, inline=True)
 
         # Export status
         export_active = runtime_state.alert_state_cache.get('export_active', False)
         export_progress = runtime_state.alert_state_cache.get('export_progress', '')
         if export_active:
             embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
-        else:
-            embed.add_field(name='Active Export', value='None', inline=True)
 
         try:
             if isinstance(target, nextcord.Interaction):
@@ -128,27 +130,25 @@ class Health(commands.Cog):
         uptime = datetime.utcnow() - runtime_state.startup_time
         embed = await info_embed(
             title='VEKA Bot Info',
-            description='Basic runtime and environment details for the VEKA bot.',
+            description='Runtime and environment details for the VEKA bot.',
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
-        embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
-        embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
-        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
-        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
-        embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
-        embed.add_field(name='Status', value='Degraded' if self._is_degraded() else 'Healthy', inline=False)
 
-        # System stats
+        status = 'Degraded' if self._is_degraded() else 'Healthy'
+        embed.add_field(name='Status', value=status, inline=True)
+        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+
         stats = _get_system_stats()
         embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
         embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
         embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
-        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
 
-        # Export status
+        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
+        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
+        embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
+
         export_active = runtime_state.alert_state_cache.get('export_active', False)
         export_progress = runtime_state.alert_state_cache.get('export_progress', '')
         if export_active:
