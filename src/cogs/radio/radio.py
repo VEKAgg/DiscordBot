@@ -132,7 +132,7 @@ class RadioManager(commands.Cog):
                     )
                 return
 
-            self._voice_client = await channel.connect(self_deaf=True)
+            self._voice_client = await channel.connect(self_deaf=True)  # type: ignore[call-arg]
             self._play_stream()
             self._started_at = datetime.utcnow()
             self._auto_started = True
@@ -166,7 +166,7 @@ class RadioManager(commands.Cog):
         source = nextcord.FFmpegPCMAudio(
             self._stream_url,
             before_options=FFMPEG_OPTIONS['before_options'],
-            **{k: v for k, v in FFMPEG_OPTIONS.items() if k != 'before_options'},
+            **{k: v for k, v in FFMPEG_OPTIONS.items() if k != 'before_options'},  # type: ignore[arg-type]
         )
         self._voice_client.play(source, after=self._on_play_end)
 
@@ -316,7 +316,7 @@ class RadioManager(commands.Cog):
         connected = self._is_connected()
         channel_name = 'None'
         if connected and self._voice_client and self._voice_client.channel:
-            channel_name = self._voice_client.channel.name
+            channel_name = self._voice_client.channel.name  # type: ignore[attr-defined]
 
         description = (
             f'**Status**: {"Streaming" if connected else "Stopped"}\n'

@@ -60,6 +60,8 @@ def owner_in_external_only():
     """
 
     def predicate(ctx_or_interaction):
+        guild: nextcord.Guild | None = None
+        user: nextcord.User | nextcord.Member | None = None
         if isinstance(ctx_or_interaction, commands.Context):
             guild = ctx_or_interaction.guild
             user = ctx_or_interaction.author
@@ -67,6 +69,8 @@ def owner_in_external_only():
             guild = ctx_or_interaction.guild
             user = ctx_or_interaction.user
         else:
+            return False
+        if user is None:
             return False
 
         # Main guild — everyone can use
