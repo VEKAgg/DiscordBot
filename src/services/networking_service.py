@@ -169,3 +169,30 @@ class NetworkingService:
             """,
             user_id,
         )
+
+    async def get_connection_count(self, discord_id: str) -> int:
+        user_id = await self._resolve_user_id(discord_id)
+        row = await db.fetch_one(
+            """
+            SELECT COUNT(*) AS cnt FROM connections
+            WHERE user1_id = $1 OR user2_id = $1
+            """,
+            user_id,
+        )
+        return row['cnt'] if row else 0
+
+    async def get_mutual_connections(self, user1_discord_id: str, user2_discord_id: str) -> list[str]:
+        conns1 = await self.get_connections(user1_discord_id)
+        conns2 = await self.get_connections(user2_discord_id)
+
+        def _other_ids(conns: list[dict], uid: str) -> set[str]:
+            ids: set[str] = set()
+            for c in conns:
+                other = c['user2_discord_id'] if c['user1_discord_id'] == uid else c['user1_discord_id']
+                if other:
+                    ids.add(other)
+            return ids
+
+        ids1 = _other_ids(conns1, user1_discord_id)
+        ids2 = _other_ids(conns2, user2_discord_id)
+        return sorted(ids1 & ids2)

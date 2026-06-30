@@ -8,6 +8,7 @@ from src.config.config import ENVIRONMENT
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_only
+from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.health')
 
@@ -32,6 +33,10 @@ def _get_system_stats() -> dict:
 
 
 class Health(commands.Cog):
+    @nextcord.slash_command(name='admin', description='Staff and admin commands')
+    async def admin(self, interaction: nextcord.Interaction):
+        pass
+
     def __init__(self, bot):
         self.bot = bot
 
@@ -156,7 +161,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
+    @admin.subcommand(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
     @staff_only()
     @safe_slash_command()
     async def featurestatus(self, interaction: nextcord.Interaction):
@@ -178,7 +183,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='startupchecks', description='Show results of initial boot checks')
+    @admin.subcommand(name='startupchecks', description='Show results of initial boot checks')
     @staff_only()
     @safe_slash_command()
     async def startupchecks(self, interaction: nextcord.Interaction):
@@ -200,7 +205,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='reloadcog', description='Reload a bot cog extension')
+    @admin.subcommand(name='reloadcog', description='Reload a bot cog extension')
     @staff_only()
     @safe_slash_command()
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
@@ -247,6 +252,45 @@ class Health(commands.Cog):
                 user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ==================== WRAPPER SUBCOMMANDS (from other cogs) ====================
+
+    @admin.subcommand(name='pingsquad', description='Ping notification squad (Staff+)')
+    @require_staff()
+    @safe_slash_command()
+    async def mp_pingsquad(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
+        cog = self.bot.get_cog('Notifications')
+        if cog:
+            await cog.ping_squad_slash(interaction, message)
+
+    @admin.subcommand(name='panic', description='Toggle server lockdown (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_panic(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('Moderation')
+        if cog:
+            await cog.panic_slash(interaction)
+
+    @admin.subcommand(name='lockdown', description='Toggle server lockdown (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_lockdown(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('Moderation')
+        if cog:
+            await cog.lockdown_slash(interaction)
+
+    @admin.subcommand(name='broadcast', description='Send announcement to a channel (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_broadcast(
+        self,
+        interaction: nextcord.Interaction,
+        channel: nextcord.TextChannel,
+        message: str,
+    ):
+        cog = self.bot.get_cog('Notifications')
+        if cog:
+            await cog.broadcast_slash(interaction, channel, message)
 
 
 def setup(bot):

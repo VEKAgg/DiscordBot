@@ -10,7 +10,7 @@ from nextcord.ext import commands
 
 from src.config.config import STAFF_CHANNEL_ID
 from src.utils.embeds import alert_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import safe_send
 from src.utils.security.rbac import require_founder
 
 logger = logging.getLogger('VEKA.admin.moderation')
@@ -21,9 +21,6 @@ class Moderation(commands.Cog):
         self.bot = bot
         self.lockdown_active = False
 
-    @nextcord.slash_command(name='panic', description='Toggle server lockdown (Founder only)')
-    @require_founder()
-    @safe_slash_command()
     async def panic_slash(self, interaction: nextcord.Interaction):
         """Toggle server lockdown. Sends critical alert to staff channel with @everyone."""
         await self._toggle_lockdown(interaction)
@@ -34,9 +31,6 @@ class Moderation(commands.Cog):
         """Toggle server lockdown (Founder only)"""
         await self._toggle_lockdown(ctx)
 
-    @nextcord.slash_command(name='lockdown', description='Toggle server lockdown (Founder only)')
-    @require_founder()
-    @safe_slash_command()
     async def lockdown_slash(self, interaction: nextcord.Interaction):
         """Alias for /panic"""
         await self._toggle_lockdown(interaction)

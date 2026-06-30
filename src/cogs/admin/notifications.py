@@ -17,7 +17,7 @@ from src.config.config import (
     PUBLIC_BOT_COMMANDS_CHANNEL_ID,
 )
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import safe_send
 from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.notifications')
@@ -73,11 +73,8 @@ class Notifications(commands.Cog):
     async def before_daily_bump(self):
         await self.bot.wait_until_ready()
 
-    # ==================== STAFF COMMANDS ====================
+    # ==================== STAFF COMMANDS (delegated via /admin group) ====================
 
-    @nextcord.slash_command(name='ping_squad', description='Ping notification squad (Staff+)')
-    @require_staff()
-    @safe_slash_command()
     async def ping_squad_slash(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
         """Ping notification squad in public bot commands channel"""
         channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
@@ -137,11 +134,8 @@ class Notifications(commands.Cog):
             logger.error('Failed to ping squad: %s', e)
             await ctx.send('Could not send the ping.')
 
-    # ==================== FOUNDER COMMANDS ====================
+    # ==================== FOUNDER COMMANDS (delegated via /admin group) ====================
 
-    @nextcord.slash_command(name='broadcast', description='Send announcement to a channel (Founder only)')
-    @require_founder()
-    @safe_slash_command()
     async def broadcast_slash(
         self,
         interaction: nextcord.Interaction,
