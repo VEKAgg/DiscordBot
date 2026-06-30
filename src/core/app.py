@@ -24,9 +24,20 @@ EXTENSIONS = [
     'src.cogs.admin.basic',
     'src.cogs.admin.help',
     'src.cogs.admin.health',
+    'src.cogs.admin.moderation',
+    'src.cogs.admin.notifications',
     'src.cogs.networking.networking',
     'src.cogs.marketplace.marketplace',
+    'src.cogs.marketplace.reviews',
     'src.cogs.resources.feeds',
+    'src.cogs.mentorship',
+    'src.cogs.marketplace_enhanced',
+    'src.cogs.portfolio.portfolio_manager',
+    'src.cogs.radio',
+    'src.cogs.rpg',
+    'src.cogs.external.info',
+    'src.cogs.external.export',
+    'src.cogs.status',
 ]
 
 
@@ -35,6 +46,7 @@ def get_intents() -> nextcord.Intents:
     intents.message_content = True
     intents.members = True
     intents.guilds = True
+    intents.voice_states = True
     return intents
 
 
@@ -162,13 +174,6 @@ def configure_bot_events(bot: commands.Bot) -> None:
         await bot.notifier.send_startup_summary()  # type: ignore[attr-defined]
 
         db_health_check.start()
-
-        try:
-            await bot.change_presence(
-                activity=nextcord.Activity(type=nextcord.ActivityType.watching, name='VEKA community and resources')
-            )
-        except Exception as exc:
-            logger.warning(f'Unable to set presence: {exc}')
 
         logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available}')
 

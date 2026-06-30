@@ -5,13 +5,15 @@ description = "VEKA — a nextcord-based professional networking Discord bot bac
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "nextcord==3.2.0",
+    "nextcord[voice]==3.2.0",
     "python-dotenv==1.2.2",
     "asyncpg==0.31.0",
     "aiohttp==3.14.1",
     "feedparser==6.0.12",
     "beautifulsoup4==4.15.0",
     "validators==0.35.0",
+    "yt-dlp>=2024.1.1",
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +29,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["F", "I", "UP", "B", "W", "ARG"]
-ignore = ["E501"]
+ignore = ["E501", "B008"]
 
 [tool.ruff.format]
 quote-style = "single"

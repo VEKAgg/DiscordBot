@@ -7,9 +7,28 @@ from nextcord.ext import commands
 from src.config.config import ENVIRONMENT
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_only
 
 logger = logging.getLogger('VEKA.admin.health')
+
+
+def _get_system_stats() -> dict:
+    """Get CPU, memory, and thread stats via psutil."""
+    try:
+        import psutil
+
+        process = psutil.Process()
+        mem = process.memory_info()
+        cpu_count = psutil.cpu_count()
+        return {
+            'cpu_percent': psutil.cpu_percent(interval=0.1),
+            'cpu_count': cpu_count or 0,
+            'mem_used_mb': round(mem.rss / 1024 / 1024, 1),
+            'mem_percent': round(process.memory_percent(), 1),
+            'threads': process.num_threads(),
+        }
+    except ImportError:
+        return {'cpu_percent': 0, 'cpu_count': 0, 'mem_used_mb': 0, 'mem_percent': 0, 'threads': 0}
 
 
 class Health(commands.Cog):
@@ -44,11 +63,13 @@ class Health(commands.Cog):
         db_status = 'Available' if runtime_state.db_available else 'Unavailable'
         uptime = datetime.utcnow() - runtime_state.startup_time
 
-        embed = info_embed(
+        user = target.author if hasattr(target, 'author') else target.user if hasattr(target, 'user') else None
+        embed = await info_embed(
             title='VEKA Bot Health',
             description='Current runtime and infrastructure status for VEKA.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=user,
+            guild=getattr(target, 'guild', None),
         )
         embed.add_field(name='Status', value=status, inline=False)
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
@@ -63,6 +84,21 @@ class Health(commands.Cog):
         embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
         embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
+
+        # System stats
+        stats = _get_system_stats()
+        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
+        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
+        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
+        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+
+        # Export status
+        export_active = runtime_state.alert_state_cache.get('export_active', False)
+        export_progress = runtime_state.alert_state_cache.get('export_progress', '')
+        if export_active:
+            embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
+        else:
+            embed.add_field(name='Active Export', value='None', inline=True)
 
         try:
             if isinstance(target, nextcord.Interaction):
@@ -90,11 +126,12 @@ class Health(commands.Cog):
     @safe_slash_command()
     async def botinfo(self, interaction: nextcord.Interaction):
         uptime = datetime.utcnow() - runtime_state.startup_time
-        embed = info_embed(
+        embed = await info_embed(
             title='VEKA Bot Info',
             description='Basic runtime and environment details for the VEKA bot.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
+            guild=interaction.guild,
         )
         embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
         embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
@@ -104,10 +141,23 @@ class Health(commands.Cog):
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
         embed.add_field(name='Status', value='Degraded' if self._is_degraded() else 'Healthy', inline=False)
 
+        # System stats
+        stats = _get_system_stats()
+        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
+        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
+        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
+        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+
+        # Export status
+        export_active = runtime_state.alert_state_cache.get('export_active', False)
+        export_progress = runtime_state.alert_state_cache.get('export_progress', '')
+        if export_active:
+            embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
+
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def featurestatus(self, interaction: nextcord.Interaction):
         feature_status = {
@@ -117,11 +167,11 @@ class Health(commands.Cog):
             'Database': 'Available' if runtime_state.db_available else 'Unavailable',
         }
 
-        embed = info_embed(
+        embed = await info_embed(
             title='VEKA Feature Status',
             description='Enabled, disabled, and degraded bot features.',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
         )
         for name, value in feature_status.items():
             embed.add_field(name=name, value=value, inline=False)
@@ -129,40 +179,41 @@ class Health(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='startupchecks', description='Show results of initial boot checks')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def startupchecks(self, interaction: nextcord.Interaction):
-        embed = info_embed(
+        embed = await info_embed(
             title='Startup Checks',
             description='Results from the system boot sequence.',
             contributor_source=__name__,
+            user=interaction.user,
         )
 
         if not runtime_state.startup_check_results:
             embed.description = 'No startup checks were recorded.'
         else:
             for check in runtime_state.startup_check_results:
-                icon = '✅' if check['status'] == 'PASS' else '⚠️' if check['status'] == 'WARN' else '❌'
+                icon = 'PASS' if check['status'] == 'PASS' else 'WARN' if check['status'] == 'WARN' else 'FAIL'
                 embed.add_field(
-                    name=f'{icon} {check["name"]}', value=f'`{check["status"]}`: {check["message"]}', inline=False
+                    name=f'[{icon}] {check["name"]}', value=f'`{check["status"]}`: {check["message"]}', inline=False
                 )
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='reloadcog', description='Reload a bot cog extension')
-    @admin_only()
+    @staff_only()
     @safe_slash_command()
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
         extension = self._resolve_extension(cog_name)
         if not extension:
-            embed = error_embed(
+            embed = await error_embed(
                 title='Reload Failed',
                 description=(
                     'Could not resolve the cog name. Use a full extension path '
                     'or a short cog name like `health`, `basic`, `networking`, `marketplace`, or `feeds`.'
                 ),
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
@@ -180,20 +231,20 @@ class Health(commands.Cog):
             if extension in runtime_state.degraded_features:
                 runtime_state.degraded_features.remove(extension)
 
-            embed = success_embed(
+            embed = await success_embed(
                 title='Reload Successful',
                 description=f'Extension `{extension}` reloaded successfully.',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as exc:
             logger.error('Reload cog failed: %s', exc, exc_info=True)
-            embed = error_embed(
+            embed = await error_embed(
                 title='Reload Failed',
                 description=f'Unable to reload `{extension}`: {exc}',
                 contributor_source=__name__,
-                include_repo_link=True,
+                user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
