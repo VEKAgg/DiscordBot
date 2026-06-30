@@ -265,6 +265,9 @@ class ChatExport(commands.Cog):
     ):
         """Background export task."""
         owner = interaction.user
+        if not isinstance(owner, nextcord.Member):
+            logger.warning('Export cancelled: owner is not a guild member')
+            return
         total_channels = len(channels)
         completed = 0
         total_messages = 0

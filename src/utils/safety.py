@@ -208,8 +208,6 @@ def safe_command(requires_db: bool = False):
                 embed = nextcord.Embed(title='Error', description=msg, color=nextcord.Color.red())
                 await safe_send(ctx, embed=embed)
 
-        wrapper.__name__ = func.__name__
-        wrapper.__doc__ = func.__doc__
         return wrapper
 
     return decorator
@@ -239,8 +237,6 @@ def safe_slash_command(requires_db: bool = False):
                 embed = nextcord.Embed(title='Error', description=msg, color=nextcord.Color.red())
                 await safe_send(interaction, embed=embed, ephemeral=True)
 
-        wrapper.__name__ = func.__name__
-        wrapper.__doc__ = func.__doc__
         return wrapper
 
     return decorator
