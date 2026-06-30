@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 
 import aiohttp
 import nextcord
@@ -108,7 +108,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
                 if healthy_count >= CONSECUTIVE_HEALTHY_REQUIRED:
                     runtime_state.db_available = True
-                    runtime_state.last_recovery_time = datetime.utcnow()
+                    runtime_state.last_recovery_time = datetime.now(UTC)
                     runtime_state.alert_state_cache.pop('healthy_count', None)
                     if hasattr(bot, 'notifier'):
                         bot.notifier.clear_cooldown('db_unavailable')
