@@ -18,11 +18,12 @@ class Basic(commands.Cog):
     @safe_command()
     async def hello(self, ctx):
         """Send a hello message"""
-        embed = success_embed(
-            title='👋 Hello!',
+        embed = await success_embed(
+            title='Hello!',
             description=f'Hello there, {ctx.author.mention}! How can I help you today?',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=ctx.author,
+            guild=ctx.guild,
         )
         await ctx.send(embed=embed)
 
@@ -31,11 +32,12 @@ class Basic(commands.Cog):
     async def ping(self, ctx):
         """Check the bot's response time"""
         latency = round(self.bot.latency * 1000)
-        embed = success_embed(
-            title='🏓 Pong!',
+        embed = await success_embed(
+            title='Pong!',
             description=f'Bot latency: **{latency}ms**',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=ctx.author,
+            guild=ctx.guild,
         )
         await ctx.send(embed=embed)
 
@@ -43,11 +45,12 @@ class Basic(commands.Cog):
     @safe_slash_command()
     async def hello_slash(self, interaction: nextcord.Interaction):
         """Send a hello message using slash command"""
-        embed = success_embed(
-            title='👋 Hello!',
+        embed = await success_embed(
+            title='Hello!',
             description=f'Hello there, {interaction.user.mention}! How can I help you today?',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -56,11 +59,12 @@ class Basic(commands.Cog):
     async def ping_slash(self, interaction: nextcord.Interaction):
         """Check the bot's response time using slash command"""
         latency = round(self.bot.latency * 1000)
-        embed = success_embed(
-            title='🏓 Pong!',
+        embed = await success_embed(
+            title='Pong!',
             description=f'Bot latency: **{latency}ms**',
             contributor_source=__name__,
-            include_repo_link=True,
+            user=interaction.user,
+            guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
