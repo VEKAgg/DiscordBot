@@ -13,11 +13,7 @@ logger = logging.getLogger('VEKA.marketplace')
 
 
 class Marketplace(commands.Cog):
-    @nextcord.slash_command(
-        name='marketplace',
-        description='Buy and sell items within the community',
-        dm_permission=False,
-    )  # type: ignore[call-arg]
+    @nextcord.slash_command(name='marketplace', description='Buy and sell items within the community')
     async def marketplace(self, interaction: nextcord.Interaction):
         pass
 
