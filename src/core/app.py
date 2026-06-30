@@ -47,6 +47,7 @@ def get_intents() -> nextcord.Intents:
     intents.members = True
     intents.guilds = True
     intents.voice_states = True
+    intents.presences = True
     return intents
 
 

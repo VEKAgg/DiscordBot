@@ -110,5 +110,9 @@ ACTIVITY_ROLE_INACTIVITY_DAYS = 14
 MAIN_GUILD_ID = 1088553066334273537
 MAIN_SERVER_INVITE_URL = os.getenv('MAIN_SERVER_INVITE_URL', 'https://discord.gg/veka')
 
+# --- Live/Streaming Role ---
+_live_role = os.getenv('LIVE_ROLE_ID', '')
+LIVE_ROLE_ID = int(_live_role) if _live_role.strip().isdigit() else None
+
 # --- Owner ID (hardcoded for guild gating) ---
 OWNER_DISCORD_ID = 941009204045557842

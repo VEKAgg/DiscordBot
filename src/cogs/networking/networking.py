@@ -236,16 +236,26 @@ class Networking(commands.Cog):
         conn_count = await self.svc.get_connection_count(str(target.id))
         embed.add_field(name='Connections', value=str(conn_count), inline=True)
 
+        stats = await self.svc.get_seller_stats(str(target.id))
+        if stats and stats['review_count']:
+            rep_text = (
+                f'\u2b50 {stats["average_rating"]:.1f}/5 ({stats["review_count"]} reviews)\n'
+                f'\U0001f4e6 {stats["total_sales"]} sales'
+            )
+        else:
+            rep_text = 'No reviews yet'
+        embed.add_field(name='Reputation', value=rep_text, inline=True)
+
         if viewer and viewer != target:
             mutual = await self.svc.get_mutual_connections(str(viewer.id), str(target.id))
             if mutual:
                 mutual_names = []
-                for mid in mutual[:10]:
+                for mid in mutual[:3]:
                     member = viewer.guild.get_member(int(mid)) if viewer.guild else None
                     mutual_names.append(member.display_name if member else f'User {mid}')
                 mutual_text = '\n'.join(f'\u2022 {name}' for name in mutual_names)
-                if len(mutual) > 10:
-                    mutual_text += f'\n...and {len(mutual) - 10} more'
+                if len(mutual) > 3:
+                    mutual_text += f'\n...and {len(mutual) - 3} more'
             else:
                 mutual_text = 'None'
             embed.add_field(name='Mutual Connections', value=mutual_text, inline=False)
