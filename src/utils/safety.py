@@ -103,17 +103,13 @@ def _is_staff_user(user, guild=None) -> bool:
     try:
         from types import SimpleNamespace
 
-        from src.utils.security.rbac import Role, rbac
+        from src.utils.security.rbac import ROLE_HIERARCHY, Role, rbac
 
         ctx = SimpleNamespace(author=user, guild=guild)
         role = rbac.get_user_role(ctx)
         return ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF)
     except Exception:
         return False
-
-
-# Import here to avoid circular import at module level
-from src.utils.security.rbac import ROLE_HIERARCHY  # noqa: E402
 
 
 def admin_only():
