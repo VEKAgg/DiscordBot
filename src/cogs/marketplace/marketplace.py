@@ -13,7 +13,11 @@ logger = logging.getLogger('VEKA.marketplace')
 
 
 class Marketplace(commands.Cog):
-    @nextcord.slash_command(name='marketplace', description='Buy and sell items within the community')
+    @nextcord.slash_command(
+        name='marketplace',
+        description='Buy and sell items within the community',
+        dm_permission=False,
+    )  # type: ignore[call-arg]
     async def marketplace(self, interaction: nextcord.Interaction):
         pass
 
@@ -45,6 +49,16 @@ class Marketplace(commands.Cog):
         ),
     ):
         """Create a new listing in the marketplace."""
+        if interaction.guild is None:
+            embed = await error_embed(
+                'Server Only',
+                'Listings can only be created from within the server.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
         if price < 0:
             embed = await error_embed(
                 'Invalid Price', 'Price cannot be negative.', user=interaction.user, contributor_source=__name__
