@@ -19,6 +19,7 @@ from src.config.config import (
     LEADERBOARD_CHANNEL_ID,
     LEADERBOARD_TOP_N,
     LEADERBOARD_UPDATE_INTERVAL,
+    LIVE_ROLE_ID,
     MESSAGE_XP_COOLDOWN,
     RPG_POINTS,
     XP_MULTIPLIERS,
@@ -358,6 +359,54 @@ class RPGManager(commands.Cog):
             guild_id=interaction.guild.id,
             channel_id=interaction.channel.id if interaction.channel else 0,
         )
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: nextcord.Member, after: nextcord.Member):
+        """Auto-assign/remove live role when members start/stop streaming."""
+        if not LIVE_ROLE_ID or after.bot:
+            return
+
+        was_streaming = self._is_streaming(before)
+        is_streaming = self._is_streaming(after)
+
+        if was_streaming == is_streaming:
+            return
+
+        live_role = after.guild.get_role(LIVE_ROLE_ID)
+        if not live_role:
+            return
+
+        try:
+            if is_streaming and live_role not in after.roles:
+                await after.add_roles(live_role, reason='Started streaming')
+                logger.info('Added live role to %s', after)
+
+                stream_url = self._get_stream_url(after)
+                if stream_url:
+                    from src.services.networking_service import NetworkingService
+
+                    svc = NetworkingService()
+                    await svc.append_profile_link(str(after.id), stream_url)
+
+            elif not was_streaming and live_role in after.roles:
+                await after.remove_roles(live_role, reason='Stopped streaming')
+                logger.info('Removed live role from %s', after)
+        except Exception as exc:
+            logger.warning('Failed to update live role for %s: %s', after, exc)
+
+    @staticmethod
+    def _is_streaming(member: nextcord.Member) -> bool:
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.streaming:
+                return True
+        return False
+
+    @staticmethod
+    def _get_stream_url(member: nextcord.Member) -> str | None:
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.streaming:
+                return activity.url
+        return None
 
     # ============================================================
     # Background tasks
