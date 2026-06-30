@@ -181,10 +181,11 @@ def log_error(error: Exception, source, module: str = 'unknown') -> None:
 
 
 def safe_command(requires_db: bool = False):
-    """Decorator for prefix commands: catches exceptions and sends error embed."""
+    """Decorator for prefix commands: catches exceptions and sends error embed.
+    Must be used as the innermost decorator, paired with @commands.command() on the outside."""
 
     def decorator(func):
-        @commands.command()
+        @wraps(func)
         async def wrapper(self, ctx, *args, **kwargs):
             if requires_db and not runtime_state.db_available:
                 embed = nextcord.Embed(
@@ -210,10 +211,12 @@ def safe_command(requires_db: bool = False):
 
 
 def safe_slash_command(requires_db: bool = False):
-    """Decorator for slash commands: catches exceptions and sends ephemeral error embed."""
+    """Decorator for slash commands: catches exceptions and sends ephemeral error embed.
+    Must be used as the innermost decorator, paired with @nextcord.slash_command() or
+    @group.subcommand() on the outside."""
 
     def decorator(func):
-        @nextcord.slash_command()
+        @wraps(func)
         async def wrapper(self, interaction, *args, **kwargs):
             if requires_db and not runtime_state.db_available:
                 embed = nextcord.Embed(
