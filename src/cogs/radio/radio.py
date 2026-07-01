@@ -21,6 +21,7 @@ from src.config.config import (
     RADIO_VOICE_CHANNEL_ID,
 )
 from src.core.runtime_state import runtime_state
+from src.database.database import db
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.guild_gate import owner_in_external_only
 from src.utils.safety import admin_only, safe_send, safe_slash_command
@@ -80,6 +81,7 @@ class RadioManager(commands.Cog):
         if self._target_channel_id:
             self.monitor_stability.start()
             self.refresh_stream_url.start()
+            self.track_radio_listeners.start()
             # Delay auto-join slightly to let bot finish connecting
             await asyncio.sleep(5)
             if not self._manual_stop:
@@ -89,6 +91,7 @@ class RadioManager(commands.Cog):
         """Disconnect and stop tasks when cog is unloaded."""
         self.monitor_stability.stop()
         self.refresh_stream_url.stop()
+        self.track_radio_listeners.stop()
         await self._disconnect()
 
     # ============================================================
@@ -299,6 +302,45 @@ class RadioManager(commands.Cog):
 
     @refresh_stream_url.before_loop
     async def before_refresh_stream_url(self):
+        await self.bot.wait_until_ready()
+
+    # ============================================================
+    # Radio listener tracking — every 5 minutes
+    # ============================================================
+
+    @tasks.loop(minutes=5)
+    async def track_radio_listeners(self):
+        """Track who is listening to the radio and record their time."""
+        if not self._is_connected() or not runtime_state.db_available:
+            return
+
+        if not self._voice_client or not self._voice_client.channel:
+            return
+
+        # Get all non-bot members in the radio voice channel
+        listeners = [
+            m for m in self._voice_client.channel.members
+            if not m.bot
+        ]
+
+        for member in listeners:
+            try:
+                await db.execute(
+                    """
+                    INSERT INTO user_activity_details (user_id, activity_type, activity_name, duration_minutes, last_seen)
+                    VALUES ($1, 'radio', 'Radio Stream', 5, NOW())
+                    ON CONFLICT (user_id, activity_type, activity_name)
+                    DO UPDATE SET
+                        duration_minutes = user_activity_details.duration_minutes + 5,
+                        last_seen = NOW()
+                    """,
+                    str(member.id),
+                )
+            except Exception as exc:
+                logger.debug('Failed to track radio listener %s: %s', member, exc)
+
+    @track_radio_listeners.before_loop
+    async def before_track_radio_listeners(self):
         await self.bot.wait_until_ready()
 
     # ============================================================

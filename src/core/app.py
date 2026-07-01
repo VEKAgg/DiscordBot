@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 
 import aiohttp
 import nextcord
@@ -35,6 +35,7 @@ EXTENSIONS = [
     'src.cogs.portfolio.portfolio_manager',
     'src.cogs.radio.radio',
     'src.cogs.rpg.rpg_manager',
+    'src.cogs.stats',
     'src.cogs.external.info',
     'src.cogs.external.export',
     'src.cogs.status',
@@ -47,6 +48,7 @@ def get_intents() -> nextcord.Intents:
     intents.members = True
     intents.guilds = True
     intents.voice_states = True
+    intents.presences = True
     return intents
 
 
@@ -108,7 +110,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
                 if healthy_count >= CONSECUTIVE_HEALTHY_REQUIRED:
                     runtime_state.db_available = True
-                    runtime_state.last_recovery_time = datetime.utcnow()
+                    runtime_state.last_recovery_time = datetime.now(UTC)
                     runtime_state.alert_state_cache.pop('healthy_count', None)
                     if hasattr(bot, 'notifier'):
                         bot.notifier.clear_cooldown('db_unavailable')
