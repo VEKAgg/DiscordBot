@@ -123,3 +123,29 @@ LIVE_ROLE_ID = int(_live_role) if _live_role.strip().isdigit() else None
 
 # --- Owner ID (hardcoded for guild gating) ---
 OWNER_DISCORD_ID = 941009204045557842
+
+# --- Coding Apps Detection ---
+# Activity names (lowercase) that count as "coding" for the /most coded leaderboard
+CODING_APPS: list[str] = [
+    'visual studio code', 'vscode', 'vs code',
+    'jetbrains', 'intellij', 'intellij idea', 'pycharm', 'webstorm',
+    'rider', 'clion', 'datagrip', 'phpstorm', 'rubymine', 'goland', 'appcode', 'rustrover',
+    'vim', 'neovim', 'nvim',
+    'sublime text', 'sublime',
+    'atom',
+    'emacs',
+    'xcode',
+    'android studio',
+    'gitkraken',
+    'github desktop',
+    'cursor',
+    'windsurf',
+    'zed',
+    'code::blocks',
+    'eclipse',
+    'netbeans',
+    'helix',
+    'lapce',
+    'theia',
+    'nova',
+]
