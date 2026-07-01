@@ -1,7 +1,7 @@
 import os
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 def _load_git_metadata() -> str:
@@ -36,7 +36,7 @@ class RuntimeState:
     loaded_cogs: list[str] = field(default_factory=list)
     failed_cogs: list[str] = field(default_factory=list)
     degraded_features: list[str] = field(default_factory=list)
-    startup_time: datetime = field(default_factory=datetime.utcnow)
+    startup_time: datetime = field(default_factory=lambda: datetime.now(UTC))
     version: str = field(default_factory=lambda: os.getenv('BOT_VERSION', '1.0.0'))
     commit: str = field(default_factory=_load_git_metadata)
     branch: str = field(default_factory=_load_git_branch)

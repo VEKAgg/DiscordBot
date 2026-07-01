@@ -31,12 +31,19 @@ MARKETPLACE_CHANNEL_ID = int(_marketplace_channel) if _marketplace_channel.strip
 STAFF_BOT_COMMANDS_CHANNEL_ID = 1328775724668031126
 STAFF_CHANNEL_ID = 1091908318324334704
 PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226
+LOGS_CHANNEL_ID = 1329192112410857563
 
 # Notification settings
 NOTIFICATION_SQUAD_ROLE_NAME = 'notification squad'
 DAILY_BUMP_HOUR = 18  # 6 PM
 DAILY_BUMP_MINUTE = 0
 IST_UTC_OFFSET = 5.5  # IST is UTC+5:30
+
+# Inactivity monitoring — daily at 9:00 AM IST
+INACTIVITY_CHECK_HOUR = 9  # IST hour (24h)
+INACTIVITY_CHECK_MINUTE = 0
+INACTIVITY_WEEK_DAYS = 7
+INACTIVITY_MONTH_DAYS = 30
 
 # PostgreSQL Configuration
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
@@ -110,5 +117,35 @@ ACTIVITY_ROLE_INACTIVITY_DAYS = 14
 MAIN_GUILD_ID = 1088553066334273537
 MAIN_SERVER_INVITE_URL = os.getenv('MAIN_SERVER_INVITE_URL', 'https://discord.gg/veka')
 
+# --- Live/Streaming Role ---
+_live_role = os.getenv('LIVE_ROLE_ID', '')
+LIVE_ROLE_ID = int(_live_role) if _live_role.strip().isdigit() else None
+
 # --- Owner ID (hardcoded for guild gating) ---
 OWNER_DISCORD_ID = 941009204045557842
+
+# --- Coding Apps Detection ---
+# Activity names (lowercase) that count as "coding" for the /most coded leaderboard
+CODING_APPS: list[str] = [
+    'visual studio code', 'vscode', 'vs code',
+    'jetbrains', 'intellij', 'intellij idea', 'pycharm', 'webstorm',
+    'rider', 'clion', 'datagrip', 'phpstorm', 'rubymine', 'goland', 'appcode', 'rustrover',
+    'vim', 'neovim', 'nvim',
+    'sublime text', 'sublime',
+    'atom',
+    'emacs',
+    'xcode',
+    'android studio',
+    'gitkraken',
+    'github desktop',
+    'cursor',
+    'windsurf',
+    'zed',
+    'code::blocks',
+    'eclipse',
+    'netbeans',
+    'helix',
+    'lapce',
+    'theia',
+    'nova',
+]

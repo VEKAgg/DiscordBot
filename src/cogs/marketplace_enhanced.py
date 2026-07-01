@@ -31,10 +31,8 @@ class MarketplaceEnhanced(commands.Cog):
         self.update_featured_listings.cancel()
         self.check_expiring_listings.cancel()
 
-    # ==================== SLASH COMMANDS ====================
+    # ==================== SLASH COMMANDS (delegated via /marketplace group) ====================
 
-    @nextcord.slash_command(name='search', description='Advanced marketplace search with filters')
-    @safe_slash_command(requires_db=True)
     async def search_slash(self, interaction: nextcord.Interaction, query: str):
         try:
             filters = self._parse_search_query(query)
@@ -81,8 +79,6 @@ class MarketplaceEnhanced(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='watch', description='Add a listing to your watchlist')
-    @safe_slash_command(requires_db=True)
     async def watch_slash(self, interaction: nextcord.Interaction, listing_id: str):
         try:
             user = await get_user(str(interaction.user.id))
@@ -116,8 +112,6 @@ class MarketplaceEnhanced(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='unwatch', description='Remove a listing from your watchlist')
-    @safe_slash_command(requires_db=True)
     async def unwatch_slash(self, interaction: nextcord.Interaction, listing_id: str):
         try:
             user = await get_user(str(interaction.user.id))
@@ -140,8 +134,6 @@ class MarketplaceEnhanced(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='watchlist', description='View all items you are watching')
-    @safe_slash_command(requires_db=True)
     async def watchlist_slash(self, interaction: nextcord.Interaction):
         try:
             user = await get_user(str(interaction.user.id))
@@ -187,8 +179,6 @@ class MarketplaceEnhanced(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='offer', description='Make an offer on a listing')
-    @safe_slash_command(requires_db=True)
     async def offer_slash(self, interaction: nextcord.Interaction, listing_id: str, price: str, message: str = ''):
         try:
             buyer = await get_user(str(interaction.user.id))
@@ -297,8 +287,6 @@ class MarketplaceEnhanced(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='myoffers', description='View offers on your listings or offers you have made')
-    @safe_slash_command(requires_db=True)
     async def myoffers_slash(self, interaction: nextcord.Interaction):
         try:
             user = await get_user(str(interaction.user.id))
