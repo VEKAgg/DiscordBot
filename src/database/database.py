@@ -84,9 +84,11 @@ class Database:
                 return await connection.fetchrow(query, *args)
         except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
@@ -103,9 +105,11 @@ class Database:
                 return await connection.fetch(query, *args)
         except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
@@ -122,9 +126,11 @@ class Database:
                 return await connection.fetchval(query, *args)
         except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
@@ -138,9 +144,11 @@ class Database:
                 return await connection.execute(query, *args)
         except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database connection error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database query error: %s | query=%s | args=%s', exc, query, args, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 
@@ -154,11 +162,13 @@ class Database:
                 await connection.executemany(query, args_list)
         except (asyncpg.ConnectionFailureError, asyncpg.InterfaceError) as exc:
             runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error(
                 'Database connection error: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True
             )
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
             logger.error('Database query error: %s | query=%s | args_list=%s', exc, query, args_list, exc_info=True)
             raise DatabaseUnavailableError('Database query failed') from exc
 

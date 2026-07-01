@@ -8,6 +8,7 @@ from src.config.config import MARKETPLACE_CHANNEL_ID
 from src.database.database import db
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.security import rate_limit
 
 logger = logging.getLogger('VEKA.marketplace')
 
@@ -436,6 +437,89 @@ class Marketplace(commands.Cog):
             contributor_source=__name__,
         )
         await safe_send(ctx, embed=embed)
+
+    # ==================== REVIEW SUBCOMMANDS ====================
+
+    @marketplace.subcommand(name='review', description='Leave a review for a transaction')
+    @rate_limit('marketplace')
+    @safe_slash_command(requires_db=True)
+    async def mp_review(
+        self,
+        interaction: nextcord.Interaction,
+        transaction_id: int,
+        rating: int = nextcord.SlashOption(description='Rating from 1 to 5', min_value=1, max_value=5),
+        comment: str = '',
+    ):
+        cog = self.bot.get_cog('MarketplaceReviews')
+        if cog:
+            await cog.review_slash(interaction, transaction_id, rating, comment)
+
+    @marketplace.subcommand(name='seller', description="View a seller's reputation and statistics")
+    @safe_slash_command(requires_db=True)
+    async def mp_seller(self, interaction: nextcord.Interaction, member: nextcord.Member = None):
+        cog = self.bot.get_cog('MarketplaceReviews')
+        if cog:
+            await cog.seller_slash(interaction, member)
+
+    @marketplace.subcommand(name='reviews', description='View reviews you have received')
+    @safe_slash_command(requires_db=True)
+    async def mp_reviews(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('MarketplaceReviews')
+        if cog:
+            await cog.reviews_slash(interaction)
+
+    @marketplace.subcommand(name='helpful', description='Mark a review as helpful')
+    @safe_slash_command(requires_db=True)
+    async def mp_helpful(self, interaction: nextcord.Interaction, review_id: int):
+        cog = self.bot.get_cog('MarketplaceReviews')
+        if cog:
+            await cog.helpful_slash(interaction, review_id)
+
+    # ==================== SEARCH & WATCH SUBCOMMANDS ====================
+
+    @marketplace.subcommand(name='search', description='Advanced marketplace search with filters')
+    @safe_slash_command(requires_db=True)
+    async def mp_search(self, interaction: nextcord.Interaction, query: str):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.search_slash(interaction, query)
+
+    @marketplace.subcommand(name='watch', description='Add a listing to your watchlist')
+    @safe_slash_command(requires_db=True)
+    async def mp_watch(self, interaction: nextcord.Interaction, listing_id: str):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.watch_slash(interaction, listing_id)
+
+    @marketplace.subcommand(name='unwatch', description='Remove a listing from your watchlist')
+    @safe_slash_command(requires_db=True)
+    async def mp_unwatch(self, interaction: nextcord.Interaction, listing_id: str):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.unwatch_slash(interaction, listing_id)
+
+    @marketplace.subcommand(name='watchlist', description='View all items you are watching')
+    @safe_slash_command(requires_db=True)
+    async def mp_watchlist(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.watchlist_slash(interaction)
+
+    # ==================== OFFER SUBCOMMANDS ====================
+
+    @marketplace.subcommand(name='offer', description='Make an offer on a listing')
+    @safe_slash_command(requires_db=True)
+    async def mp_offer(self, interaction: nextcord.Interaction, listing_id: str, price: str, message: str = ''):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.offer_slash(interaction, listing_id, price, message)
+
+    @marketplace.subcommand(name='myoffers', description='View offers on your listings or offers you have made')
+    @safe_slash_command(requires_db=True)
+    async def mp_myoffers(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('MarketplaceEnhanced')
+        if cog:
+            await cog.myoffers_slash(interaction)
 
 
 def setup(bot):
