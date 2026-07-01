@@ -16,6 +16,7 @@ from nextcord.ext import commands, tasks
 from src.config.config import (
     ACTIVITY_ROLE_INACTIVITY_DAYS,
     ACTIVITY_ROLES,
+    CODING_APPS,
     INACTIVITY_CHECK_HOUR,
     INACTIVITY_CHECK_MINUTE,
     INACTIVITY_MONTH_DAYS,
@@ -98,12 +99,17 @@ class RPGManager(commands.Cog):
             'gaming': {},
             'listening': {},
         }
+        # Detailed activity tracking: (user_id, activity_type, activity_name) -> start_time
+        self._detailed_activity_start: dict[tuple[int, str, str], float] = {}
+        # Cache of active activities per user for diffing
+        self._user_active_activities: dict[int, dict[str, set[str]]] = {}
 
     async def cog_load(self):
         """Start background tasks."""
         self.update_leaderboard.start()
         self.evaluate_activity_roles.start()
         self.check_inactivity.start()
+        self.flush_activity_details.start()
         # Restore leaderboard message reference if channel is configured
         if LEADERBOARD_CHANNEL_ID:
             await self._restore_leaderboard_message()
@@ -113,6 +119,9 @@ class RPGManager(commands.Cog):
         self.update_leaderboard.stop()
         self.evaluate_activity_roles.stop()
         self.check_inactivity.stop()
+        self.flush_activity_details.stop()
+        # Flush any remaining activity durations
+        await self._flush_all_detailed_activities()
 
     # ============================================================
     # DB helpers
@@ -492,6 +501,29 @@ class RPGManager(commands.Cog):
         await self._track_activity_duration(after, 'gaming', is_gaming)
         await self._track_activity_duration(after, 'listening', is_listening)
 
+        # --- Detailed activity tracking (games, listening, coding) ---
+        try:
+            game_names = self._get_game_names(after)
+            streaming_games = self._get_streaming_game_names(after)
+            listening_details = self._get_listening_details(after)
+            coding_apps = self._get_coding_apps(after)
+
+            await self._track_detailed_activity(after, 'game', game_names)
+            await self._track_detailed_activity(after, 'streaming_game', streaming_games)
+            await self._track_detailed_activity(after, 'coding', coding_apps)
+
+            # For listening, track each song/artist as a separate entry
+            listening_names = set()
+            for detail in listening_details:
+                if 'song' in detail:
+                    listening_names.add(detail['song'])
+                if 'artist' in detail:
+                    listening_names.add(detail['artist'])
+                listening_names.add(detail.get('name', 'Unknown'))
+            await self._track_detailed_activity(after, 'listening', listening_names)
+        except Exception as exc:
+            logger.debug('Failed to track detailed activities for %s: %s', after, exc)
+
     @staticmethod
     def _is_streaming(member: nextcord.Member) -> bool:
         for activity in member.activities:
@@ -509,6 +541,121 @@ class RPGManager(commands.Cog):
     @staticmethod
     def _has_activity_type(member: nextcord.Member, activity_type: nextcord.ActivityType) -> bool:
         return any(a.type == activity_type for a in member.activities)
+
+    # ============================================================
+    # Activity detail extraction helpers
+    # ============================================================
+
+    @staticmethod
+    def _get_game_names(member: nextcord.Member) -> set[str]:
+        """Extract game names from Playing activities."""
+        games = set()
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.playing and activity.name:
+                games.add(activity.name)
+        return games
+
+    @staticmethod
+    def _get_streaming_game_names(member: nextcord.Member) -> set[str]:
+        """Extract game names from activities when user is also streaming."""
+        games: set[str] = set()
+        is_streaming = any(a.type == nextcord.ActivityType.streaming for a in member.activities)
+        if not is_streaming:
+            return games
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.playing and activity.name:
+                games.add(activity.name)
+        return games
+
+    @staticmethod
+    def _get_listening_details(member: nextcord.Member) -> list[dict]:
+        """Extract listening details from Spotify activity."""
+        details = []
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.listening:
+                info = {'name': activity.name or 'Unknown'}
+                # Spotify activities have additional metadata
+                if hasattr(activity, 'details') and activity.details:
+                    info['song'] = activity.details
+                if hasattr(activity, 'state') and activity.state:
+                    info['artist'] = activity.state
+                if hasattr(activity, 'assets') and activity.assets:
+                    large_text = activity.assets.get('large_text')
+                    if large_text:
+                        info['album'] = large_text
+                details.append(info)
+        return details
+
+    @staticmethod
+    def _is_coding_activity(activity_name: str) -> bool:
+        """Check if an activity name matches a known coding app."""
+        name_lower = activity_name.lower()
+        return any(coding_app in name_lower for coding_app in CODING_APPS)
+
+    def _get_coding_apps(self, member: nextcord.Member) -> set[str]:
+        """Extract coding app names from activities."""
+        apps = set()
+        for activity in member.activities:
+            if activity.type == nextcord.ActivityType.playing and activity.name:
+                if self._is_coding_activity(activity.name):
+                    apps.add(activity.name)
+            elif activity.type == nextcord.ActivityType.custom and activity.name:
+                if self._is_coding_activity(activity.name):
+                    apps.add(activity.name)
+        return apps
+
+    async def _store_activity_detail(
+        self, user_id: int, activity_type: str, activity_name: str, minutes: int
+    ) -> None:
+        """Upsert activity detail to the database."""
+        if minutes < 1 or not activity_name:
+            return
+        try:
+            await db.execute(
+                """
+                INSERT INTO user_activity_details (user_id, activity_type, activity_name, duration_minutes, last_seen)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (user_id, activity_type, activity_name)
+                DO UPDATE SET
+                    duration_minutes = user_activity_details.duration_minutes + $4,
+                    last_seen = NOW()
+                """,
+                str(user_id),
+                activity_type,
+                activity_name,
+                minutes,
+            )
+        except Exception as exc:
+            logger.debug('Failed to store activity detail for %s: %s', user_id, exc)
+
+    async def _track_detailed_activity(
+        self, member: nextcord.Member, activity_type: str, activity_names: set[str]
+    ) -> None:
+        """Track start/stop of named activities and persist elapsed minutes."""
+        uid = member.id
+        now = time.monotonic()
+
+        # Get previously active activities of this type
+        prev = self._user_active_activities.get(uid, {}).get(activity_type, set())
+        curr = activity_names
+
+        # Activities that stopped
+        for name in prev - curr:
+            key = (uid, activity_type, name)
+            start = self._detailed_activity_start.pop(key, None)
+            if start:
+                minutes = int((now - start) / 60)
+                await self._store_activity_detail(uid, activity_type, name, minutes)
+
+        # Activities that started
+        for name in curr - prev:
+            key = (uid, activity_type, name)
+            self._detailed_activity_start[key] = now
+
+        # Update cache
+        if uid not in self._user_active_activities:
+            self._user_active_activities[uid] = {}
+        self._user_active_activities[uid][activity_type] = curr
 
     async def _track_activity_duration(self, member: nextcord.Member, category: str, is_active: bool) -> None:
         """Record start/stop of an activity and persist elapsed minutes."""
@@ -744,6 +891,35 @@ class RPGManager(commands.Cog):
 
     @check_inactivity.before_loop
     async def before_check_inactivity(self):
+        await self.bot.wait_until_ready()
+
+    # ------------------------------------------------------------
+    # Activity detail flushing — every 5 minutes
+    # ------------------------------------------------------------
+
+    @tasks.loop(minutes=5)
+    async def flush_activity_details(self):
+        """Periodically flush in-memory activity durations to the database."""
+        await self._flush_all_detailed_activities()
+
+    async def _flush_all_detailed_activities(self) -> None:
+        """Flush all tracked detailed activity durations to the database."""
+        now = time.monotonic()
+        keys_to_flush = list(self._detailed_activity_start.keys())
+
+        for key in keys_to_flush:
+            start = self._detailed_activity_start.get(key)
+            if start is None:
+                continue
+            uid, activity_type, activity_name = key
+            minutes = int((now - start) / 60)
+            if minutes >= 1:
+                await self._store_activity_detail(uid, activity_type, activity_name, minutes)
+                # Reset start time, keeping tracking active
+                self._detailed_activity_start[key] = now
+
+    @flush_activity_details.before_loop
+    async def before_flush_activity_details(self):
         await self.bot.wait_until_ready()
 
     # ============================================================

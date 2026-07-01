@@ -35,6 +35,7 @@ EXTENSIONS = [
     'src.cogs.portfolio.portfolio_manager',
     'src.cogs.radio.radio',
     'src.cogs.rpg.rpg_manager',
+    'src.cogs.stats',
     'src.cogs.external.info',
     'src.cogs.external.export',
     'src.cogs.status',
