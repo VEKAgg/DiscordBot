@@ -19,8 +19,9 @@ class RSSService:
 
     async def fetch_feed(self, url: str) -> dict | None:
         try:
+            headers = {'User-Agent': 'VEKA-DiscordBot/1.0'}
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                     if response.status != 200:
                         raise ExternalRequestError(f'HTTP Status: {response.status}')
                     content = await response.text()
