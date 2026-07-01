@@ -20,11 +20,8 @@ class MarketplaceReviews(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ==================== SLASH COMMANDS ====================
+    # ==================== SLASH COMMANDS (delegated via /marketplace group) ====================
 
-    @nextcord.slash_command(name='review', description='Leave a review for a transaction')
-    @rate_limit('marketplace')
-    @safe_slash_command(requires_db=True)
     async def review_slash(
         self,
         interaction: nextcord.Interaction,
@@ -142,8 +139,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='seller', description="View a seller's reputation and statistics")
-    @safe_slash_command(requires_db=True)
     async def seller_slash(self, interaction: nextcord.Interaction, member: nextcord.Member = None):
         try:
             target = member or interaction.user
@@ -228,8 +223,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='reviews', description='View reviews you have received')
-    @safe_slash_command(requires_db=True)
     async def reviews_slash(self, interaction: nextcord.Interaction):
         try:
             user = await get_user(str(interaction.user.id))
@@ -281,8 +274,6 @@ class MarketplaceReviews(commands.Cog):
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='helpful', description='Mark a review as helpful')
-    @safe_slash_command(requires_db=True)
     async def helpful_slash(self, interaction: nextcord.Interaction, review_id: int):
         try:
             await db.execute(
@@ -362,7 +353,12 @@ class MarketplaceReviews(commands.Cog):
 
             embed = await success_embed(
                 title='Listing Bumped',
-                description=f'**{listing["title"]}** has been bumped to the top!',
+                description=(
+                    f'**{listing["title"]}** has been bumped to the top!\n\n'
+                    'Also bump with our partner bots to reach even more people:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot'
+                ),
                 contributor_source=__name__,
                 user=interaction.user,
             )
@@ -639,7 +635,18 @@ class MarketplaceReviews(commands.Cog):
 
             await db.execute('UPDATE marketplace_listings SET bumped_at = NOW() WHERE id = $1', listing_id)
 
-            await ctx.send(f'✅ **{listing["title"]}** has been bumped to the top!')
+            embed = await success_embed(
+                title='Listing Bumped',
+                description=(
+                    f'**{listing["title"]}** has been bumped to the top!\n\n'
+                    'Also bump with our partner bots to reach even more people:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot'
+                ),
+                contributor_source=__name__,
+                user=ctx.author,
+            )
+            await ctx.send(embed=embed)
 
         except Exception as e:
             logger.error(f'Bump error: {str(e)}')

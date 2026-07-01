@@ -39,7 +39,10 @@ ROTATION_INTERVAL = 10  # seconds between status changes
 
 def _format_uptime(start_time: datetime) -> str:
     """Format uptime as a human-readable string."""
-    delta = datetime.now(UTC) - start_time
+    try:
+        delta = datetime.now(UTC) - start_time
+    except TypeError:
+        return 'unknown'
     total_seconds = int(delta.total_seconds())
     days, remainder = divmod(total_seconds, 86400)
     hours, remainder = divmod(remainder, 3600)
@@ -103,25 +106,33 @@ class StatusRotator(commands.Cog):
     @tasks.loop(seconds=ROTATION_INTERVAL)
     async def rotate_status(self):
         """Rotate to the next status."""
+        status_def = STATUSES[self._status_index]
         try:
-            status_def = STATUSES[self._status_index]
             activity = self._build_activity(status_def)
             await self.bot.change_presence(activity=activity)
-            self._status_index = (self._status_index + 1) % len(STATUSES)
         except Exception as exc:
-            logger.warning('Failed to update status: %s', exc)
+            logger.warning(
+                'Failed to update status [%d/%d] (%s): %s',
+                self._status_index + 1,
+                len(STATUSES),
+                status_def.get('text', '?'),
+                exc,
+            )
+        finally:
+            self._status_index = (self._status_index + 1) % len(STATUSES)
 
     @rotate_status.before_loop
     async def before_rotate_status(self):
         await self.bot.wait_until_ready()
         # Set initial status immediately
+        status_def = STATUSES[0]
         try:
-            status_def = STATUSES[0]
             activity = self._build_activity(status_def)
             await self.bot.change_presence(activity=activity)
-            self._status_index = 1
         except Exception as exc:
             logger.warning('Failed to set initial status: %s', exc)
+        finally:
+            self._status_index = 1
 
 
 def setup(bot: commands.Bot):

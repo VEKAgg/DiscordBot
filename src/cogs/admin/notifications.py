@@ -17,7 +17,7 @@ from src.config.config import (
     PUBLIC_BOT_COMMANDS_CHANNEL_ID,
 )
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import safe_send
 from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.notifications')
@@ -53,7 +53,10 @@ class Notifications(commands.Cog):
                 title='Daily Bump Reminder',
                 description=(
                     f'{role_mention}\n\n'
-                    "It's time to bump the server! Use `/bump` to keep our community growing.\n\n"
+                    "It's time to bump the server!\n\n"
+                    'Use `/bump` with these bots to keep our community growing:\n'
+                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                    f'\u2022 <@1222548162741538938> — Discadia Bot\n\n'
                     'Every bump helps new members discover us. Thank you for your support!'
                 ),
                 contributor_source=__name__,
@@ -70,11 +73,8 @@ class Notifications(commands.Cog):
     async def before_daily_bump(self):
         await self.bot.wait_until_ready()
 
-    # ==================== STAFF COMMANDS ====================
+    # ==================== STAFF COMMANDS (delegated via /admin group) ====================
 
-    @nextcord.slash_command(name='ping_squad', description='Ping notification squad (Staff+)')
-    @require_staff()
-    @safe_slash_command()
     async def ping_squad_slash(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
         """Ping notification squad in public bot commands channel"""
         channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
@@ -134,11 +134,8 @@ class Notifications(commands.Cog):
             logger.error('Failed to ping squad: %s', e)
             await ctx.send('Could not send the ping.')
 
-    # ==================== FOUNDER COMMANDS ====================
+    # ==================== FOUNDER COMMANDS (delegated via /admin group) ====================
 
-    @nextcord.slash_command(name='broadcast', description='Send announcement to a channel (Founder only)')
-    @require_founder()
-    @safe_slash_command()
     async def broadcast_slash(
         self,
         interaction: nextcord.Interaction,
@@ -146,12 +143,7 @@ class Notifications(commands.Cog):
         message: str,
     ):
         """Send an announcement to any channel"""
-        embed = await info_embed(
-            title='Announcement',
-            description=message,
-            contributor_source=__name__,
-        )
-        embed.set_author(name='VEKA Bot Broadcast', icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        embed = nextcord.Embed(description=message, color=nextcord.Color.orange())
 
         try:
             await channel.send(embed=embed)
@@ -172,12 +164,7 @@ class Notifications(commands.Cog):
     @require_founder()
     async def broadcast_prefix(self, ctx, channel: nextcord.TextChannel, *, message: str):
         """Send announcement to a channel (Founder only)"""
-        embed = await info_embed(
-            title='Announcement',
-            description=message,
-            contributor_source=__name__,
-        )
-        embed.set_author(name='VEKA Bot Broadcast', icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+        embed = nextcord.Embed(description=message, color=nextcord.Color.orange())
 
         try:
             await channel.send(embed=embed)

@@ -1,13 +1,14 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import ENVIRONMENT
+from src.config.config import CODING_APPS, ENVIRONMENT
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_only
+from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.health')
 
@@ -32,6 +33,11 @@ def _get_system_stats() -> dict:
 
 
 class Health(commands.Cog):
+    @nextcord.slash_command(name='admin', description='Staff and admin commands')
+    @safe_slash_command()
+    async def admin(self, interaction: nextcord.Interaction):
+        pass
+
     def __init__(self, bot):
         self.bot = bot
 
@@ -61,44 +67,46 @@ class Health(commands.Cog):
     async def send_health_status(self, target):
         status = 'Degraded' if self._is_degraded() else 'Healthy'
         db_status = 'Available' if runtime_state.db_available else 'Unavailable'
-        uptime = datetime.utcnow() - runtime_state.startup_time
+        uptime = datetime.now(UTC) - runtime_state.startup_time
 
         user = target.author if hasattr(target, 'author') else target.user if hasattr(target, 'user') else None
         embed = await info_embed(
             title='VEKA Bot Health',
-            description='Current runtime and infrastructure status for VEKA.',
+            description='Current runtime status and system history.',
             contributor_source=__name__,
             user=user,
             guild=getattr(target, 'guild', None),
         )
-        embed.add_field(name='Status', value=status, inline=False)
-        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
+
+        # Current status
+        embed.add_field(name='Status', value=status, inline=True)
         embed.add_field(name='Database', value=db_status, inline=True)
-        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
-        embed.add_field(name='Failed Cogs', value=str(len(runtime_state.failed_cogs)), inline=True)
-        embed.add_field(
-            name='Degraded Features', value=', '.join(runtime_state.degraded_features) or 'None', inline=False
-        )
-        embed.add_field(name='Bot Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+
+        # Runtime
+        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
         embed.add_field(name='Version', value=runtime_state.version, inline=True)
-        embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
-        embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
         embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
 
-        # System stats
-        stats = _get_system_stats()
-        embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
-        embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
-        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
-        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+        # Cog health
+        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
+        embed.add_field(name='Failed Cogs', value=str(len(runtime_state.failed_cogs)), inline=True)
+        degraded = ', '.join(runtime_state.degraded_features) or 'None'
+        embed.add_field(name='Degraded Features', value=degraded, inline=False)
+
+        # Error history
+        last_error = runtime_state.last_db_error or 'None recorded'
+        embed.add_field(name='Last DB Error', value=last_error, inline=False)
+
+        if runtime_state.last_recovery_time:
+            recov = runtime_state.last_recovery_time.strftime('%Y-%m-%d %H:%M:%S UTC')
+            embed.add_field(name='Last Recovery', value=recov, inline=True)
 
         # Export status
         export_active = runtime_state.alert_state_cache.get('export_active', False)
         export_progress = runtime_state.alert_state_cache.get('export_progress', '')
         if export_active:
             embed.add_field(name='Active Export', value=export_progress or 'Running', inline=False)
-        else:
-            embed.add_field(name='Active Export', value='None', inline=True)
 
         try:
             if isinstance(target, nextcord.Interaction):
@@ -125,30 +133,28 @@ class Health(commands.Cog):
     @nextcord.slash_command(name='botinfo', description='Show bot information and runtime data')
     @safe_slash_command()
     async def botinfo(self, interaction: nextcord.Interaction):
-        uptime = datetime.utcnow() - runtime_state.startup_time
+        uptime = datetime.now(UTC) - runtime_state.startup_time
         embed = await info_embed(
             title='VEKA Bot Info',
-            description='Basic runtime and environment details for the VEKA bot.',
+            description='Runtime and environment details for the VEKA bot.',
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
-        embed.add_field(name='Branch', value=runtime_state.branch or 'unknown', inline=True)
-        embed.add_field(name='Commit', value=runtime_state.commit, inline=True)
-        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
-        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
-        embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
-        embed.add_field(name='Status', value='Degraded' if self._is_degraded() else 'Healthy', inline=False)
 
-        # System stats
+        status = 'Degraded' if self._is_degraded() else 'Healthy'
+        embed.add_field(name='Status', value=status, inline=True)
+        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+
         stats = _get_system_stats()
         embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
         embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
         embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
-        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
 
-        # Export status
+        embed.add_field(name='Uptime', value=str(uptime).split('.')[0], inline=False)
+        embed.add_field(name='Loaded Cogs', value=str(len(runtime_state.loaded_cogs)), inline=True)
+        embed.add_field(name='Environment', value=ENVIRONMENT, inline=True)
+
         export_active = runtime_state.alert_state_cache.get('export_active', False)
         export_progress = runtime_state.alert_state_cache.get('export_progress', '')
         if export_active:
@@ -156,7 +162,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
+    @admin.subcommand(name='featurestatus', description='Show enabled, disabled, and degraded feature status')
     @staff_only()
     @safe_slash_command()
     async def featurestatus(self, interaction: nextcord.Interaction):
@@ -178,7 +184,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='startupchecks', description='Show results of initial boot checks')
+    @admin.subcommand(name='startupchecks', description='Show results of initial boot checks')
     @staff_only()
     @safe_slash_command()
     async def startupchecks(self, interaction: nextcord.Interaction):
@@ -200,7 +206,7 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='reloadcog', description='Reload a bot cog extension')
+    @admin.subcommand(name='reloadcog', description='Reload a bot cog extension')
     @staff_only()
     @safe_slash_command()
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
@@ -247,6 +253,220 @@ class Health(commands.Cog):
                 user=interaction.user,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ==================== WRAPPER SUBCOMMANDS (from other cogs) ====================
+
+    @admin.subcommand(name='pingsquad', description='Ping notification squad (Staff+)')
+    @require_staff()
+    @safe_slash_command()
+    async def mp_pingsquad(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
+        cog = self.bot.get_cog('Notifications')
+        if cog:
+            await cog.ping_squad_slash(interaction, message)
+
+    @admin.subcommand(name='panic', description='Toggle server lockdown (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_panic(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('Moderation')
+        if cog:
+            await cog.panic_slash(interaction)
+
+    @admin.subcommand(name='lockdown', description='Toggle server lockdown (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_lockdown(self, interaction: nextcord.Interaction):
+        cog = self.bot.get_cog('Moderation')
+        if cog:
+            await cog.lockdown_slash(interaction)
+
+    @admin.subcommand(name='broadcast', description='Send announcement to a channel (Founder only)')
+    @require_founder()
+    @safe_slash_command()
+    async def mp_broadcast(
+        self,
+        interaction: nextcord.Interaction,
+        channel: nextcord.TextChannel,
+        message: str,
+    ):
+        cog = self.bot.get_cog('Notifications')
+        if cog:
+            await cog.broadcast_slash(interaction, channel, message)
+
+    # ============================================================
+    # Uptime / Status Commands
+    # ============================================================
+
+    @nextcord.slash_command(name='uptime', description='Show bot uptime and service status')
+    @safe_slash_command()
+    async def uptime_command(self, interaction: nextcord.Interaction):
+        """Public uptime command showing bot status and key services."""
+        uptime = datetime.now(UTC) - runtime_state.startup_time
+        uptime_str = str(uptime).split('.')[0]
+
+        status = 'Healthy' if not self._is_degraded() else 'Degraded'
+        db_status = 'Available' if runtime_state.db_available else 'Unavailable'
+
+        # Radio status
+        radio_cog = self.bot.get_cog('RadioManager')
+        if radio_cog and hasattr(radio_cog, '_is_connected'):
+            radio_connected = radio_cog._is_connected()
+            radio_status = 'Streaming' if radio_connected else 'Stopped'
+        else:
+            radio_status = 'Not loaded'
+
+        # Loaded cogs
+        loaded = len(runtime_state.loaded_cogs)
+        failed = len(runtime_state.failed_cogs)
+
+        description = (
+            f'**Status**: {status}\n'
+            f'**Uptime**: {uptime_str}\n'
+            f'**Database**: {db_status}\n'
+            f'**Radio**: {radio_status}\n'
+            f'**Cogs**: {loaded} loaded, {failed} failed\n'
+            f'**Servers**: {len(self.bot.guilds)}\n'
+            f'**Latency**: {round(self.bot.latency * 1000)}ms'
+        )
+
+        embed = await success_embed(
+            title='VEKA Bot Uptime',
+            description=description,
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        embed.timestamp = datetime.now(UTC)
+        await safe_send(interaction, embed=embed)
+
+    @admin.subcommand(name='detailedstatus', description='Detailed server status dashboard (Staff+)')
+    @staff_only()
+    @safe_slash_command()
+    async def detailed_status(self, interaction: nextcord.Interaction):
+        """Detailed admin-only status dashboard with all metrics."""
+        await interaction.response.defer(ephemeral=True)
+
+        uptime = datetime.now(UTC) - runtime_state.startup_time
+        uptime_str = str(uptime).split('.')[0]
+
+        status = 'Healthy' if not self._is_degraded() else 'Degraded'
+        db_status = 'Available' if runtime_state.db_available else 'Unavailable'
+
+        # System stats
+        stats = _get_system_stats()
+
+        # Radio status
+        radio_cog = self.bot.get_cog('RadioManager')
+        if radio_cog and hasattr(radio_cog, '_is_connected'):
+            radio_connected = radio_cog._is_connected()
+            radio_status = 'Streaming' if radio_connected else 'Stopped'
+            radio_uptime = radio_cog._get_uptime() if hasattr(radio_cog, '_get_uptime') else 'N/A'
+        else:
+            radio_status = 'Not loaded'
+            radio_uptime = 'N/A'
+
+        # Active users by activity type
+        streaming_count = 0
+        gaming_count = 0
+        listening_count = 0
+        coding_count = 0
+
+        if self.bot.guilds:
+            guild = self.bot.guilds[0]
+            for member in guild.members:
+                if member.bot:
+                    continue
+                for activity in member.activities:
+                    if activity.type == nextcord.ActivityType.streaming:
+                        streaming_count += 1
+                        break
+                for activity in member.activities:
+                    if activity.type == nextcord.ActivityType.playing:
+                        gaming_count += 1
+                        break
+                for activity in member.activities:
+                    if activity.type == nextcord.ActivityType.listening:
+                        listening_count += 1
+                        break
+                for activity in member.activities:
+                    if activity.type in (nextcord.ActivityType.playing, nextcord.ActivityType.custom):
+                        if activity.name and any(coding_app in activity.name.lower() for coding_app in CODING_APPS):
+                            coding_count += 1
+                            break
+
+        # Voice channel users
+        voice_users = 0
+        if self.bot.guilds:
+            for vc in self.bot.guilds[0].voice_channels:
+                voice_users += len([m for m in vc.members if not m.bot])
+
+        # Online members
+        online_members = 0
+        if self.bot.guilds:
+            online_members = sum(
+                1 for m in self.bot.guilds[0].members
+                if m.status != nextcord.Status.offline and not m.bot
+            )
+
+        # Feature health
+        feature_status = {
+            'Networking': self._feature_state('src.cogs.networking'),
+            'Marketplace': self._feature_state('src.cogs.marketplace'),
+            'RSS Feeds': self._feature_state('src.cogs.resources.feeds'),
+            'Radio': self._feature_state('src.cogs.radio'),
+            'RPG/Stats': self._feature_state('src.cogs.rpg'),
+            'Mentorship': self._feature_state('src.cogs.mentorship'),
+            'Database': db_status,
+        }
+
+        # Build embed
+        embed = await info_embed(
+            title='VEKA Detailed Status',
+            description='Comprehensive server and bot status dashboard.',
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+
+        # Bot health
+        embed.add_field(name='Status', value=status, inline=True)
+        embed.add_field(name='Uptime', value=uptime_str, inline=True)
+        embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
+
+        # System
+        embed.add_field(name='CPU', value=f'{stats["cpu_percent"]}%', inline=True)
+        embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB', inline=True)
+        embed.add_field(name='Threads', value=str(stats['threads']), inline=True)
+
+        # Activity counts
+        embed.add_field(name='Online', value=str(online_members), inline=True)
+        embed.add_field(name='In Voice', value=str(voice_users), inline=True)
+        embed.add_field(name='Streaming', value=str(streaming_count), inline=True)
+        embed.add_field(name='Gaming', value=str(gaming_count), inline=True)
+        embed.add_field(name='Listening', value=str(listening_count), inline=True)
+        embed.add_field(name='Coding', value=str(coding_count), inline=True)
+
+        # Radio
+        embed.add_field(name='Radio', value=radio_status, inline=True)
+        embed.add_field(name='Radio Uptime', value=radio_uptime, inline=True)
+
+        # Cog health
+        loaded = len(runtime_state.loaded_cogs)
+        failed = len(runtime_state.failed_cogs)
+        embed.add_field(name='Cogs', value=f'{loaded} loaded, {failed} failed', inline=True)
+
+        # Feature status
+        feature_lines = [f'**{k}**: {v}' for k, v in feature_status.items()]
+        embed.add_field(name='Features', value='\n'.join(feature_lines), inline=False)
+
+        # Error history
+        last_error = runtime_state.last_db_error or 'None'
+        if len(last_error) > 100:
+            last_error = last_error[:100] + '...'
+        embed.add_field(name='Last DB Error', value=last_error, inline=False)
+
+        embed.timestamp = datetime.now(UTC)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 def setup(bot):
