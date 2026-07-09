@@ -16,8 +16,9 @@ logger = logging.getLogger('VEKA.admin.health')
 async def _get_system_stats() -> dict:
     """Get CPU, memory, and thread stats via psutil without blocking the event loop."""
     try:
-        import psutil
         import asyncio
+
+        import psutil
 
         process = psutil.Process()
         mem = process.memory_info()
@@ -368,6 +369,7 @@ class Health(commands.Cog):
             radio_uptime = 'N/A'
 
         from src.config.config import MAIN_GUILD_ID
+
         guild = self.bot.get_guild(MAIN_GUILD_ID)
 
         # Active users by activity type
@@ -407,10 +409,7 @@ class Health(commands.Cog):
         # Online members
         online_members = 0
         if guild:
-            online_members = sum(
-                1 for m in guild.members
-                if m.status != nextcord.Status.offline and not m.bot
-            )
+            online_members = sum(1 for m in guild.members if m.status != nextcord.Status.offline and not m.bot)
 
         # Feature health
         feature_status = {
