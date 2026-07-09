@@ -1,8 +1,17 @@
 # AGENTS.md — VEKA Discord Bot
 
-Python `>=3.13`, no test framework. Package management via `uv` (`uv.lock` is source of truth; `requirements.txt` kept for Docker images without uv).
+> Python ≥3.13, nextcord, PostgreSQL (asyncpg). No test framework. Package management via `uv`.
 
-## Setup
+## Index
+
+- [Quick Start](#quick-start) — setup, run, lint
+- [Pending](#pending) — stale files, known gaps
+- [Architecture](#architecture) — entrypoint, cogs, layers, degraded mode
+- [Database](#database) — asyncpg, migrations, parameter style
+- [Conventions](#conventions) — dual commands, safety wrappers, embeds, RBAC
+- [CI/CD](#cicd) — deployment gate, runner
+
+## Quick Start
 
 ```bash
 cp .env.example .env              # fill in DISCORD_TOKEN and DATABASE_URL
@@ -13,14 +22,19 @@ python main.py                     # needs reachable PostgreSQL
 
 Docker: `docker compose -f docker-compose.dev.yml up -d --build` (bot + bundled postgres); `docker compose up -d` (production, expects external DB via `DATABASE_URL`). Logs: `docker logs veka-discord-bot`.
 
-## Lint / Format / Typecheck (run before every push)
+**Lint / Format / Typecheck — run before every push:**
 
 ```bash
 ruff check . --fix && ruff format .
 mypy src/ main.py --explicit-package-bases
 ```
 
-Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs ruff (with `--fix --unsafe-fixes`) + ruff-format + mypy — `pre-commit run --all-files`.
+Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-added-large-files, ruff (with `--fix --unsafe-fixes`), ruff-format, and mypy — `pre-commit run --all-files`.
+
+## Pending
+
+- **`CLAUDE.md` is stale** — it lists only 6 loaded extensions while `src/core/app.py` actually loads 18. Follow this file (`AGENTS.md`) instead.
+- **Hardcoded channel IDs** in `src/config/config.py` (not in `.env`): `STAFF_BOT_COMMANDS_CHANNEL_ID`, `STAFF_CHANNEL_ID`, `PUBLIC_BOT_COMMANDS_CHANNEL_ID`, `LOGS_CHANNEL_ID`.
 
 ## Architecture
 

@@ -79,7 +79,7 @@ RSS_FEEDS = {
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
 
 # --- Radio Configuration ---
-RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/watch?v=jfKfPfyJRdk')
+RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/@LofiGirl/live')
 _radio_channel = os.getenv('RADIO_VOICE_CHANNEL_ID', '')
 RADIO_VOICE_CHANNEL_ID = int(_radio_channel) if _radio_channel.strip().isdigit() else None
 RADIO_REFRESH_INTERVAL = 7200  # seconds (2 hours) — refresh stream URL before YouTube expiry

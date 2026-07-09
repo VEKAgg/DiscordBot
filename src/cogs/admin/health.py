@@ -13,16 +13,18 @@ from src.utils.security.rbac import require_founder, require_staff
 logger = logging.getLogger('VEKA.admin.health')
 
 
-def _get_system_stats() -> dict:
-    """Get CPU, memory, and thread stats via psutil."""
+async def _get_system_stats() -> dict:
+    """Get CPU, memory, and thread stats via psutil without blocking the event loop."""
     try:
         import psutil
+        import asyncio
 
         process = psutil.Process()
         mem = process.memory_info()
         cpu_count = psutil.cpu_count()
+        cpu_percent = await asyncio.to_thread(psutil.cpu_percent, 0.1)
         return {
-            'cpu_percent': psutil.cpu_percent(interval=0.1),
+            'cpu_percent': cpu_percent,
             'cpu_count': cpu_count or 0,
             'mem_used_mb': round(mem.rss / 1024 / 1024, 1),
             'mem_percent': round(process.memory_percent(), 1),
@@ -146,7 +148,7 @@ class Health(commands.Cog):
         embed.add_field(name='Status', value=status, inline=True)
         embed.add_field(name='Latency', value=f'{round(self.bot.latency * 1000)}ms', inline=True)
 
-        stats = _get_system_stats()
+        stats = await _get_system_stats()
         embed.add_field(name='CPU Load', value=f'{stats["cpu_percent"]}%', inline=True)
         embed.add_field(name='CPU Cores', value=str(stats['cpu_count']), inline=True)
         embed.add_field(name='Memory', value=f'{stats["mem_used_mb"]}MB ({stats["mem_percent"]}%)', inline=True)
@@ -353,7 +355,7 @@ class Health(commands.Cog):
         db_status = 'Available' if runtime_state.db_available else 'Unavailable'
 
         # System stats
-        stats = _get_system_stats()
+        stats = await _get_system_stats()
 
         # Radio status
         radio_cog = self.bot.get_cog('RadioManager')
@@ -365,14 +367,16 @@ class Health(commands.Cog):
             radio_status = 'Not loaded'
             radio_uptime = 'N/A'
 
+        from src.config.config import MAIN_GUILD_ID
+        guild = self.bot.get_guild(MAIN_GUILD_ID)
+
         # Active users by activity type
         streaming_count = 0
         gaming_count = 0
         listening_count = 0
         coding_count = 0
 
-        if self.bot.guilds:
-            guild = self.bot.guilds[0]
+        if guild:
             for member in guild.members:
                 if member.bot:
                     continue
@@ -396,15 +400,15 @@ class Health(commands.Cog):
 
         # Voice channel users
         voice_users = 0
-        if self.bot.guilds:
-            for vc in self.bot.guilds[0].voice_channels:
+        if guild:
+            for vc in guild.voice_channels:
                 voice_users += len([m for m in vc.members if not m.bot])
 
         # Online members
         online_members = 0
-        if self.bot.guilds:
+        if guild:
             online_members = sum(
-                1 for m in self.bot.guilds[0].members
+                1 for m in guild.members
                 if m.status != nextcord.Status.offline and not m.bot
             )
 
