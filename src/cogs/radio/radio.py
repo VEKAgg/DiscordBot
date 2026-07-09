@@ -318,10 +318,10 @@ class RadioManager(commands.Cog):
             return
 
         # Get all non-bot members in the radio voice channel
-        listeners = [
-            m for m in self._voice_client.channel.members
-            if not m.bot
-        ]
+        channel = self._voice_client.channel
+        if not isinstance(channel, nextcord.VoiceChannel):
+            return
+        listeners = [m for m in channel.members if not m.bot]
 
         for member in listeners:
             try:

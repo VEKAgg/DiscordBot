@@ -370,7 +370,7 @@ class Honeypot(commands.Cog):
 
     async def _execute_softban(self, guild: nextcord.Guild, member: nextcord.Member, delete_days: int) -> str:
         try:
-            await guild.ban(member, reason='Honeypot: spam bot detected', delete_message_days=delete_days)
+            await guild.ban(member, reason='Honeypot: spam bot detected', delete_message_seconds=delete_days * 86400)
             await guild.unban(member, reason='Honeypot: softban — ban + unban')
             return 'success'
         except nextcord.Forbidden:
@@ -382,7 +382,7 @@ class Honeypot(commands.Cog):
 
     async def _execute_ban(self, guild: nextcord.Guild, member: nextcord.Member, delete_days: int) -> str:
         try:
-            await guild.ban(member, reason='Honeypot: spam bot detected', delete_message_days=delete_days)
+            await guild.ban(member, reason='Honeypot: spam bot detected', delete_message_seconds=delete_days * 86400)
             return 'success'
         except nextcord.Forbidden:
             logger.warning('Missing permissions to ban %s in %s', member.id, guild.id)
