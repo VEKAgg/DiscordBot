@@ -1,8 +1,18 @@
 # AGENTS.md — VEKA Discord Bot
 
-Python `>=3.13`, no test framework. Package management via `uv` (`uv.lock` is source of truth; `requirements.txt` kept for Docker images without uv).
+> Python ≥3.13, nextcord, PostgreSQL (asyncpg). No test framework. Package management via `uv`.
 
-## Setup
+## Index
+
+- [Quick Start](#quick-start) — setup, run, lint
+- [Pending](#pending) — stale files, known gaps
+- [Architecture](#architecture) — entrypoint, cogs, layers, degraded mode
+- [Database](#database) — asyncpg, migrations, parameter style
+- [Conventions](#conventions) — dual commands, safety wrappers, embeds, RBAC
+- [CI/CD](#cicd) — deployment gate, runner
+- [Honeypot Anti-Spam System](#honeypot-anti-spam-system) — trap channels, moderation actions, and schema
+
+## Quick Start
 
 ```bash
 cp .env.example .env              # fill in DISCORD_TOKEN and DATABASE_URL
@@ -13,14 +23,19 @@ python main.py                     # needs reachable PostgreSQL
 
 Docker: `docker compose -f docker-compose.dev.yml up -d --build` (bot + bundled postgres); `docker compose up -d` (production, expects external DB via `DATABASE_URL`). Logs: `docker logs veka-discord-bot`.
 
-## Lint / Format / Typecheck (run before every push)
+**Lint / Format / Typecheck — run before every push:**
 
 ```bash
 ruff check . --fix && ruff format .
 mypy src/ main.py --explicit-package-bases
 ```
 
-Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs ruff (with `--fix --unsafe-fixes`) + ruff-format + mypy — `pre-commit run --all-files`.
+Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-added-large-files, ruff (with `--fix --unsafe-fixes`), ruff-format, and mypy — `pre-commit run --all-files`.
+
+## Pending
+
+- **`CLAUDE.md` is stale** — it lists only 6 loaded extensions while `src/core/app.py` actually loads 18. Follow this file (`AGENTS.md`) instead.
+- **Hardcoded channel IDs** in `src/config/config.py` (not in `.env`): `STAFF_BOT_COMMANDS_CHANNEL_ID`, `STAFF_CHANNEL_ID`, `PUBLIC_BOT_COMMANDS_CHANNEL_ID`, `LOGS_CHANNEL_ID`.
 
 ## Architecture
 
@@ -57,3 +72,42 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 ## CI/CD
 
 `.github/workflows/deploy-discord-bot.yml` — deploys on push to `main`/`production` **only when commit message starts with `Merge pull request`**. Self-hosted runner (`self-hosted, X64, Linux, Veka`). Writes `.env` from secrets/variables, `docker compose up -d --build`. Gates on log line `"is ready. DB available=True"` appearing within 60s.
+
+## Honeypot Anti-Spam System
+
+This system implements trap channels to catch and automatically punish spam bots.
+
+### Database Schema
+- **`honeypots`**: Track channels configured as traps.
+  - `id` (serial PK), `guild_id` (bigint), `channel_id` (bigint), `action_type` (varchar: `softban`, `ban`, `timeout`, `role`), `delete_message_days` (int, nullable), `timeout_hours` (int, nullable), `role_id` (bigint, nullable), `enabled` (boolean), `created_by` (bigint), `created_at`, `updated_at`. Unique index on `(guild_id, channel_id)`.
+- **`honeypot_logging_config`**: Alert and notification settings.
+  - `guild_id` (bigint PK), `logging_channel_id` (bigint, nullable), `notification_role_id` (bigint, nullable), `enabled` (boolean), `updated_by` (bigint), `updated_at`.
+- **`honeypot_events`**: Audit log of triggered honeypots.
+  - `id` (serial PK), `guild_id`, `channel_id`, `user_id`, `honeypot_id`, `action_type`, `action_result` (varchar: `success`, `failed`), `message_id` (bigint, nullable), `message_content_preview` (text, nullable), `created_at`. Indexes on `(guild_id, created_at desc)` and `(user_id)`.
+
+### Core Behaviors & Events
+- **Trigger**: Non-bot, non-webhook messages in any channel registered in `honeypots` where `enabled = True`.
+- **Moderation Actions**:
+  - `softban`: Ban member, delete messages (default 1 day), immediately unban (acts as kick + purge).
+  - `ban`: Ban member, delete messages.
+  - `timeout`: Put member in timeout (timeout duration validated against Discord 28-day limit).
+  - `role`: Assign a configured role (requires role hierarchy and bot permission validation).
+- **Graceful Degradation**: If the database is offline, triggers must still attempt to execute moderation actions and log locally. Logging channel failure should not prevent moderation execution.
+- **Deduplication / Cooldown**: Add brief event-cooldowns to prevent race conditions from multi-message bursts.
+
+### Commands to Implement (Slash Groups)
+- `/honeypot create <channel> [delete_messages_days]`: Creates softban honeypot.
+- `/honeypot list`: Paginated table of server honeypots.
+- `/honeypot view <channel>`: Details of target channel honeypot.
+- `/honeypot delete <channel>`: Removes trap channel.
+- `/honeypot enable/disable <channel>`: Toggles active status.
+- `/honeypot edit ban/timeout/role/softban`: Changes parameters and action type. Must validate role hierarchy / Discord timeout limits.
+- `/honeypot test <channel>`: Dry-run check verifying bot permissions and configurations.
+- `/logging set channel <channel>`: Sets output for logging triggers.
+- `/logging set/clear role <role>`: Configures notification ping on trigger.
+- `/logging view`: Displays logging configuration.
+
+### Permissions & UI Styling
+- **Permissions**: Command execution requires `manage_guild`, `manage_channels`, or `administrator`. Trigger execution requires standard validation of bot roles and hierarchy permissions (`ban_members`, `moderate_members`, `manage_roles`).
+- **UI Styling**: Use orange accent, header `VEKA Bot` (linking to `https://veka.gg`), no emojis in user errors, and standard dynamic footers. Log triggers to the logging channel with details of target user, deleted message days/hours, content preview (if enabled), and role pings.
+- **Architecture**: Placed in `src/cogs/admin/honeypot.py` (or `src/cogs/moderation/honeypot.py`), with query handling via database wrappers. Use existing wrappers (`@safe_slash_command`, `safe_send()`, `success_embed`, `error_embed`).
