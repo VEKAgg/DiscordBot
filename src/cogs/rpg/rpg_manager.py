@@ -604,9 +604,7 @@ class RPGManager(commands.Cog):
                     apps.add(activity.name)
         return apps
 
-    async def _store_activity_detail(
-        self, user_id: int, activity_type: str, activity_name: str, minutes: int
-    ) -> None:
+    async def _store_activity_detail(self, user_id: int, activity_type: str, activity_name: str, minutes: int) -> None:
         """Upsert activity detail to the database."""
         if minutes < 1 or not activity_name:
             return
@@ -858,7 +856,7 @@ class RPGManager(commands.Cog):
                 # 1-month threshold — DM the user + log to logs channel
                 if entry['notify_month']:
                     try:
-                        dm_embed = info_embed(
+                        dm_embed = await info_embed(
                             '👋 We miss you!',
                             (
                                 f"Hey there! We noticed you haven't been around **VEKA** in a while — "

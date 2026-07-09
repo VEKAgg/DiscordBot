@@ -27,9 +27,7 @@ class Stats(commands.Cog):
     # DB helpers
     # ============================================================
 
-    async def _get_top_activity_details(
-        self, activity_type: str, limit: int = 10
-    ) -> list[dict]:
+    async def _get_top_activity_details(self, activity_type: str, limit: int = 10) -> list[dict]:
         """Get top entries for an activity type, aggregated by total duration."""
         try:
             rows = await db.fetch(
@@ -49,9 +47,7 @@ class Stats(commands.Cog):
             logger.debug('Failed to fetch activity details for %s: %s', activity_type, exc)
             return []
 
-    async def _get_top_activity_names_overall(
-        self, activity_type: str, limit: int = 10
-    ) -> list[dict]:
+    async def _get_top_activity_names_overall(self, activity_type: str, limit: int = 10) -> list[dict]:
         """Get top activity names aggregated across all users by total duration."""
         try:
             rows = await db.fetch(
@@ -71,9 +67,7 @@ class Stats(commands.Cog):
             logger.debug('Failed to fetch top activity names for %s: %s', activity_type, exc)
             return []
 
-    async def _get_top_activity_by_user(
-        self, activity_type: str, user_id: int, limit: int = 10
-    ) -> list[dict]:
+    async def _get_top_activity_by_user(self, activity_type: str, user_id: int, limit: int = 10) -> list[dict]:
         """Get a specific user's top entries for an activity type."""
         try:
             rows = await db.fetch(

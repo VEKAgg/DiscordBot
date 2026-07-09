@@ -23,7 +23,7 @@ class ConnectionRequestView(nextcord.ui.View):
         self.svc = svc
 
         options = []
-        for member in guild.member_list:
+        for member in guild.members:
             if str(member.id) == requester_id or member.bot:
                 continue
             label = member.display_name
@@ -34,12 +34,14 @@ class ConnectionRequestView(nextcord.ui.View):
             if len(options) >= 25:
                 break
 
-        select = nextcord.ui.Select(placeholder='Choose a member to connect with...', options=options)
-        select.callback = self._select_callback
+        select: nextcord.ui.Select = nextcord.ui.Select(
+            placeholder='Choose a member to connect with...', options=options
+        )  # type: ignore[type-arg]
+        select.callback = self._select_callback  # type: ignore[method-assign]
         self.add_item(select)
 
     async def _select_callback(self, interaction: nextcord.Interaction):
-        selected_id = interaction.values[0]
+        selected_id = interaction.data['values'][0]  # type: ignore[index,typeddict-item]
         selected_member = interaction.guild.get_member(int(selected_id))
 
         try:
@@ -110,7 +112,7 @@ class ConnectionResponseView(nextcord.ui.View):
         try:
             request = await self.svc.get_pending_request(self.requester_id, self.recipient_id)
             if not request:
-                await interaction.edit_original_response(content='This request has already been processed.', view=None)
+                await interaction.edit_original_message(content='This request has already been processed.', view=None)
                 return
 
             await self.svc.update_request_status(request['id'], 'accepted')
@@ -122,7 +124,7 @@ class ConnectionResponseView(nextcord.ui.View):
                 contributor_source=__name__,
                 user=interaction.user,
             )
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_message(embed=embed, view=None)
 
             requester = interaction.guild.get_member(int(self.requester_id)) if interaction.guild else None
             if requester:
@@ -145,7 +147,7 @@ class ConnectionResponseView(nextcord.ui.View):
         try:
             request = await self.svc.get_pending_request(self.requester_id, self.recipient_id)
             if not request:
-                await interaction.edit_original_response(content='This request has already been processed.', view=None)
+                await interaction.edit_original_message(content='This request has already been processed.', view=None)
                 return
 
             await self.svc.update_request_status(request['id'], 'declined')
@@ -156,7 +158,7 @@ class ConnectionResponseView(nextcord.ui.View):
                 contributor_source=__name__,
                 user=interaction.user,
             )
-            await interaction.edit_original_response(embed=embed, view=None)
+            await interaction.edit_original_message(embed=embed, view=None)
 
             requester = interaction.guild.get_member(int(self.requester_id)) if interaction.guild else None
             if requester:
@@ -418,10 +420,10 @@ class Networking(commands.Cog):
             return
 
         embed = await self._format_profile(
-            target,
+            target,  # type: ignore[arg-type]
             profile,
-            user=interaction.user,
-            viewer=interaction.user,
+            user=interaction.user,  # type: ignore[arg-type]
+            viewer=interaction.user,  # type: ignore[arg-type]
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
@@ -435,7 +437,7 @@ class Networking(commands.Cog):
         """Send a connection request — pick a user from the dropdown."""
         await interaction.response.defer(ephemeral=True)
         try:
-            view = ConnectionRequestView(interaction.guild, str(interaction.user.id), message or '', self.svc)
+            view = ConnectionRequestView(interaction.guild, str(interaction.user.id), message or '', self.svc)  # type: ignore[arg-type]
             embed = await info_embed(
                 title='Select a User',
                 description='Choose the member you want to connect with from the dropdown below.',
@@ -562,7 +564,7 @@ class Networking(commands.Cog):
             )
             if message:
                 notify.add_field(name='Message', value=message, inline=False)
-            view = ConnectionResponseView(
+            response_view = ConnectionResponseView(
                 request_id='pending',
                 requester_id=str(ctx.author.id),
                 recipient_id=str(member.id),
@@ -570,7 +572,7 @@ class Networking(commands.Cog):
                 svc=self.svc,
             )
             try:
-                await member.send(embed=notify, view=view)
+                await member.send(embed=notify, view=response_view)
             except nextcord.Forbidden:
                 logger.info('Unable to DM %s for connection request', member.id)
         except ValueError as exc:
