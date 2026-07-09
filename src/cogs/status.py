@@ -15,7 +15,7 @@ from src.core.runtime_state import runtime_state
 
 logger = logging.getLogger('VEKA.status')
 
-STREAMING_URL = 'https://veka.gg'
+STREAMING_URL = 'https://twitch.tv/whoisshafaat'
 
 # Status definitions — type, text template, optional URL
 # Dynamic placeholders: {guilds}, {users}, {uptime}

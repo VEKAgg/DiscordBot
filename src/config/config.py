@@ -79,7 +79,7 @@ RSS_FEEDS = {
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
 
 # --- Radio Configuration ---
-RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/watch?v=jfKfPfyJRdk')
+RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/@LofiGirl/live')
 _radio_channel = os.getenv('RADIO_VOICE_CHANNEL_ID', '')
 RADIO_VOICE_CHANNEL_ID = int(_radio_channel) if _radio_channel.strip().isdigit() else None
 RADIO_REFRESH_INTERVAL = 7200  # seconds (2 hours) — refresh stream URL before YouTube expiry
@@ -127,11 +127,27 @@ OWNER_DISCORD_ID = 941009204045557842
 # --- Coding Apps Detection ---
 # Activity names (lowercase) that count as "coding" for the /most coded leaderboard
 CODING_APPS: list[str] = [
-    'visual studio code', 'vscode', 'vs code',
-    'jetbrains', 'intellij', 'intellij idea', 'pycharm', 'webstorm',
-    'rider', 'clion', 'datagrip', 'phpstorm', 'rubymine', 'goland', 'appcode', 'rustrover',
-    'vim', 'neovim', 'nvim',
-    'sublime text', 'sublime',
+    'visual studio code',
+    'vscode',
+    'vs code',
+    'jetbrains',
+    'intellij',
+    'intellij idea',
+    'pycharm',
+    'webstorm',
+    'rider',
+    'clion',
+    'datagrip',
+    'phpstorm',
+    'rubymine',
+    'goland',
+    'appcode',
+    'rustrover',
+    'vim',
+    'neovim',
+    'nvim',
+    'sublime text',
+    'sublime',
     'atom',
     'emacs',
     'xcode',
