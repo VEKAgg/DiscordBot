@@ -59,8 +59,6 @@ Loaded modules (see `EXTENSIONS` in `src/core/app.py`):
 
 Additional cogs exist in `src/cogs/` (quiz, gamification, workshops) but are **not loaded** until added to `EXTENSIONS`. Gamification is an intentional disabled stub.
 
-> ⚠️ **Known Issue:** Activity tracking is currently broken because the bot uses `on_member_update` instead of `on_presence_update` for presence/activity events. See [Known Issues](#known-issues) for details.
-
 ---
 
 ## Architecture
@@ -329,9 +327,9 @@ Configure these in the repository's GitHub settings:
 
 ## Known Issues
 
-1. **CRITICAL — Activity tracking broken.** All activity/streaming/gaming/listening tracking uses `on_member_update` (`src/cogs/rpg/rpg_manager.py:468`) but Discord dispatches presence changes via `on_presence_update`. No `on_presence_update` listener exists. Impact: `/most streamed|played|listened|coded`, leaderboard activity sections, and live role are non-functional.
+1. ~~**CRITICAL — Activity tracking broken.**~~ **FIXED.** Listener renamed from `on_member_update` to `on_presence_update`. Activity tracking now fires on the correct Discord event.
 2. **HIGH — Leaderboard auto-update requires setup.** `LEADERBOARD_CHANNEL_ID` defaults to `None`. Must set the env var or run `/setupleaderboard` (admin-only).
-3. **MEDIUM — `joined_at` column missing.** `inactivity_service.py:15` queries `joined_at` but no migration creates it. Inactivity check silently crashes.
+3. ~~**MEDIUM — `joined_at` column missing.**~~ **FIXED.** Migration `015_add_joined_at.sql` adds the column. `inactivity_service.py` uses `COALESCE(joined_at, created_at)` as fallback.
 
 ---
 
