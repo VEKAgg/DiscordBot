@@ -64,3 +64,10 @@ Not in `.env` — requires code change: `STAFF_BOT_COMMANDS_CHANNEL_ID` (1328775
 ## Honeypot Anti-Spam System
 
 Implemented in `src/cogs/admin/honeypot.py` (loaded as `src.cogs.admin.honeypot`). Both `/honeypot` slash group and `!honeypot` prefix group. Traps channels to catch spam bots. Actions: softban, ban, timeout, role. Trigger: non-bot, non-webhook messages in registered channels with `enabled=True`. 5-second dedup cooldown per user per guild. Schema: `honeypots`, `honeypot_logging_config`, `honeypot_events` (migration `014_honeypot_schema.sql`).
+
+## Known Issues
+
+1. ~~**CRITICAL — Activity tracking uses wrong event listener**~~ **FIXED.** Listener renamed from `on_member_update` to `on_presence_update` in `src/cogs/rpg/rpg_manager.py:468`. Activity tracking (streaming, gaming, listening, coding duration; detailed activity; live role toggle) now fires on the correct Discord event.
+2. **HIGH — Leaderboard auto-update requires manual setup**. `LEADERBOARD_CHANNEL_ID` defaults to `None` (`src/config/config.py:90-91`, `.env.example:33`). The background task (`rpg_manager.py:687`) immediately returns if `None`. Must either set the env var or run `/setupleaderboard` (admin-only).
+3. ~~**MEDIUM — `joined_at` column missing from `users` table**~~ **FIXED.** Migration `015_add_joined_at.sql` adds the column and backfills from `created_at`. `inactivity_service.py` now uses `COALESCE(joined_at, created_at)` as fallback.
+4. ~~**LOW — `bot.get_user()` may not resolve display names**~~ **FIXED.** Leaderboard and stats code now uses `guild.get_member(uid)` for guild-specific display names, with fallback to stored username or `User {uid}`.
