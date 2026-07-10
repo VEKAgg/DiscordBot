@@ -21,6 +21,8 @@ database or any single feature is unavailable.
 - [Commands](#commands)
 - [Development](#development)
 - [CI/CD](#cicd)
+- [Known Issues](#known-issues)
+- [License](#license)
 
 ---
 
@@ -43,13 +45,21 @@ is kept for Docker images that don't have `uv`.
 Loaded modules (see `EXTENSIONS` in `src/core/app.py`):
 
 - 🤝 **Networking** — professional profiles, connection requests, and connections (`/profile`, `/connect`, plus `!` prefix equivalents)
-- 🛒 **Marketplace** — listings and reviews
+- 🛒 **Marketplace** — listings, reviews, and enhanced marketplace features
 - 📚 **Resource Feeds** — curated RSS (tech news, jobs, dev blogs) refreshed every 15 minutes
-- 🛠️ **Admin / Health** — administrative commands, help, and health/diagnostics
+- 🎮 **RPG / Leveling** — XP from messages, voice time, and commands; level-up system; activity role evaluation; background tasks for leaderboard auto-update, inactivity monitoring, and activity role assessment
+- 📊 **Leaderboard & Stats** — auto-updating leaderboard embed (`/setupleaderboard`), `/leaderboard [stat]`, `/level [@user]`, `/most streamed|played|listened|coded` activity leaderboards
+- 🔍 **Activity Tracking** — streaming, gaming, listening, and coding activity duration tracking with detailed activity logging (game names, songs, coding apps)
+- 🛠️ **Admin / Health** — administrative commands, help, health/diagnostics, moderation, notifications, and honeypot anti-spam
+- 📋 **Mentorship** — mentorship matching and management
+- 💼 **Portfolio** — portfolio management and display
+- 📻 **Radio** — voice channel radio/audio features
+- 🔗 **External** — info and export commands
+- 📡 **Status** — bot status and system information
 
-Additional cogs exist in `src/cogs/` (quiz, mentorship, fun, gamification,
-portfolio, workshops, enhanced marketplace) but are **not loaded** until added to
-`EXTENSIONS`. Gamification is an intentional disabled stub.
+Additional cogs exist in `src/cogs/` (quiz, gamification, workshops) but are **not loaded** until added to `EXTENSIONS`. Gamification is an intentional disabled stub.
+
+> ⚠️ **Known Issue:** Activity tracking is currently broken because the bot uses `on_member_update` instead of `on_presence_update` for presence/activity events. See [Known Issues](#known-issues) for details.
 
 ---
 
@@ -256,6 +266,10 @@ the same feature — keep them in sync when changing behavior.
 | `/profile [@user]` / `!profile` | View a professional profile |
 | `!setupprofile` | Set up your profile |
 | `/connect @user` / `!connect @user [message]` | Send a connection request |
+| `/leaderboard [stat]` / `!leaderboard` | View leaderboard (xp, messages, voice, streaming, gaming, listening, coded) |
+| `/level [@user]` / `!level` | View your or another user's level and XP |
+| `/most streamed\|played\|listened\|coded` | Activity-specific leaderboards |
+| `/setupleaderboard` | (Admin) Configure the auto-updating leaderboard channel |
 | `/help` / `!help [command]` | List commands / command detail |
 
 ---
@@ -310,6 +324,14 @@ Configure these in the repository's GitHub settings:
 
 > Production uses an external/managed database — ensure the `DATABASE_URL` secret
 > points at a reachable host (not `@postgres:5432`).
+
+---
+
+## Known Issues
+
+1. **CRITICAL — Activity tracking broken.** All activity/streaming/gaming/listening tracking uses `on_member_update` (`src/cogs/rpg/rpg_manager.py:468`) but Discord dispatches presence changes via `on_presence_update`. No `on_presence_update` listener exists. Impact: `/most streamed|played|listened|coded`, leaderboard activity sections, and live role are non-functional.
+2. **HIGH — Leaderboard auto-update requires setup.** `LEADERBOARD_CHANNEL_ID` defaults to `None`. Must set the env var or run `/setupleaderboard` (admin-only).
+3. **MEDIUM — `joined_at` column missing.** `inactivity_service.py:15` queries `joined_at` but no migration creates it. Inactivity check silently crashes.
 
 ---
 

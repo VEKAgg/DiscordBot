@@ -12,11 +12,12 @@ async def get_inactive_users(week_days: int, month_days: int) -> list[dict]:
     """Fetch users who are inactive past the week or month threshold, not yet notified."""
     rows = await db.fetch(
         """
-        SELECT discord_id, last_active, joined_at,
+        SELECT discord_id, last_active, COALESCE(joined_at, created_at) AS joined_at,
                inactive_week_notified, inactive_month_notified
         FROM users
         WHERE last_active IS NOT NULL
            OR joined_at IS NOT NULL
+           OR created_at IS NOT NULL
         """,
     )
 
