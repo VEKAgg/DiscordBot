@@ -32,18 +32,22 @@ async def _safe_send_view(
     view: nextcord.ui.View,
     *,
     ephemeral: bool = False,
-) -> None:
-    """Send an embed with a view, handling both Context and Interaction."""
+) -> bool:
+    """Send an embed with a view, handling both Context and Interaction. Returns True on success."""
     try:
         if isinstance(target, commands.Context):
             await target.send(embed=embed, view=view)
+            return True
         elif isinstance(target, nextcord.Interaction):
             if target.response.is_done():
                 await target.followup.send(embed=embed, view=view, ephemeral=ephemeral)
             else:
                 await target.response.send_message(embed=embed, view=view, ephemeral=ephemeral)
+            return True
+        return False
     except Exception as exc:
         logger.error('_safe_send_view failed: %s', exc, exc_info=True)
+        return False
 
 
 # --- Rate limiting constants ---
@@ -200,19 +204,51 @@ class MassUnban(commands.Cog):
             logger.warning('DB unavailable — skipping mass unban resume')
             return
         try:
+            # Resume active jobs
             jobs = await db.fetch(
                 """SELECT id, guild_id, requested_by, status
                    FROM massunban_jobs
                    WHERE status IN ('running', 'retry_wait', 'paused')"""
             )
             for job in jobs:
-                logger.info('Resuming mass unban job %s (was %s)', job['id'], job['status'])
-                await db.execute(
-                    "UPDATE massunban_jobs SET status = 'running' WHERE id = $1",
-                    job['id'],
-                )
-                self._active_jobs[job['id']] = False
-                self.bot.loop.create_task(self._execute_job(job['id'], resumed=True))
+                try:
+                    logger.info('Resuming mass unban job %s (was %s)', job['id'], job['status'])
+                    await db.execute(
+                        "UPDATE massunban_jobs SET status = 'running' WHERE id = $1",
+                        job['id'],
+                    )
+                    self._active_jobs[job['id']] = False
+                    self.bot.loop.create_task(self._execute_job(job['id'], resumed=True))
+                except Exception:
+                    logger.error('Failed to resume job %s', job['id'], exc_info=True)
+
+            # Cancel orphaned pending/confirming jobs (bot restarted during confirmation)
+            orphaned = await db.fetch(
+                """SELECT id, guild_id, requested_by
+                   FROM massunban_jobs
+                   WHERE status IN ('pending', 'confirming')"""
+            )
+            for job in orphaned:
+                try:
+                    await db.execute(
+                        "UPDATE massunban_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
+                        job['id'],
+                    )
+                    logger.info('Cancelled orphaned mass unban job %s (was %s)', job['id'], job.get('status'))
+                    # Notify the original runner
+                    runner = self.bot.get_user(job['requested_by'])
+                    if runner:
+                        embed = await info_embed(
+                            title=f'\U0001f504 Mass Unban Job #{job["id"]} Cancelled',
+                            description='Job was cancelled because the bot restarted during the confirmation phase.',
+                            contributor_source=__name__,
+                        )
+                        try:
+                            await runner.send(embed=embed)
+                        except Exception:
+                            pass
+                except Exception:
+                    logger.error('Failed to cancel orphaned job %s', job['id'], exc_info=True)
         except Exception:
             logger.error('Failed to scan for resumable mass unban jobs', exc_info=True)
 
@@ -354,6 +390,28 @@ class MassUnban(commands.Cog):
 
         user = target.user if isinstance(target, nextcord.Interaction) else target.author
 
+        # Guard against concurrent jobs per guild
+        if runtime_state.db_available:
+            try:
+                active = await db.fetchval(
+                    """SELECT EXISTS(
+                        SELECT 1 FROM massunban_jobs
+                        WHERE guild_id = $1 AND status IN ('running', 'paused', 'retry_wait', 'confirming')
+                    )""",
+                    guild.id,
+                )
+                if active:
+                    embed = await error_embed(
+                        'Job Already Running',
+                        'There is already a mass unban job in progress for this server. '
+                        'Please wait for it to finish or cancel it first.',
+                        contributor_source=__name__,
+                    )
+                    await safe_send(target, embed=embed, ephemeral=True)
+                    return
+            except Exception:
+                logger.warning('Failed to check for active mass unban jobs in guild %s', guild.id, exc_info=True)
+
         # Parse datetimes
         try:
             start_dt = datetime.fromisoformat(start_str).replace(tzinfo=UTC)
@@ -389,7 +447,7 @@ class MassUnban(commands.Cog):
         # Fetch all bans from Discord
         try:
             bans = [ban async for ban in guild.bans()]
-        except nextcord.Forbidden:
+        except (nextcord.Forbidden, nextcord.HTTPException):
             embed = await error_embed(
                 'Missing Permission',
                 'I need the **Ban Members** permission to list bans.',
@@ -507,14 +565,34 @@ class MassUnban(commands.Cog):
 
         # First confirmation
         view = ConfirmFirstView(job_id=job_id, runner_id=user.id)
-        await _safe_send_view(target, embed=embed, view=view, ephemeral=True)
+        sent = await _safe_send_view(target, embed=embed, view=view, ephemeral=True)
 
-        await db.execute("UPDATE massunban_jobs SET status = 'confirming' WHERE id = $1", job_id)
+        if not sent:
+            # Send failed — clean up DB record
+            try:
+                await db.execute("UPDATE massunban_jobs SET status = 'failed' WHERE id = $1", job_id)
+            except Exception:
+                logger.error('Failed to clean up job %s after send failure', job_id, exc_info=True)
+            embed = await error_embed(
+                'Send Failed',
+                'Could not deliver the confirmation message. Please try again.',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        try:
+            await db.execute("UPDATE massunban_jobs SET status = 'confirming' WHERE id = $1", job_id)
+        except Exception:
+            logger.warning('Failed to update job %s status to confirming', job_id, exc_info=True)
 
         # Wait for first confirmation
         await view.wait()
         if view.result is not True:
-            await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+            try:
+                await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+            except Exception:
+                logger.warning('Failed to cancel job %s after timeout/decline', job_id, exc_info=True)
             if view.result is None:
                 embed = await info_embed(
                     'Cancelled',
@@ -548,7 +626,10 @@ class MassUnban(commands.Cog):
 
         await view2.wait()
         if view2.result is not True:
-            await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+            try:
+                await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+            except Exception:
+                logger.warning('Failed to cancel job %s after second timeout/decline', job_id, exc_info=True)
             if view2.result is None:
                 embed = await info_embed(
                     'Cancelled', 'Confirmation timed out. Job cancelled.', contributor_source=__name__
@@ -559,10 +640,16 @@ class MassUnban(commands.Cog):
             return
 
         # Start execution
-        await db.execute(
-            "UPDATE massunban_jobs SET status = 'running', started_at = NOW() WHERE id = $1",
-            job_id,
-        )
+        try:
+            await db.execute(
+                "UPDATE massunban_jobs SET status = 'running', started_at = NOW() WHERE id = $1",
+                job_id,
+            )
+        except Exception:
+            logger.error('Failed to start job %s', job_id, exc_info=True)
+            embed = await error_embed('DB Error', 'Failed to start job execution.', contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
 
         # Notify log channel
         await self._log_job_event(
@@ -620,8 +707,24 @@ class MassUnban(commands.Cog):
             for item in items:
                 # Check cancellation
                 if self._active_jobs.get(job_id, True):
-                    await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+                    try:
+                        await db.execute("UPDATE massunban_jobs SET status = 'cancelled' WHERE id = $1", job_id)
+                    except Exception:
+                        logger.warning('Failed to mark job %s as cancelled', job_id, exc_info=True)
                     await self._log_job_event(guild, 'Job Cancelled', f'Job #{job_id} was cancelled by operator.', '')
+                    return
+
+                # Check DB availability before processing
+                if not runtime_state.db_available:
+                    logger.warning('DB unavailable — pausing job %s', job_id)
+                    try:
+                        await db.execute(
+                            "UPDATE massunban_jobs SET status = 'paused' WHERE id = $1",
+                            job_id,
+                        )
+                    except Exception:
+                        logger.error('Failed to pause job %s due to DB outage', job_id, exc_info=True)
+                    await self._log_job_event(guild, 'Job Paused', f'Job #{job_id} paused — DB unavailable.', '')
                     return
 
                 result = await self._process_unban_item(guild, item, job)
@@ -633,7 +736,9 @@ class MassUnban(commands.Cog):
                 try:
                     await self._log_per_user(guild, job_id, result)
                 except Exception:
-                    logger.debug('Failed to log per-user result for job %s', job_id, exc_info=True)
+                    logger.warning(
+                        'Failed to log per-user result for job %s user %s', job_id, result.get('user_id'), exc_info=True
+                    )
 
                 # Throttle
                 await asyncio.sleep(interval)
@@ -643,13 +748,20 @@ class MassUnban(commands.Cog):
 
         except Exception:
             logger.error('Fatal error in mass unban job %s', job_id, exc_info=True)
-            await db.execute(
-                """UPDATE massunban_jobs
-                   SET status = 'failed', completed_at = NOW(),
-                       metadata = metadata || '{"fatal_error": true}'::jsonb
-                   WHERE id = $1""",
-                job_id,
-            )
+            try:
+                await db.execute(
+                    """UPDATE massunban_jobs
+                       SET status = 'failed', completed_at = NOW(),
+                           metadata = metadata || '{"fatal_error": true}'::jsonb
+                       WHERE id = $1""",
+                    job_id,
+                )
+            except Exception:
+                logger.error('Failed to mark job %s as failed after fatal error', job_id, exc_info=True)
+            # Clean up in-memory state
+            self._active_jobs.pop(job_id, None)
+            self._rate_limit_count.pop(job_id, None)
+            self._unban_interval.pop(job_id, None)
 
     async def _process_unban_item(self, guild: nextcord.Guild, item: dict, job: dict) -> dict[str, Any]:
         """Process a single unban. Returns result dict."""
@@ -737,8 +849,8 @@ class MassUnban(commands.Cog):
 
     async def _update_job_progress(self, job_id: int, item: dict, result: dict) -> None:
         """Persist progress after each unban."""
+        # 1. Update item record
         try:
-            # Update item
             await db.execute(
                 """UPDATE massunban_job_items
                    SET status = $1, failure_reason = $2, unbanned_at = $3,
@@ -751,15 +863,18 @@ class MassUnban(commands.Cog):
                 result.get('dm_failure_reason'),
                 item['id'],
             )
+        except Exception:
+            logger.warning('Failed to update item %s for job %s', item['id'], job_id, exc_info=True)
 
-            # Update job counters
-            _VALID_COUNTER_COLS = {'total_succeeded', 'total_failed', 'total_skipped'}
-            counter_col = {
-                'success': 'total_succeeded',
-                'failed': 'total_failed',
-                'skipped': 'total_skipped',
-            }.get(result['status'])
-            if counter_col and counter_col in _VALID_COUNTER_COLS:
+        # 2. Update job counters
+        _VALID_COUNTER_COLS = {'total_succeeded', 'total_failed', 'total_skipped'}
+        counter_col = {
+            'success': 'total_succeeded',
+            'failed': 'total_failed',
+            'skipped': 'total_skipped',
+        }.get(result['status'])
+        if counter_col and counter_col in _VALID_COUNTER_COLS:
+            try:
                 await db.execute(
                     f"""UPDATE massunban_jobs
                         SET {counter_col} = {counter_col} + 1,
@@ -769,65 +884,88 @@ class MassUnban(commands.Cog):
                     str(result['user_id']),
                     job_id,
                 )
+            except Exception:
+                logger.warning('Failed to update counters for job %s', job_id, exc_info=True)
 
-            # Handle rate limit pause
-            if result.get('rate_limit'):
-                retry_after_secs = result.get('retry_after', RATE_LIMIT_COOLDOWN)
-                retry_at = datetime.now(UTC) + timedelta(seconds=retry_after_secs)
-                await db.execute(
-                    "UPDATE massunban_jobs SET status = 'retry_wait', retry_after = $1 WHERE id = $2",
-                    retry_at,
-                    job_id,
-                )
-                self._rate_limit_count[job_id] = self._rate_limit_count.get(job_id, 0) + 1
-                # Progressive slowdown
-                if self._rate_limit_count[job_id] >= PAUSE_THRESHOLD:
-                    self._unban_interval[job_id] = min(
-                        self._unban_interval.get(job_id, BASE_UNBAN_INTERVAL) * 2,
-                        BASE_UNBAN_INTERVAL * MAX_BACKOFF_MULTIPLIER,
-                    )
+        # 3. Handle rate limit pause (separate block — includes scheduling)
+        if result.get('rate_limit'):
+            await self._handle_rate_limit_pause(job_id, result)
 
-                # Notify
-                job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1', job_id)
-                guild = self.bot.get_guild(job['guild_id']) if job else None
-                if guild:
-                    await self._log_job_event(
-                        guild,
-                        'Rate Limited',
-                        f'Job #{job_id} paused due to rate limit.',
-                        f'Retry after: {retry_after_secs:.0f}s',
-                    )
-                runner = self.bot.get_user(job['requested_by']) if job else None
-                if runner:
-                    embed = await alert_embed(
-                        title=f'\u23f1\ufe0f Rate Limited — Job #{job_id}',
-                        description=f'Job paused due to Discord rate limit.\nWill retry in **{retry_after_secs:.0f}** seconds.',
-                        severity='WARN',
-                    )
-                    try:
-                        await runner.send(embed=embed)
-                    except Exception:
-                        pass
+    async def _handle_rate_limit_pause(self, job_id: int, result: dict) -> None:
+        """Handle rate limit: persist pause state, notify, and schedule resume."""
+        retry_after_secs = max(1.0, float(result.get('retry_after', RATE_LIMIT_COOLDOWN)))
 
-                # Schedule resume
-                self.bot.loop.call_later(
-                    int(retry_after_secs) + 1,
-                    lambda: self.bot.loop.create_task(self._resume_job(job_id)),
-                )
-
+        # Persist pause state
+        try:
+            retry_at = datetime.now(UTC) + timedelta(seconds=retry_after_secs)
+            await db.execute(
+                "UPDATE massunban_jobs SET status = 'retry_wait', retry_after = $1 WHERE id = $2",
+                retry_at,
+                job_id,
+            )
         except Exception:
-            logger.warning('Failed to persist progress for job %s item %s', job_id, item['id'], exc_info=True)
+            logger.error('Failed to persist rate limit pause for job %s', job_id, exc_info=True)
+
+        # Update in-memory backoff
+        self._rate_limit_count[job_id] = self._rate_limit_count.get(job_id, 0) + 1
+        if self._rate_limit_count[job_id] >= PAUSE_THRESHOLD:
+            self._unban_interval[job_id] = min(
+                self._unban_interval.get(job_id, BASE_UNBAN_INTERVAL) * 2,
+                BASE_UNBAN_INTERVAL * MAX_BACKOFF_MULTIPLIER,
+            )
+
+        # Notify log channel
+        try:
+            job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1', job_id)
+            guild = self.bot.get_guild(job['guild_id']) if job else None
+            if guild:
+                await self._log_job_event(
+                    guild,
+                    'Rate Limited',
+                    f'Job #{job_id} paused due to rate limit.',
+                    f'Retry after: {retry_after_secs:.0f}s',
+                )
+            runner = self.bot.get_user(job['requested_by']) if job else None
+            if runner:
+                embed = await alert_embed(
+                    title=f'\u23f1\ufe0f Rate Limited — Job #{job_id}',
+                    description=f'Job paused due to Discord rate limit.\nWill retry in **{retry_after_secs:.0f}** seconds.',
+                    severity='WARN',
+                )
+                try:
+                    await runner.send(embed=embed)
+                except Exception:
+                    pass
+        except Exception:
+            logger.warning('Failed to send rate limit notification for job %s', job_id, exc_info=True)
+
+        # Schedule resume using asyncio task (not call_later)
+        self.bot.loop.create_task(self._scheduled_resume(job_id, retry_after_secs))
+
+    async def _scheduled_resume(self, job_id: int, delay: float) -> None:
+        """Wait then resume a rate-limited job, checking for cancellation first."""
+        await asyncio.sleep(delay + 1)
+        # Check if job was cancelled while waiting
+        if self._active_jobs.get(job_id, True):
+            return
+        await self._resume_job(job_id)
 
     async def _resume_job(self, job_id: int) -> None:
         """Resume a paused/retry_wait job."""
         try:
             if not runtime_state.db_available:
                 return
-            await db.execute(
+            result = await db.execute(
                 "UPDATE massunban_jobs SET status = 'running' WHERE id = $1 AND status IN ('retry_wait', 'paused')",
                 job_id,
             )
-            self._active_jobs[job_id] = False
+            # asyncpg execute returns e.g. 'UPDATE 1' or 'UPDATE 0'
+            if result == 'UPDATE 0':
+                logger.info('Job %s no longer resumable — skipping', job_id)
+                return
+            # Only set active if not already cancelled
+            if not self._active_jobs.get(job_id, True):
+                self._active_jobs[job_id] = False
             self._rate_limit_count.setdefault(job_id, 0)
             self._unban_interval.setdefault(job_id, BASE_UNBAN_INTERVAL)
             await self._execute_job(job_id, resumed=True)
@@ -887,10 +1025,13 @@ class MassUnban(commands.Cog):
     async def _cancel_job(self, job_id: int, _runner_id: int) -> None:
         """Cancel a running job."""
         self._active_jobs[job_id] = True
-        await db.execute(
-            "UPDATE massunban_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1 AND status NOT IN ('completed', 'cancelled')",
-            job_id,
-        )
+        try:
+            await db.execute(
+                "UPDATE massunban_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1 AND status NOT IN ('completed', 'cancelled')",
+                job_id,
+            )
+        except Exception:
+            logger.warning('Failed to update job %s to cancelled in DB', job_id, exc_info=True)
 
     async def _cancel_job_interactive(
         self,
@@ -985,6 +1126,8 @@ class MassUnban(commands.Cog):
     async def _show_recent(self, target: commands.Context | nextcord.Interaction) -> None:
         guild = getattr(target, 'guild', None)
         if not guild:
+            embed = await error_embed('No Guild', 'This command must be used in a server.', contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
             return
 
         jobs = await db.fetch(
@@ -1054,7 +1197,7 @@ class MassUnban(commands.Cog):
                     }
             return records
         except Exception:
-            logger.debug('Failed to fetch audit records for guild %s', guild_id, exc_info=True)
+            logger.warning('Failed to fetch audit records for guild %s', guild_id, exc_info=True)
             return {}
 
     # ============================================================
