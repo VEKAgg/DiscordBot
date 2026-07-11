@@ -33,6 +33,9 @@ STAFF_CHANNEL_ID = 1091908318324334704
 PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226
 LOGS_CHANNEL_ID = 1329192112410857563
 
+_massunban_log_channel = os.getenv('MASSUNBAN_LOG_CHANNEL_ID', '')
+MASSUNBAN_LOG_CHANNEL_ID = int(_massunban_log_channel) if _massunban_log_channel.strip().isdigit() else None
+
 # Notification settings
 NOTIFICATION_SQUAD_ROLE_NAME = 'notification squad'
 DAILY_BUMP_HOUR = 18  # 6 PM
