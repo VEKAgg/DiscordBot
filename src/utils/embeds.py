@@ -22,6 +22,7 @@ _STATIC_CONTRIBUTOR_MAP: dict[str, dict[str, str]] = {
     'src.cogs.admin.help': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.health': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.moderation': DEFAULT_CONTRIBUTOR,
+    'src.cogs.admin.massunban': DEFAULT_CONTRIBUTOR,
     'src.cogs.admin.notifications': DEFAULT_CONTRIBUTOR,
     'src.cogs.networking.networking': DEFAULT_CONTRIBUTOR,
     'src.cogs.marketplace.marketplace': DEFAULT_CONTRIBUTOR,
