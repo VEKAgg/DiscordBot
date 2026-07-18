@@ -64,3 +64,9 @@ Not in `.env` — requires code change: `STAFF_BOT_COMMANDS_CHANNEL_ID` (1328775
 ## Honeypot Anti-Spam System
 
 Implemented in `src/cogs/admin/honeypot.py` (loaded as `src.cogs.admin.honeypot`). Both `/honeypot` slash group and `!honeypot` prefix group. Traps channels to catch spam bots. Actions: softban, ban, timeout, role. Trigger: non-bot, non-webhook messages in registered channels with `enabled=True`. 5-second dedup cooldown per user per guild. Schema: `honeypots`, `honeypot_logging_config`, `honeypot_events` (migration `014_honeypot_schema.sql`).
+
+## Mass Unban System
+
+Implemented in `src/cogs/admin/massunban.py` (loaded as `src.cogs.admin.massunban`). Slash-only command group `/massunban` with subcommands: `run`, `status`, `cancel`, `recent`. Also `!massunban` prefix group with same subcommands. Admin-only, requires double confirmation (two button clicks). Resumable job model with per-user tracking in DB (`massunban_jobs`, `massunban_job_items` tables, migration `016_massunban_schema.sql`). Sequential unban processing with adaptive rate limiting (base 1.5s interval, progressive backoff on repeated 429s). On rate limit, persists progress and pauses; resumes automatically. DMs unbanned users with apology template on failure. Logs per-user results to `LOGS_CHANNEL_ID` (or `MASSUNBAN_LOG_CHANNEL_ID` if set). Startup resume for interrupted jobs via `cog_load()`.
+
+**Known limitation:** Discord's `Guild.bans()` API does not expose ban timestamps or the moderator who placed the ban. The `start_datetime`, `end_datetime`, and `banned_by` filters only apply to bans logged by this bot via its audit system (`audit_logs` table). Bans placed externally or before the bot was running cannot be filtered by date/moderator — they are included when no filters are specified, or skipped when filters are active.

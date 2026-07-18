@@ -21,6 +21,8 @@ database or any single feature is unavailable.
 - [Commands](#commands)
 - [Development](#development)
 - [CI/CD](#cicd)
+- [Known Issues](#known-issues)
+- [License](#license)
 
 ---
 
@@ -43,13 +45,19 @@ is kept for Docker images that don't have `uv`.
 Loaded modules (see `EXTENSIONS` in `src/core/app.py`):
 
 - 🤝 **Networking** — professional profiles, connection requests, and connections (`/profile`, `/connect`, plus `!` prefix equivalents)
-- 🛒 **Marketplace** — listings and reviews
+- 🛒 **Marketplace** — listings, reviews, and enhanced marketplace features
 - 📚 **Resource Feeds** — curated RSS (tech news, jobs, dev blogs) refreshed every 15 minutes
-- 🛠️ **Admin / Health** — administrative commands, help, and health/diagnostics
+- 🎮 **RPG / Leveling** — XP from messages, voice time, and commands; level-up system; activity role evaluation; background tasks for leaderboard auto-update, inactivity monitoring, and activity role assessment
+- 📊 **Leaderboard & Stats** — auto-updating leaderboard embed (`/setupleaderboard`), `/leaderboard [stat]`, `/level [@user]`, `/most streamed|played|listened|coded` activity leaderboards
+- 🔍 **Activity Tracking** — streaming, gaming, listening, and coding activity duration tracking with detailed activity logging (game names, songs, coding apps)
+- 🛠️ **Admin / Health** — administrative commands, help, health/diagnostics, moderation, notifications, and honeypot anti-spam
+- 📋 **Mentorship** — mentorship matching and management
+- 💼 **Portfolio** — portfolio management and display
+- 📻 **Radio** — voice channel radio/audio features
+- 🔗 **External** — info and export commands
+- 📡 **Status** — bot status and system information
 
-Additional cogs exist in `src/cogs/` (quiz, mentorship, fun, gamification,
-portfolio, workshops, enhanced marketplace) but are **not loaded** until added to
-`EXTENSIONS`. Gamification is an intentional disabled stub.
+Additional cogs exist in `src/cogs/` (quiz, gamification, workshops) but are **not loaded** until added to `EXTENSIONS`. Gamification is an intentional disabled stub.
 
 ---
 
@@ -198,6 +206,7 @@ by `src/config/config.py`:
 | `ADMIN_IDS` | — | empty | Comma-separated Discord user IDs |
 | `OWNER_IDS` | — | empty | Comma-separated Discord user IDs |
 | `ADMIN_ALERT_CHANNEL_ID` | — | none | Channel for operational alerts |
+| `MASSUNBAN_LOG_CHANNEL_ID` | — | none | Dedicated channel for per-user mass-unban audit logs (separate from admin alert channel) |
 | `BOT_VERSION` | — | `1.0.0` | |
 | `LOG_LEVEL` | — | `INFO` | |
 | `ENVIRONMENT` | — | `development` | |
@@ -256,6 +265,14 @@ the same feature — keep them in sync when changing behavior.
 | `/profile [@user]` / `!profile` | View a professional profile |
 | `!setupprofile` | Set up your profile |
 | `/connect @user` / `!connect @user [message]` | Send a connection request |
+| `/leaderboard [stat]` / `!leaderboard` | View leaderboard (xp, messages, voice, streaming, gaming, listening, coded) |
+| `/level [@user]` / `!level` | View your or another user's level and XP |
+| `/most streamed\|played\|listened\|coded` | Activity-specific leaderboards |
+| `/setupleaderboard` | (Admin) Configure the auto-updating leaderboard channel |
+| `/massunban` | (Admin) Bulk-unban users within a date range with double confirmation, resumable job tracking, and per-user audit logs |
+| `/massunban status <job_id>` | (Admin) Check status of a running or completed mass-unban job |
+| `/massunban cancel <job_id>` | (Admin) Cancel a pending or running mass-unban job |
+| `/massunban recent` | (Admin) List recent mass-unban jobs for this server |
 | `/help` / `!help [command]` | List commands / command detail |
 
 ---
@@ -310,6 +327,15 @@ Configure these in the repository's GitHub settings:
 
 > Production uses an external/managed database — ensure the `DATABASE_URL` secret
 > points at a reachable host (not `@postgres:5432`).
+
+---
+
+## Known Issues
+
+1. ~~**CRITICAL — Activity tracking broken.**~~ **FIXED.** Listener renamed from `on_member_update` to `on_presence_update`. Activity tracking now fires on the correct Discord event.
+2. **HIGH — Leaderboard auto-update requires setup.** `LEADERBOARD_CHANNEL_ID` defaults to `None`. Must set the env var or run `/setupleaderboard` (admin-only).
+3. ~~**MEDIUM — `joined_at` column missing.**~~ **FIXED.** Migration `015_add_joined_at.sql` adds the column. `inactivity_service.py` uses `COALESCE(joined_at, created_at)` as fallback.
+4. **NOTE — `/massunban` `banned_by` filter** only works for bans logged by the bot after its moderation audit system was in place. Historical bans placed before the bot was running cannot be filtered by moderator — Discord's audit log API is ephemeral and not stored retroactively.
 
 ---
 

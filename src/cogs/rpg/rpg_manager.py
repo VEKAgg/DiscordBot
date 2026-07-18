@@ -155,14 +155,16 @@ class RPGManager(commands.Cog):
             if not user_row:
                 return 0
 
-            member = self.bot.get_user(user_id)
             multiplier = 1.0
-            if member:
-                # Check for DONATOR or ACTIVE_PRO role (by Discord role name)
-                for role in getattr(member, 'roles', []):
-                    role_lower = role.name.lower().replace(' ', '_')
-                    if role_lower in XP_MULTIPLIERS:
-                        multiplier = max(multiplier, XP_MULTIPLIERS[role_lower])
+            guild = self.bot.get_guild(guild_id) if guild_id else None
+            if guild:
+                member = guild.get_member(user_id)
+                if member:
+                    # Check for DONATOR or ACTIVE_PRO role (by Discord role name)
+                    for role in getattr(member, 'roles', []):
+                        role_lower = role.name.lower().replace(' ', '_')
+                        if role_lower in XP_MULTIPLIERS:
+                            multiplier = max(multiplier, XP_MULTIPLIERS[role_lower])
 
             actual_points = max(1, int(base_points * quantity * multiplier))
 
@@ -278,7 +280,7 @@ class RPGManager(commands.Cog):
     # Build leaderboard embed
     # ============================================================
 
-    async def _build_leaderboard_embed(self) -> nextcord.Embed | None:
+    async def _build_leaderboard_embed(self, guild: nextcord.Guild | None = None) -> nextcord.Embed | None:
         """Build the full leaderboard embed with all stat categories."""
         xp_data = await self._get_leaderboard_data()
         if not xp_data:
@@ -297,7 +299,7 @@ class RPGManager(commands.Cog):
         for i, row in enumerate(xp_data):
             medal = medals[i] if i < 3 else f'#{i + 1}'
             uid = int(row['discord_id'])
-            member = self.bot.get_user(uid)
+            member = guild.get_member(uid) if guild else None
             name = member.display_name if member else row.get('username') or f'User {uid}'
             level = row.get('level') or calculate_level(row.get('points', 0))
             lines.append(f'**{medal}** — {name} | Level {level} | {row["points"]:,} XP')
@@ -320,7 +322,7 @@ class RPGManager(commands.Cog):
             for i, row in enumerate(rows):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
                 uid = int(row['discord_id'])
-                member = self.bot.get_user(uid)
+                member = guild.get_member(uid) if guild else None
                 name = member.display_name if member else f'User {uid}'
                 val = row.get(column) or 0
                 stat_lines.append(f'**{medal}** — {name}: {val:,}')
@@ -466,7 +468,7 @@ class RPGManager(commands.Cog):
         )
 
     @commands.Cog.listener()
-    async def on_member_update(self, before: nextcord.Member, after: nextcord.Member):
+    async def on_presence_update(self, before: nextcord.Member, after: nextcord.Member):
         """Track activity durations (streaming/gaming/listening) and live role."""
         if after.bot:
             return
@@ -692,7 +694,7 @@ class RPGManager(commands.Cog):
             if channel is None:
                 channel = await self.bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
 
-            embed = await self._build_leaderboard_embed()
+            embed = await self._build_leaderboard_embed(guild=channel.guild if channel else None)
             if not embed:
                 return
 
@@ -1020,7 +1022,7 @@ class RPGManager(commands.Cog):
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
                 uid = int(row['discord_id'])
-                member = self.bot.get_user(uid)
+                member = interaction.guild.get_member(uid) if interaction.guild else None
                 name = member.display_name if member else row.get('username') or f'User {uid}'
                 level = row.get('level') or calculate_level(row.get('points', 0))
                 lines.append(f'**{medal}** {name} — Level {level} | {row["points"]:,} XP')
@@ -1046,7 +1048,7 @@ class RPGManager(commands.Cog):
             )
             if data:
                 top_uid = int(data[0]['discord_id'])
-                top_member = self.bot.get_user(top_uid)
+                top_member = interaction.guild.get_member(top_uid) if interaction.guild else None
                 if top_member:
                     embed.set_thumbnail(
                         url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
@@ -1083,7 +1085,7 @@ class RPGManager(commands.Cog):
         for i, row in enumerate(rows):
             medal = medals[i] if i < 3 else f'#{i + 1}'
             uid = int(row['discord_id'])
-            member = self.bot.get_user(uid)
+            member = interaction.guild.get_member(uid) if interaction.guild else None
             name = member.display_name if member else f'User {uid}'
             val = row.get(column) or row.get('stat_val') or 0
             lines.append(f'**{medal}** {name}: {val:,}')
@@ -1099,7 +1101,7 @@ class RPGManager(commands.Cog):
         )
         if rows:
             top_uid = int(rows[0]['discord_id'])
-            top_member = self.bot.get_user(top_uid)
+            top_member = interaction.guild.get_member(top_uid) if interaction.guild else None
             if top_member:
                 embed.set_thumbnail(url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url)
         embed.timestamp = datetime.now(UTC)
@@ -1119,7 +1121,7 @@ class RPGManager(commands.Cog):
         LEADERBOARD_CHANNEL_ID = channel.id
 
         # Send initial leaderboard embed
-        embed = await self._build_leaderboard_embed()
+        embed = await self._build_leaderboard_embed(guild=interaction.guild)
         if embed:
             msg = await channel.send(embed=embed)
             self._leaderboard_message = msg
