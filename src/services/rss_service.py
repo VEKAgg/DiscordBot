@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 
 from src.config.config import RSS_FEEDS
 from src.database.database import db
+from src.utils.http import get_session
 from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
@@ -20,11 +21,11 @@ class RSSService:
     async def fetch_feed(self, url: str) -> dict | None:
         try:
             headers = {'User-Agent': 'VEKA-DiscordBot/1.0'}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status != 200:
-                        raise ExternalRequestError(f'HTTP Status: {response.status}')
-                    content = await response.text()
+            session = get_session()
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise ExternalRequestError(f'HTTP Status: {response.status}')
+                content = await response.text()
 
             feed = feedparser.parse(content)
             processed_entries = []

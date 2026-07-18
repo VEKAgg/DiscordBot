@@ -14,31 +14,11 @@ from typing import Any
 import aiohttp
 
 from src.config.config import DIRECTUS_SERVICE_TOKEN, DIRECTUS_SYNC_ENABLED, DIRECTUS_URL
+from src.utils.http import get_session
 
 logger = logging.getLogger('VEKA.directus_sync')
 
-_TIMEOUT = aiohttp.ClientTimeout(total=10)
 _LISTINGS = 'marketplace_listings'
-
-# One session reused for the bot's lifetime — keeps the connection pool warm
-# instead of building a new one per call. Created lazily inside the running loop
-# (never at import) and closed via aclose() on shutdown.
-_session: aiohttp.ClientSession | None = None
-
-
-def _get_session() -> aiohttp.ClientSession:
-    global _session
-    if _session is None or _session.closed:
-        _session = aiohttp.ClientSession(timeout=_TIMEOUT)
-    return _session
-
-
-async def aclose() -> None:
-    """Close the shared session. Call once on bot shutdown."""
-    global _session
-    if _session is not None and not _session.closed:
-        await _session.close()
-    _session = None
 
 
 def _headers() -> dict[str, str]:
@@ -73,7 +53,7 @@ async def upsert_listing(listing: dict[str, Any]) -> None:
     if not DIRECTUS_SYNC_ENABLED:
         return
     try:
-        session = _get_session()
+        session = get_session()
         payload = {k: v for k, v in listing.items() if v is not None}
 
         profile_id = await _resolve_profile_id(session, str(listing['seller_discord_id']))
@@ -100,7 +80,7 @@ async def set_listing_status(external_ref: str, status: str) -> None:
     if not DIRECTUS_SYNC_ENABLED:
         return
     try:
-        session = _get_session()
+        session = get_session()
         item_id = await _find_listing_id(session, external_ref)
         if not item_id:
             return
