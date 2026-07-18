@@ -35,13 +35,44 @@ async def _resolve_profile_id(session: aiohttp.ClientSession, discord_id: str) -
         return rows[0]['id'] if rows else None
 
 
-async def _find_listing_id(session: aiohttp.ClientSession, external_ref: str) -> str | None:
-    params = {'filter[external_ref][_eq]': external_ref, 'fields': 'id', 'limit': '1'}
+async def _find_listing(session: aiohttp.ClientSession, external_ref: str) -> dict | None:
+    params = {'filter[external_ref][_eq]': external_ref, 'fields': 'id,image_url', 'limit': '1'}
     async with session.get(f'{DIRECTUS_URL}/items/{_LISTINGS}', params=params, headers=_headers()) as resp:
         if resp.status != 200:
             return None
         rows = (await resp.json()).get('data') or []
-        return rows[0]['id'] if rows else None
+        return rows[0] if rows else None
+
+
+def _is_hosted(url: str | None) -> bool:
+    """True if the URL already points at our Directus asset store (re-hosted)."""
+    return bool(url) and url.startswith(f'{DIRECTUS_URL}/assets/')
+
+
+async def _rehost_image(session: aiohttp.ClientSession, url: str) -> str | None:
+    """Download an image (e.g. an ephemeral Discord CDN URL) and re-upload it to
+    Directus files so it stays available after the source link expires. Returns a
+    persistent asset URL, or None if the source can't be fetched (dead link)."""
+    try:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            content_type = resp.headers.get('Content-Type', 'image/png')
+            data = await resp.read()
+        form = aiohttp.FormData()
+        form.add_field('file', data, filename='listing', content_type=content_type)
+        # Multipart: let aiohttp set Content-Type (with boundary), only pass auth.
+        async with session.post(
+            f'{DIRECTUS_URL}/files', data=form, headers={'Authorization': f'Bearer {DIRECTUS_SERVICE_TOKEN}'}
+        ) as resp:
+            if resp.status >= 400:
+                logger.warning('Directus file upload failed (%s): %s', resp.status, await resp.text())
+                return None
+            file_id = (await resp.json()).get('data', {}).get('id')
+            return f'{DIRECTUS_URL}/assets/{file_id}' if file_id else None
+    except Exception as exc:
+        logger.warning('Image re-host failed for %s: %s', url, exc)
+        return None
 
 
 async def upsert_listing(listing: dict[str, Any]) -> None:
@@ -60,9 +91,20 @@ async def upsert_listing(listing: dict[str, Any]) -> None:
         if profile_id:
             payload['seller_profile'] = profile_id
 
-        existing_id = await _find_listing_id(session, listing['external_ref'])
-        if existing_id:
-            url = f'{DIRECTUS_URL}/items/{_LISTINGS}/{existing_id}'
+        existing = await _find_listing(session, listing['external_ref'])
+
+        # Image: keep an already re-hosted asset; otherwise re-host the source URL
+        # to Directus files so it survives Discord's link expiry. A dead source
+        # (expired link on an old listing) resolves to no image, not a broken one.
+        img = payload.get('image_url')
+        if img and not _is_hosted(img):
+            if existing and _is_hosted(existing.get('image_url')):
+                payload['image_url'] = existing['image_url']
+            else:
+                payload['image_url'] = await _rehost_image(session, img)
+
+        if existing:
+            url = f'{DIRECTUS_URL}/items/{_LISTINGS}/{existing["id"]}'
             async with session.patch(url, json=payload, headers=_headers()) as resp:
                 if resp.status >= 400:
                     logger.warning('Directus listing update failed (%s): %s', resp.status, await resp.text())
@@ -81,10 +123,10 @@ async def set_listing_status(external_ref: str, status: str) -> None:
         return
     try:
         session = get_session()
-        item_id = await _find_listing_id(session, external_ref)
-        if not item_id:
+        existing = await _find_listing(session, external_ref)
+        if not existing:
             return
-        url = f'{DIRECTUS_URL}/items/{_LISTINGS}/{item_id}'
+        url = f'{DIRECTUS_URL}/items/{_LISTINGS}/{existing["id"]}'
         async with session.patch(url, json={'status': status}, headers=_headers()) as resp:
             if resp.status >= 400:
                 logger.warning('Directus status update failed (%s): %s', resp.status, await resp.text())
