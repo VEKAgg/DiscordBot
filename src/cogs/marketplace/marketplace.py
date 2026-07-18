@@ -392,6 +392,64 @@ class Marketplace(commands.Cog):
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
+    @commands.command(name='marketplace_push')
+    @admin_only()
+    @safe_command(requires_db=True)
+    async def mp_directus_push(self, ctx: commands.Context):
+        """One-time backfill: mirror all active listings to the web CMS (Directus)."""
+        from src.config.config import DIRECTUS_SYNC_ENABLED
+
+        if not DIRECTUS_SYNC_ENABLED:
+            embed = await error_embed(
+                'Sync Not Configured',
+                'Set DIRECTUS_URL and DIRECTUS_SERVICE_TOKEN in the bot .env first.',
+                contributor_source=__name__,
+            )
+            await safe_send(ctx, embed=embed)
+            return
+
+        listings = await db.fetch_many(
+            """SELECT l.id, l.title, l.description, l.price, l.condition, l.image_url, l.created_at,
+                      c.name AS cat_name, u.discord_id
+               FROM marketplace_listings l
+               JOIN users u ON l.seller_id = u.id
+               JOIN marketplace_categories c ON l.category_id = c.id
+               WHERE l.status = 'active'
+               ORDER BY l.created_at ASC""",
+        )
+
+        if not listings:
+            embed = await info_embed('Nothing to Push', 'No active listings found.', contributor_source=__name__)
+            await safe_send(ctx, embed=embed)
+            return
+
+        pushed = 0
+        for listing in listings:
+            await upsert_listing(
+                {
+                    'external_ref': listing['id'],
+                    'seller_discord_id': str(listing['discord_id']),
+                    'title': listing['title'],
+                    'description': listing['description'],
+                    'price': float(listing['price']),
+                    'condition': listing['condition'],
+                    'category': listing['cat_name'],
+                    'status': 'active',
+                    'image_url': listing['image_url'] or None,
+                    'listing_created_at': listing['created_at'].isoformat() if listing['created_at'] else None,
+                }
+            )
+            pushed += 1
+
+        embed = await success_embed(
+            'Pushed to Web CMS',
+            f'Mirrored {pushed} active listing(s) to Directus. Note: images from old '
+            'listings may be gone — Discord attachment links expire, so only newly '
+            'posted listings keep their images.',
+            contributor_source=__name__,
+        )
+        await safe_send(ctx, embed=embed)
+
     @commands.command(name='marketplace_sync')
     @admin_only()
     @safe_command(requires_db=True)
