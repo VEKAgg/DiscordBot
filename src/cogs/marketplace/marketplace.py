@@ -438,6 +438,16 @@ class Marketplace(commands.Cog):
         )
         await safe_send(ctx, embed=embed)
 
+    async def _delegate_unavailable(self, interaction: nextcord.Interaction) -> None:
+        """Reply when a delegated marketplace cog is not loaded (degraded mode)."""
+        embed = await error_embed(
+            'Temporarily Unavailable',
+            'This marketplace feature is temporarily unavailable. Please try again later.',
+            user=interaction.user,
+            contributor_source=__name__,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
     # ==================== REVIEW SUBCOMMANDS ====================
 
     @marketplace.subcommand(name='review', description='Leave a review for a transaction')
@@ -451,29 +461,37 @@ class Marketplace(commands.Cog):
         comment: str = '',
     ):
         cog = self.bot.get_cog('MarketplaceReviews')
-        if cog:
-            await cog.review_slash(interaction, transaction_id, rating, comment)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.review_slash(interaction, transaction_id, rating, comment)
 
     @marketplace.subcommand(name='seller', description="View a seller's reputation and statistics")
     @safe_slash_command(requires_db=True)
     async def mp_seller(self, interaction: nextcord.Interaction, member: nextcord.Member = None):
         cog = self.bot.get_cog('MarketplaceReviews')
-        if cog:
-            await cog.seller_slash(interaction, member)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.seller_slash(interaction, member)
 
     @marketplace.subcommand(name='reviews', description='View reviews you have received')
     @safe_slash_command(requires_db=True)
     async def mp_reviews(self, interaction: nextcord.Interaction):
         cog = self.bot.get_cog('MarketplaceReviews')
-        if cog:
-            await cog.reviews_slash(interaction)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.reviews_slash(interaction)
 
     @marketplace.subcommand(name='helpful', description='Mark a review as helpful')
     @safe_slash_command(requires_db=True)
     async def mp_helpful(self, interaction: nextcord.Interaction, review_id: int):
         cog = self.bot.get_cog('MarketplaceReviews')
-        if cog:
-            await cog.helpful_slash(interaction, review_id)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.helpful_slash(interaction, review_id)
 
     # ==================== SEARCH & WATCH SUBCOMMANDS ====================
 
@@ -481,29 +499,37 @@ class Marketplace(commands.Cog):
     @safe_slash_command(requires_db=True)
     async def mp_search(self, interaction: nextcord.Interaction, query: str):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.search_slash(interaction, query)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.search_slash(interaction, query)
 
     @marketplace.subcommand(name='watch', description='Add a listing to your watchlist')
     @safe_slash_command(requires_db=True)
     async def mp_watch(self, interaction: nextcord.Interaction, listing_id: str):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.watch_slash(interaction, listing_id)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.watch_slash(interaction, listing_id)
 
     @marketplace.subcommand(name='unwatch', description='Remove a listing from your watchlist')
     @safe_slash_command(requires_db=True)
     async def mp_unwatch(self, interaction: nextcord.Interaction, listing_id: str):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.unwatch_slash(interaction, listing_id)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.unwatch_slash(interaction, listing_id)
 
     @marketplace.subcommand(name='watchlist', description='View all items you are watching')
     @safe_slash_command(requires_db=True)
     async def mp_watchlist(self, interaction: nextcord.Interaction):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.watchlist_slash(interaction)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.watchlist_slash(interaction)
 
     # ==================== OFFER SUBCOMMANDS ====================
 
@@ -511,15 +537,19 @@ class Marketplace(commands.Cog):
     @safe_slash_command(requires_db=True)
     async def mp_offer(self, interaction: nextcord.Interaction, listing_id: str, price: str, message: str = ''):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.offer_slash(interaction, listing_id, price, message)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.offer_slash(interaction, listing_id, price, message)
 
     @marketplace.subcommand(name='myoffers', description='View offers on your listings or offers you have made')
     @safe_slash_command(requires_db=True)
     async def mp_myoffers(self, interaction: nextcord.Interaction):
         cog = self.bot.get_cog('MarketplaceEnhanced')
-        if cog:
-            await cog.myoffers_slash(interaction)
+        if not cog:
+            await self._delegate_unavailable(interaction)
+            return
+        await cog.myoffers_slash(interaction)
 
 
 def setup(bot):
