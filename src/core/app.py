@@ -285,17 +285,17 @@ def configure_bot_events(bot: commands.Bot) -> None:
             interaction, content='An internal error occurred while processing your command.', ephemeral=True
         )
 
-    # Close the shared Directus sync session on real shutdown (not on transient
-    # gateway disconnects). bot.close() is nextcord's canonical shutdown path.
+    # Close the shared HTTP session on real shutdown (not on transient gateway
+    # disconnects). bot.close() is nextcord's canonical shutdown path.
     _default_close = bot.close
 
     async def _close_with_cleanup() -> None:
-        from src.services import directus_sync
+        from src.utils import http
 
         try:
-            await directus_sync.aclose()
+            await http.aclose()
         except Exception as exc:
-            logger.warning('Error closing Directus sync session: %s', exc)
+            logger.warning('Error closing shared HTTP session: %s', exc)
         await _default_close()
 
     bot.close = _close_with_cleanup  # type: ignore[method-assign]
