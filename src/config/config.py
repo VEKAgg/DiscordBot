@@ -58,6 +58,13 @@ DATABASE_URL = os.getenv('DATABASE_URL') or (
     f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
 )
 
+# --- Directus marketplace sync (Objective A) ---
+# One-way publish of bot marketplace listings to the VEKA web CMS. Inert until
+# both are set: a missing token disables sync without affecting any command.
+DIRECTUS_URL = os.getenv('DIRECTUS_URL', '').rstrip('/')
+DIRECTUS_SERVICE_TOKEN = os.getenv('DIRECTUS_SERVICE_TOKEN', '')
+DIRECTUS_SYNC_ENABLED = bool(DIRECTUS_URL and DIRECTUS_SERVICE_TOKEN)
+
 # Mentorship Configuration
 MENTORSHIP_CATEGORIES: list[str] = ['programming', 'design', 'career', 'devops', 'data_science', 'other']
 MENTORSHIP_ROLES: dict[str, str] = {'mentor': 'Mentor', 'mentee': 'Mentee'}
