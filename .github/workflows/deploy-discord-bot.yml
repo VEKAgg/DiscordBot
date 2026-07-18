@@ -21,6 +21,8 @@ jobs:
           {
             echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}"
             echo "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+            echo "DIRECTUS_URL=${{ secrets.DIRECTUS_URL }}"
+            echo "DIRECTUS_SERVICE_TOKEN=${{ secrets.DIRECTUS_SERVICE_TOKEN }}"
             echo "ADMIN_IDS=${{ vars.ADMIN_IDS }}"
             echo "OWNER_IDS=${{ vars.OWNER_IDS }}"
             echo "FOUNDER_IDS=${{ vars.FOUNDER_IDS }}"
