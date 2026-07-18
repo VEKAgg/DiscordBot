@@ -6,6 +6,7 @@ from nextcord.ext import commands
 
 from src.config.config import MARKETPLACE_CHANNEL_ID
 from src.database.database import db
+from src.services.directus_sync import set_listing_status, upsert_listing
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
 from src.utils.security import rate_limit
@@ -142,6 +143,22 @@ class Marketplace(commands.Cog):
                 image_url=image_url,
                 seller=interaction.user,
             )
+
+        # Best-effort mirror to the web CMS (no-op unless Directus sync is configured).
+        await upsert_listing(
+            {
+                'external_ref': listing_id,
+                'seller_discord_id': str(interaction.user.id),
+                'title': title,
+                'description': description,
+                'price': price,
+                'condition': condition,
+                'category': category,
+                'status': 'active',
+                'image_url': image_url or None,
+                'listing_created_at': datetime.datetime.utcnow().isoformat(),
+            }
+        )
 
     async def _post_listing_to_channel(
         self,
@@ -363,6 +380,9 @@ class Marketplace(commands.Cog):
             return
 
         await db.execute("UPDATE marketplace_listings SET status = 'withdrawn' WHERE id = $1", listing_id)
+
+        # Best-effort mirror the withdrawal to the web CMS.
+        await set_listing_status(listing_id, 'withdrawn')
 
         embed = await success_embed(
             'Listing Withdrawn',
