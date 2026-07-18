@@ -179,9 +179,13 @@ class Stats(commands.Cog):
         days, hours = divmod(hours, 24)
         return f'{days}d {hours}h'
 
-    def _resolve_member_name(self, user_id: str) -> str:
+    def _resolve_member_name(self, user_id: str, guild: nextcord.Guild | None = None) -> str:
         """Resolve a user ID to a display name."""
         uid = int(user_id)
+        if guild:
+            member = guild.get_member(uid)
+            if member:
+                return member.display_name
         member = self.bot.get_user(uid)
         return member.display_name if member else f'User {uid}'
 
@@ -225,7 +229,7 @@ class Stats(commands.Cog):
             lines = []
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
-                name = self._resolve_member_name(row['discord_id'])
+                name = self._resolve_member_name(row['discord_id'], guild=interaction.guild)
                 minutes = row.get('total_streaming_minutes') or 0
                 lines.append(f'**{medal}** {name}: {self._format_minutes(minutes)}')
 
@@ -237,7 +241,7 @@ class Stats(commands.Cog):
                 guild=interaction.guild,
             )
             if data:
-                top_member = self.bot.get_user(int(data[0]['discord_id']))
+                top_member = interaction.guild.get_member(int(data[0]['discord_id'])) if interaction.guild else None
                 if top_member:
                     embed.set_thumbnail(
                         url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
@@ -339,7 +343,7 @@ class Stats(commands.Cog):
             lines = []
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
-                name = self._resolve_member_name(row['discord_id'])
+                name = self._resolve_member_name(row['discord_id'], guild=interaction.guild)
                 minutes = row.get('total_gaming_minutes') or 0
                 lines.append(f'**{medal}** {name}: {self._format_minutes(minutes)}')
 
@@ -351,7 +355,7 @@ class Stats(commands.Cog):
                 guild=interaction.guild,
             )
             if data:
-                top_member = self.bot.get_user(int(data[0]['discord_id']))
+                top_member = interaction.guild.get_member(int(data[0]['discord_id'])) if interaction.guild else None
                 if top_member:
                     embed.set_thumbnail(
                         url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
@@ -424,7 +428,7 @@ class Stats(commands.Cog):
             lines = []
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
-                name = self._resolve_member_name(row['user_id'])
+                name = self._resolve_member_name(row['user_id'], guild=interaction.guild)
                 minutes = row.get('total_minutes') or 0
                 lines.append(f'**{medal}** {name}: {self._format_minutes(minutes)}')
 
@@ -455,7 +459,7 @@ class Stats(commands.Cog):
             lines = []
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
-                name = self._resolve_member_name(row['discord_id'])
+                name = self._resolve_member_name(row['discord_id'], guild=interaction.guild)
                 minutes = row.get('total_listening_minutes') or 0
                 lines.append(f'**{medal}** {name}: {self._format_minutes(minutes)}')
 
@@ -467,7 +471,7 @@ class Stats(commands.Cog):
                 guild=interaction.guild,
             )
             if data:
-                top_member = self.bot.get_user(int(data[0]['discord_id']))
+                top_member = interaction.guild.get_member(int(data[0]['discord_id'])) if interaction.guild else None
                 if top_member:
                     embed.set_thumbnail(
                         url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
@@ -511,7 +515,7 @@ class Stats(commands.Cog):
             lines = []
             for i, row in enumerate(data):
                 medal = medals[i] if i < 3 else f'#{i + 1}'
-                name = self._resolve_member_name(row['user_id'])
+                name = self._resolve_member_name(row['user_id'], guild=interaction.guild)
                 minutes = row.get('total_minutes') or 0
                 lines.append(f'**{medal}** {name}: {self._format_minutes(minutes)}')
 
@@ -523,7 +527,7 @@ class Stats(commands.Cog):
                 guild=interaction.guild,
             )
             if data:
-                top_member = self.bot.get_user(int(data[0]['user_id']))
+                top_member = interaction.guild.get_member(int(data[0]['user_id'])) if interaction.guild else None
                 if top_member:
                     embed.set_thumbnail(
                         url=top_member.avatar.url if top_member.avatar else top_member.default_avatar.url
