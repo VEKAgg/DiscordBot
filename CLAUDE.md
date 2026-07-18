@@ -27,9 +27,9 @@ Entrypoint chain: `main.py` → `src/core/app.py:run_bot()`. `run_bot()` loads `
 - A `@tasks.loop(minutes=1)` `db_health_check` continuously pings the DB, flips `db_available`, and fires admin alerts on transition (lost/recovered).
 - Cog load failures are caught per-extension in `load_extensions()` and recorded in `failed_cogs`; other cogs still load.
 
-**Extensions are loaded from an explicit allowlist** in `src/core/app.py` (`EXTENSIONS`). Only these load:
-`admin.basic`, `admin.help`, `admin.health`, `networking.networking`, `marketplace.marketplace`, `resources.feeds`.
-Many modules under `src/cogs/` exist but are **NOT loaded** (e.g. `fun.py`, `quiz.py`, `mentorship.py`, `marketplace_enhanced.py`, `marketplace/reviews.py`, `gamification/`, `portfolio/`, `workshops/`). To enable a cog, add it to `EXTENSIONS`. Gamification is an intentional disabled stub.
+**Extensions are loaded from an explicit allowlist** in `src/core/app.py` (`EXTENSIONS`). Currently loaded (20):
+`admin.basic`, `admin.help`, `admin.health`, `admin.moderation`, `admin.notifications`, `admin.honeypot`, `admin.massunban`, `networking.networking`, `marketplace.marketplace`, `marketplace.reviews`, `resources.feeds`, `mentorship`, `marketplace_enhanced`, `portfolio.portfolio_manager`, `radio.radio`, `rpg.rpg_manager`, `stats`, `external.info`, `external.export`, `status`.
+Modules under `src/cogs/` that are **NOT loaded**: `quiz.py`, `gamification/gamification_manager.py`, `workshops/workshop_manager.py`. These are intentional disabled stubs — each exposes only a `*_status` command reporting the feature is unavailable. To enable a cog, add it to `EXTENSIONS`.
 
 **Layering:** `cogs/` (Discord command handlers) → `services/` (business logic, e.g. `NetworkingService`) → `database/` (data access). Cogs should be thin; put logic in services.
 
