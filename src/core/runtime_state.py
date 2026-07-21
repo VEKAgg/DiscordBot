@@ -1,9 +1,11 @@
+import functools
 import os
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 
+@functools.lru_cache(maxsize=1)
 def _load_git_metadata() -> str:
     try:
         commit = subprocess.check_output(
@@ -17,6 +19,7 @@ def _load_git_metadata() -> str:
         return os.getenv('COMMIT_SHA', 'unknown')
 
 
+@functools.lru_cache(maxsize=1)
 def _load_git_branch() -> str:
     try:
         branch = subprocess.check_output(
@@ -46,6 +49,10 @@ class RuntimeState:
     last_db_error: str | None = None
     last_recovery_time: datetime | None = None
     alert_state_cache: dict = field(default_factory=dict)
+
+    def clear_db_error(self) -> None:
+        """Clear stale DB error text after successful recovery."""
+        self.last_db_error = None
 
 
 runtime_state = RuntimeState()

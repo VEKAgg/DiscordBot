@@ -212,10 +212,6 @@ db = Database()
 
 
 async def get_user(discord_id: str):
-    user = await db.fetch_one('SELECT * FROM users WHERE discord_id = $1', discord_id)
-    if user:
-        return user
-
     return await create_user(discord_id)
 
 

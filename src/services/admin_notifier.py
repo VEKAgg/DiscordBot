@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import nextcord
 
@@ -9,31 +9,45 @@ from src.utils.logger import get_logger
 
 logger = get_logger('VEKA.admin_notifier')
 
+_CHANNEL_CACHE_TTL = timedelta(minutes=5)
+
 
 class AdminNotifier:
     def __init__(self, bot: nextcord.Client):
         self.bot = bot
-        self._channel = None
+        self._channel: nextcord.abc.Messageable | None = None
+        self._channel_fetched_at: datetime | None = None
 
     async def _get_channel(self):
         if not ADMIN_ALERT_CHANNEL_ID:
             return None
 
-        if self._channel is None:
-            self._channel = self.bot.get_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[assignment]
-            if self._channel is None:
-                try:
-                    self._channel = await self.bot.fetch_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[assignment]
-                except Exception as e:
-                    logger.warning('Failed to fetch admin alert channel: %s', e)
+        now = datetime.now(UTC)
+        if self._channel is not None and self._channel_fetched_at is not None:
+            if now - self._channel_fetched_at < _CHANNEL_CACHE_TTL:
+                return self._channel
+            # TTL expired — reset so we re-fetch below
+            self._channel = None
 
+        channel = self.bot.get_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+            except Exception as e:
+                logger.warning('Failed to fetch admin alert channel: %s', e)
+                self._channel = None
+                self._channel_fetched_at = now
+                return None
+
+        self._channel = channel
+        self._channel_fetched_at = now
         return self._channel
 
     def _should_alert(self, dedupe_key: str | None, cooldown_minutes: int) -> bool:
         if not dedupe_key:
             return True
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         cache = runtime_state.alert_state_cache
         last_alert_time = cache.get(dedupe_key)
 
@@ -58,7 +72,8 @@ class AdminNotifier:
             return
 
         embed = await alert_embed(title=title, description=description, severity=severity, contributor_source=__name__)
-        assert self._channel is not None  # guaranteed by _get_channel check above
+        if self._channel is None:
+            return
         try:
             await self._channel.send(embed=embed)
             logger.info('Sent admin alert: [%s] %s', severity, title)

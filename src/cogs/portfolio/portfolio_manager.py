@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nextcord
 import validators
@@ -48,7 +48,7 @@ class PortfolioManager(commands.Cog):
 
             tag_list = [t.strip() for t in tags.split(',') if t.strip()] if tags else []
 
-            project_id = f'proj-{int(datetime.utcnow().timestamp())}'
+            project_id = f'proj-{int(datetime.now(UTC).timestamp())}'
             user = await get_or_create_user(str(interaction.user.id))
 
             await db.execute(
@@ -269,7 +269,7 @@ class PortfolioManager(commands.Cog):
             tags_raw = (await self.bot.wait_for('message', check=check, timeout=60)).content
             tag_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
 
-            project_id = f'proj-{int(datetime.utcnow().timestamp())}'
+            project_id = f'proj-{int(datetime.now(UTC).timestamp())}'
             user = await get_or_create_user(str(ctx.author.id))
 
             await db.execute(

@@ -4,7 +4,7 @@ Search, notifications, and engagement features to keep users active
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import nextcord
@@ -240,7 +240,7 @@ class MarketplaceEnhanced(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            expires = datetime.utcnow() + timedelta(days=3)
+            expires = datetime.now(UTC) + timedelta(days=3)
             await db.execute(
                 """INSERT INTO marketplace_offers
                    (listing_id, buyer_id, offered_price, message, expires_at)

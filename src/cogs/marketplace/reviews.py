@@ -335,10 +335,11 @@ class MarketplaceReviews(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            from datetime import datetime, timedelta
+            from datetime import UTC, datetime, timedelta
 
-            if listing['bumped_at'] and listing['bumped_at'] > datetime.utcnow() - timedelta(hours=24):
-                time_left = listing['bumped_at'] + timedelta(hours=24) - datetime.utcnow()
+            now = datetime.now(UTC)
+            if listing['bumped_at'] and listing['bumped_at'] > now - timedelta(hours=24):
+                time_left = listing['bumped_at'] + timedelta(hours=24) - now
                 hours = int(time_left.total_seconds() // 3600)
                 embed = await error_embed(
                     'Too Soon',

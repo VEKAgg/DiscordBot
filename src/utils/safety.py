@@ -258,7 +258,7 @@ async def run_safe_task(coro, name: str, logger_obj, bot=None):
 
         logger_obj.error('Task %s failed (consecutive failures: %d): %s', name, count, exc, exc_info=True)
 
-        if count == 3 and bot and hasattr(bot, 'notifier') and bot.notifier:
+        if count >= 3 and bot and hasattr(bot, 'notifier') and bot.notifier:
             await bot.notifier.send_alert(
                 title=f'Background Task Failing: {name}',
                 description=f'Task `{name}` has failed {count} consecutive times.\nLast error: `{exc}`',

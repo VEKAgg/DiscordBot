@@ -1,5 +1,6 @@
 import datetime
 import logging
+from datetime import UTC
 
 import nextcord
 from nextcord.ext import commands
@@ -94,7 +95,7 @@ class Marketplace(commands.Cog):
 
         category_id = category_record['id']
 
-        listing_id = f'MP{int(datetime.datetime.utcnow().timestamp())}'
+        listing_id = f'MP{int(datetime.datetime.now(UTC).timestamp())}'
 
         # Ensure user exists in db
         await db.execute('INSERT INTO users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING', str(interaction.user.id))
@@ -156,7 +157,7 @@ class Marketplace(commands.Cog):
                 'category': category,
                 'status': 'active',
                 'image_url': image_url or None,
-                'listing_created_at': datetime.datetime.utcnow().isoformat(),
+                'listing_created_at': datetime.datetime.now(UTC).isoformat(),
             }
         )
 

@@ -116,12 +116,9 @@ class Feeds(commands.Cog):
 
         entries = entries[:5]
 
-        for idx, entry in enumerate(entries):
+        for _idx, entry in enumerate(entries):
             embed = await self.create_feed_embed(entry, category)
-            if idx == 0:
-                await interaction.followup.send(embed=embed)
-            else:
-                await interaction.channel.send(embed=embed)
+            await interaction.followup.send(embed=embed)
 
     async def create_feed_embed(self, entry: dict, category: str) -> nextcord.Embed:
         embed = await info_embed(

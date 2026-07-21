@@ -3,8 +3,9 @@ Audit Logging System
 Tracks all important actions for security and compliance
 """
 
+import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any
 
@@ -53,8 +54,6 @@ class AuditLogger:
             return
 
         try:
-            import json
-
             details_json = json.dumps(details) if details else None
 
             await self._db.execute(
@@ -67,7 +66,7 @@ class AuditLogger:
                 guild_id,
                 channel_id,
                 severity,
-                datetime.utcnow(),
+                datetime.now(UTC),
             )
 
             # Also log to file for immediate visibility
@@ -110,7 +109,7 @@ class AuditLogger:
 
         if hours:
             param_count += 1
-            query += f" AND created_at > NOW() - INTERVAL '${param_count} hours'"
+            query += f" AND created_at > NOW() - INTERVAL '1 hour' * ${param_count}"
             params.append(hours)
 
         query += ' ORDER BY created_at DESC'
@@ -125,7 +124,7 @@ class AuditLogger:
             """SELECT action, COUNT(*) as count
                FROM audit_logs
                WHERE user_id = $1
-               AND created_at > NOW() - INTERVAL '$2 hours'
+               AND created_at > NOW() - INTERVAL '1 hour' * $2
                GROUP BY action""",
             user_id,
             hours,
