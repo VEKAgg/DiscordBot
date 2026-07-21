@@ -21,7 +21,7 @@ def is_main_guild(guild: nextcord.Guild | None) -> bool:
 def main_server_only():
     """Decorator: command only works in the main guild. Others see 'not available'."""
 
-    def predicate(ctx_or_interaction):
+    async def predicate(ctx_or_interaction) -> bool:
         if isinstance(ctx_or_interaction, commands.Context):
             guild = ctx_or_interaction.guild
         elif isinstance(ctx_or_interaction, nextcord.Interaction):
@@ -36,15 +36,10 @@ def main_server_only():
         msg = 'This command is only available in the main VEKA server.'
         try:
             if isinstance(ctx_or_interaction, commands.Context):
-                import asyncio
-
-                if asyncio.get_running_loop().is_running():
-                    asyncio.ensure_future(ctx_or_interaction.send(msg))
+                await ctx_or_interaction.send(msg)
             elif isinstance(ctx_or_interaction, nextcord.Interaction):
                 if not ctx_or_interaction.response.is_done():
-                    import asyncio
-
-                    asyncio.ensure_future(ctx_or_interaction.response.send_message(msg, ephemeral=True))
+                    await ctx_or_interaction.response.send_message(msg, ephemeral=True)
         except Exception:
             pass
         return False
@@ -59,7 +54,7 @@ def owner_in_external_only():
     Others see 'not allowed'.
     """
 
-    def predicate(ctx_or_interaction):
+    async def predicate(ctx_or_interaction) -> bool:
         guild: nextcord.Guild | None = None
         user: nextcord.User | nextcord.Member | None = None
         if isinstance(ctx_or_interaction, commands.Context):
@@ -85,15 +80,10 @@ def owner_in_external_only():
         msg = 'This command is not available in this server.'
         try:
             if isinstance(ctx_or_interaction, commands.Context):
-                import asyncio
-
-                if asyncio.get_running_loop().is_running():
-                    asyncio.ensure_future(ctx_or_interaction.send(msg))
+                await ctx_or_interaction.send(msg)
             elif isinstance(ctx_or_interaction, nextcord.Interaction):
                 if not ctx_or_interaction.response.is_done():
-                    import asyncio
-
-                    asyncio.ensure_future(ctx_or_interaction.response.send_message(msg, ephemeral=True))
+                    await ctx_or_interaction.response.send_message(msg, ephemeral=True)
         except Exception:
             pass
         return False

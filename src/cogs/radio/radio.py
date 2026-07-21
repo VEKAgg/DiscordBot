@@ -8,7 +8,7 @@ Stream URLs are extracted from YouTube via yt-dlp and refreshed periodically.
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nextcord
 from nextcord.ext import commands, tasks
@@ -137,7 +137,7 @@ class RadioManager(commands.Cog):
 
             self._voice_client = await channel.connect(self_deaf=True)  # type: ignore[call-arg]
             self._play_stream()
-            self._started_at = datetime.utcnow()
+            self._started_at = datetime.now(UTC)
             self._auto_started = True
             self._manual_stop = False
             logger.info('Radio started in channel %s', channel.name)
@@ -231,7 +231,7 @@ class RadioManager(commands.Cog):
         """Format uptime since radio started."""
         if not self._started_at:
             return 'Not started'
-        delta = datetime.utcnow() - self._started_at
+        delta = datetime.now(UTC) - self._started_at
         hours, remainder = divmod(int(delta.total_seconds()), 3600)
         minutes, seconds = divmod(remainder, 60)
         if hours:

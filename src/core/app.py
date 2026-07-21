@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime
 
 import aiohttp
@@ -57,6 +58,7 @@ def get_intents() -> nextcord.Intents:
 def build_bot() -> commands.Bot:
     bot = commands.Bot(command_prefix=BOT_PREFIX, intents=get_intents(), help_command=None)
     bot.runtime_state = runtime_state  # type: ignore[attr-defined]
+    bot.notifier = None  # type: ignore[attr-defined]
     return bot
 
 
@@ -112,6 +114,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
                 if healthy_count >= CONSECUTIVE_HEALTHY_REQUIRED:
                     runtime_state.db_available = True
+                    runtime_state.last_db_error = None
                     runtime_state.last_recovery_time = datetime.now(UTC)
                     runtime_state.alert_state_cache.pop('healthy_count', None)
                     if hasattr(bot, 'notifier'):
@@ -188,94 +191,52 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
     @bot.event
     async def on_disconnect():
-        try:
-            await db.close()
-            logger.info('Database connection closed on disconnect')
-        except Exception as exc:
-            logger.error(f'Error closing database on disconnect: {exc}')
+        logger.warning('Gateway disconnected (DB pool left open for health-check recovery)')
+
+    def _handle_command_error_common(original_error: Exception) -> str | None:
+        """Shared error classification for both prefix and slash commands. Returns user message or None."""
+        if isinstance(original_error, commands.CommandNotFound):
+            return 'Command not found. Use /help or !help to see available commands.'
+        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
+            return 'You do not have permission to use this command.'
+        if isinstance(original_error, commands.CommandOnCooldown):
+            return f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.'
+        if isinstance(original_error, DatabaseUnavailableError):
+            return (
+                'This feature is temporarily unavailable due to database connectivity issues. Please try again later.'
+            )
+        if isinstance(
+            original_error,
+            commands.BadArgument | commands.MissingRequiredArgument | commands.UserInputError | ValidationError,
+        ):
+            return 'Invalid command input. Please check your arguments and try again.'
+        if isinstance(original_error, asyncio.TimeoutError | aiohttp.ClientError | ExternalRequestError):
+            return 'A network or external service error occurred. Please try again later.'
+        return None
 
     @bot.event
     async def on_command_error(ctx, error):
         original_error = error.original if isinstance(error, commands.CommandInvokeError) else error
 
-        if isinstance(original_error, commands.CommandNotFound):
-            await ctx.send('Command not found. Use /help or !help to see available commands.')
-            return
-
-        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
-            await ctx.send('You do not have permission to use this command.')
-            return
-
-        if isinstance(original_error, commands.CommandOnCooldown):
-            await ctx.send(f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.')
-            return
-
-        if isinstance(original_error, DatabaseUnavailableError):
-            await ctx.send(
-                'This feature is temporarily unavailable due to database connectivity issues. Please try again later.'
-            )
-            logger.warning('Database unavailable during command: %s | %s', original_error, format_context(ctx))
-            return
-
-        if isinstance(
-            original_error,
-            commands.BadArgument | commands.MissingRequiredArgument | commands.UserInputError | ValidationError,
-        ):
-            await ctx.send('Invalid command input. Please check your arguments and try again.')
-            logger.warning('Validation error: %s | %s', original_error, format_context(ctx))
-            return
-
-        if isinstance(original_error, asyncio.TimeoutError | aiohttp.ClientError | ExternalRequestError):
-            await ctx.send('A network or external service error occurred. Please try again later.')
-            logger.warning('External request error: %s | %s', original_error, format_context(ctx))
+        user_msg = _handle_command_error_common(original_error)
+        if user_msg:
+            await safe_send(ctx, content=user_msg)
+            log_level = logging.WARNING if not isinstance(original_error, commands.CommandNotFound) else logging.DEBUG
+            logger.log(log_level, '%s | %s', type(original_error).__name__, format_context(ctx))
             return
 
         logger.error('Unhandled command error: %s | %s', original_error, format_context(ctx), exc_info=True)
-        await ctx.send('An internal error occurred while processing your command.')
+        await safe_send(ctx, content='An internal error occurred while processing your command.')
 
     @bot.event
     async def on_application_command_error(interaction, error):
         original_error = error.original if isinstance(error, commands.CommandInvokeError) else error
-        if isinstance(original_error, commands.CommandOnCooldown):
-            await safe_send(
-                interaction,
-                content=f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.',
-                ephemeral=True,
-            )
-            return
 
-        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
-            await safe_send(interaction, content='You do not have permission to use this command.', ephemeral=True)
-            return
-
-        if isinstance(original_error, DatabaseUnavailableError):
-            await safe_send(
-                interaction,
-                content='This feature is temporarily unavailable due to database connectivity issues. Please try again later.',
-                ephemeral=True,
-            )
-            logger.warning(
-                'Database unavailable during slash command: %s | %s', original_error, format_context(interaction)
-            )
-            return
-
-        if isinstance(
-            original_error,
-            commands.BadArgument | commands.MissingRequiredArgument | commands.UserInputError | ValidationError,
-        ):
-            await safe_send(
-                interaction, content='Invalid command input. Please check your arguments and try again.', ephemeral=True
-            )
-            logger.warning('Validation error: %s | %s', original_error, format_context(interaction))
-            return
-
-        if isinstance(original_error, asyncio.TimeoutError | aiohttp.ClientError | ExternalRequestError):
-            await safe_send(
-                interaction,
-                content='A network or external service error occurred. Please try again later.',
-                ephemeral=True,
-            )
-            logger.warning('External request error: %s | %s', original_error, format_context(interaction))
+        user_msg = _handle_command_error_common(original_error)
+        if user_msg:
+            await safe_send(interaction, content=user_msg, ephemeral=True)
+            log_level = logging.WARNING if not isinstance(original_error, commands.CommandNotFound) else logging.DEBUG
+            logger.log(log_level, '%s | %s', type(original_error).__name__, format_context(interaction))
             return
 
         logger.error(
@@ -311,7 +272,8 @@ def run_bot() -> None:
 
     try:
         load_extensions(bot, EXTENSIONS)
-        assert DISCORD_TOKEN is not None
+        if DISCORD_TOKEN is None:
+            raise SystemExit('DISCORD_TOKEN is not set. Check your .env file.')
         bot.run(DISCORD_TOKEN)
     except Exception as exc:
         logger.error(f'Failed to start bot: {exc}')

@@ -13,6 +13,8 @@ from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
 
+_background_tasks: set[asyncio.Task] = set()
+
 
 class RSSService:
     def __init__(self, bot=None):
@@ -62,13 +64,15 @@ class RSSService:
                 runtime_state.alert_state_cache[fail_key] = 0
                 if self.bot and hasattr(self.bot, 'notifier'):
                     self.bot.notifier.clear_cooldown(f'rss_alert_{url}')
-                    asyncio.create_task(
+                    task = asyncio.create_task(
                         self.bot.notifier.send_alert(
                             title='RSS Feed Recovered',
                             description=f'The RSS feed `{url}` is now responding correctly.',
                             severity='INFO',
                         )
                     )
+                    _background_tasks.add(task)
+                    task.add_done_callback(_background_tasks.discard)
 
             return feed_data
 
@@ -81,7 +85,7 @@ class RSSService:
             runtime_state.alert_state_cache[fail_key] = fails
 
             if fails >= 3 and self.bot and hasattr(self.bot, 'notifier'):
-                asyncio.create_task(
+                task = asyncio.create_task(
                     self.bot.notifier.send_alert(
                         title='RSS Feed Failing',
                         description=f'The RSS feed `{url}` has failed {fails} consecutive times.\n**Error:** {str(exc)[:500]}',
@@ -90,6 +94,8 @@ class RSSService:
                         cooldown_minutes=120,
                     )
                 )
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
             return None
 
     async def process_and_dedupe(self, url: str, entries: list[dict]) -> list[dict]:
@@ -139,7 +145,7 @@ class RSSService:
 
         try:
             all_new_entries.sort(
-                key=lambda x: datetime.strptime(x['published'], '%a, %d %b %Y %H:%M:%S %z'),
+                key=lambda x: self._parse_entry_date(x['published']),
                 reverse=True,
             )
         except Exception:
@@ -149,3 +155,21 @@ class RSSService:
 
     def get_available_categories(self) -> list[str]:
         return list(RSS_FEEDS.keys())
+
+    @staticmethod
+    def _parse_entry_date(date_str: str) -> datetime:
+        """Parse an RSS entry date string, supporting RFC 2822 and ISO 8601 formats."""
+        from email.utils import parsedate_to_datetime
+
+        # Try RFC 2822 first (most RSS feeds)
+        try:
+            return parsedate_to_datetime(date_str)
+        except Exception:
+            pass
+        # Try ISO 8601
+        try:
+            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        except Exception:
+            pass
+        # Fallback: return epoch so sorting still works (oldest first)
+        return datetime.min.replace(tzinfo=None)

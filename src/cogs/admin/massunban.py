@@ -195,7 +195,7 @@ class MassUnban(commands.Cog):
 
     async def cog_load(self) -> None:
         """Resume incomplete jobs on startup."""
-        self.bot.loop.create_task(self._resume_incomplete_jobs())
+        asyncio.create_task(self._resume_incomplete_jobs())
 
     async def _resume_incomplete_jobs(self) -> None:
         """Wait for bot to be ready, then scan for resumable jobs."""
@@ -218,7 +218,7 @@ class MassUnban(commands.Cog):
                         job['id'],
                     )
                     self._active_jobs[job['id']] = False
-                    self.bot.loop.create_task(self._execute_job(job['id'], resumed=True))
+                    asyncio.create_task(self._execute_job(job['id'], resumed=True))
                 except Exception:
                     logger.error('Failed to resume job %s', job['id'], exc_info=True)
 
@@ -940,7 +940,7 @@ class MassUnban(commands.Cog):
             logger.warning('Failed to send rate limit notification for job %s', job_id, exc_info=True)
 
         # Schedule resume using asyncio task (not call_later)
-        self.bot.loop.create_task(self._scheduled_resume(job_id, retry_after_secs))
+        asyncio.create_task(self._scheduled_resume(job_id, retry_after_secs))
 
     async def _scheduled_resume(self, job_id: int, delay: float) -> None:
         """Wait then resume a rate-limited job, checking for cancellation first."""
