@@ -186,8 +186,8 @@ class Stats(commands.Cog):
             member = guild.get_member(uid)
             if member:
                 return member.display_name
-        member = self.bot.get_user(uid)
-        return member.display_name if member else f'User {uid}'
+        user = self.bot.get_user(uid)
+        return user.display_name if user else f'User {uid}'
 
     # ============================================================
     # Commands — Most Streamed
