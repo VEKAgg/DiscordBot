@@ -775,7 +775,7 @@ class MassUnban(commands.Cog):
 
         # Check if already unbanned
         try:
-            await guild.fetch_ban(user_id)
+            await guild.fetch_ban(nextcord.Object(user_id))
         except nextcord.NotFound:
             # Already unbanned
             result['status'] = 'skipped'
@@ -1021,6 +1021,44 @@ class MassUnban(commands.Cog):
 
         except Exception:
             logger.error('Failed to complete job %s', job_id, exc_info=True)
+
+    async def _build_preview_embed(
+        self,
+        job_id: int,
+        ban_count: int,
+        start_dt: datetime,
+        end_dt: datetime,
+        banned_by: nextcord.Member | None,
+        reason: str,
+        no_audit_count: int,
+    ) -> nextcord.Embed:
+        embed = await veka_embed(
+            title='Mass Unban — Confirm',
+            description=f'**{ban_count} ban(s)** match your filters.',
+            contributor_source=__name__,
+        )
+        embed.add_field(name='Job ID', value=str(job_id), inline=False)
+        embed.add_field(
+            name='Date Range',
+            value=f'{start_dt.strftime("%Y-%m-%d %H:%M:%S UTC")} → {end_dt.strftime("%Y-%m-%d %H:%M:%S UTC")}',
+            inline=False,
+        )
+        if banned_by:
+            embed.add_field(name='Moderator Filter', value=banned_by.mention, inline=False)
+        if reason:
+            embed.add_field(name='Reason', value=reason, inline=False)
+        if no_audit_count > 0:
+            embed.add_field(
+                name='Note',
+                value=f'{no_audit_count} ban(s) have no audit history and will be included.',
+                inline=False,
+            )
+        embed.add_field(
+            name='Confirm',
+            value='This action will unban all matched users. Double confirmation required.',
+            inline=False,
+        )
+        return embed
 
     async def _cancel_job(self, job_id: int, _runner_id: int) -> None:
         """Cancel a running job."""

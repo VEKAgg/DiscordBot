@@ -39,7 +39,7 @@ class AdminNotifier:
                 self._channel_fetched_at = now
                 return None
 
-        self._channel = channel
+        self._channel = channel  # type: ignore[assignment]
         self._channel_fetched_at = now
         return self._channel
 
