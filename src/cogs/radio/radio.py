@@ -19,6 +19,7 @@ from src.config.config import (
 )
 from src.core.runtime_state import runtime_state
 from src.database.database import db
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.guild_gate import owner_in_external_only
 from src.utils.safety import admin_only, safe_send, safe_slash_command
@@ -91,6 +92,20 @@ class RadioManager(commands.Cog):
         self._started_at: datetime | None = None
         self._manual_stop: bool = False
 
+    async def _get_target_channel_id(self) -> int | None:
+        """Resolve target voice channel from guild settings, falling back to config."""
+        if self._target_channel_id:
+            return self._target_channel_id
+        try:
+            from src.config.config import MAIN_GUILD_ID
+
+            settings = await guild_settings_service.get_settings(MAIN_GUILD_ID)
+            if settings.radio_channel_id:
+                return settings.radio_channel_id
+        except Exception:
+            pass
+        return RADIO_VOICE_CHANNEL_ID
+
     async def cog_load(self):
         """Auto-join on bot startup if channel is configured."""
         if self._target_channel_id:
@@ -119,19 +134,20 @@ class RadioManager(commands.Cog):
         if self._voice_client and self._voice_client.is_connected():
             return
 
-        if not self._target_channel_id:
+        target_id = await self._get_target_channel_id()
+        if not target_id:
             return
 
-        channel = self.bot.get_channel(self._target_channel_id)
+        channel = self.bot.get_channel(target_id)
         if channel is None:
             try:
-                channel = await self.bot.fetch_channel(self._target_channel_id)
+                channel = await self.bot.fetch_channel(target_id)
             except Exception as exc:
-                logger.error('Failed to fetch voice channel %s: %s', self._target_channel_id, exc)
+                logger.error('Failed to fetch voice channel %s: %s', target_id, exc)
                 return
 
         if not isinstance(channel, nextcord.VoiceChannel):
-            logger.error('Channel %s is not a voice channel', self._target_channel_id)
+            logger.error('Channel %s is not a voice channel', target_id)
             return
 
         try:

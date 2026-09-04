@@ -29,6 +29,7 @@ EXTENSIONS = [
     'src.cogs.admin.notifications',
     'src.cogs.admin.honeypot',
     'src.cogs.admin.massunban',
+    'src.cogs.admin.setup',
     'src.cogs.networking.networking',
     'src.cogs.marketplace.marketplace',
     'src.cogs.marketplace.reviews',

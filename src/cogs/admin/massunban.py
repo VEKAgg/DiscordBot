@@ -20,6 +20,7 @@ from nextcord.ext import commands
 from src.config.config import LOGS_CHANNEL_ID, MASSUNBAN_LOG_CHANNEL_ID, OWNER_IDS
 from src.core.runtime_state import runtime_state
 from src.database.database import db
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed, veka_embed
 from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
 
@@ -1258,9 +1259,15 @@ class MassUnban(commands.Cog):
     # Logging Helpers
     # ============================================================
 
-    async def _log_job_event(self, _guild: nextcord.Guild, title: str, description: str, detail: str) -> None:
+    async def _log_job_event(self, guild: nextcord.Guild, title: str, description: str, detail: str) -> None:
         """Send a job event notice to the log channel."""
-        log_channel = self.bot.get_channel(LOGS_CHANNEL_ID)
+        log_channel_id = LOGS_CHANNEL_ID
+        try:
+            settings = await guild_settings_service.get_settings(guild.id)
+            log_channel_id = settings.log_channel_id or LOGS_CHANNEL_ID
+        except Exception:
+            pass
+        log_channel = self.bot.get_channel(log_channel_id)
         if not log_channel:
             return
         try:
@@ -1276,6 +1283,11 @@ class MassUnban(commands.Cog):
     async def _log_per_user(self, guild: nextcord.Guild, job_id: int, result: dict) -> None:
         """Send per-user unban result to the log channel."""
         log_channel_id = MASSUNBAN_LOG_CHANNEL_ID or LOGS_CHANNEL_ID
+        try:
+            settings = await guild_settings_service.get_settings(guild.id)
+            log_channel_id = MASSUNBAN_LOG_CHANNEL_ID or settings.log_channel_id or LOGS_CHANNEL_ID
+        except Exception:
+            pass
         log_channel = self.bot.get_channel(log_channel_id)
         if not log_channel:
             return

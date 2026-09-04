@@ -21,17 +21,17 @@ INTERN_IDS = [int(item) for item in os.getenv('INTERN_IDS', '').split(',') if it
 DONATOR_IDS = [int(item) for item in os.getenv('DONATOR_IDS', '').split(',') if item.strip().isdigit()]
 ACTIVE_PRO_IDS = [int(item) for item in os.getenv('ACTIVE_PRO_IDS', '').split(',') if item.strip().isdigit()]
 
-# Channel IDs
+# Channel IDs — Legacy fallback defaults (deprecated: use guild_settings via /setup instead)
 _admin_alert_channel = os.getenv('ADMIN_ALERT_CHANNEL_ID', '')
 ADMIN_ALERT_CHANNEL_ID = int(_admin_alert_channel) if _admin_alert_channel.strip().isdigit() else None
 
 _marketplace_channel = os.getenv('MARKETPLACE_CHANNEL_ID', '')
 MARKETPLACE_CHANNEL_ID = int(_marketplace_channel) if _marketplace_channel.strip().isdigit() else None
 
-STAFF_BOT_COMMANDS_CHANNEL_ID = 1328775724668031126
-STAFF_CHANNEL_ID = 1091908318324334704
-PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226
-LOGS_CHANNEL_ID = 1329192112410857563
+STAFF_BOT_COMMANDS_CHANNEL_ID = 1328775724668031126  # Deprecated fallback
+STAFF_CHANNEL_ID = 1091908318324334704  # Deprecated fallback
+PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226  # Deprecated fallback
+LOGS_CHANNEL_ID = 1329192112410857563  # Deprecated fallback
 
 _massunban_log_channel = os.getenv('MASSUNBAN_LOG_CHANNEL_ID', '')
 MASSUNBAN_LOG_CHANNEL_ID = int(_massunban_log_channel) if _massunban_log_channel.strip().isdigit() else None
