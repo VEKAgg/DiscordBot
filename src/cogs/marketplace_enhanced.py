@@ -498,7 +498,7 @@ class MarketplaceEnhanced(commands.Cog):
                  JOIN users u ON l.seller_id = u.id
                  JOIN marketplace_categories c ON l.category_id = c.id
                  LEFT JOIN marketplace_seller_stats s ON l.seller_id = s.user_id
-                 WHERE l.status = 'active'"""
+                 WHERE l.status = 'active' AND l.is_expired = FALSE"""
         params = []
         param_count = 0
 
@@ -586,13 +586,45 @@ class MarketplaceEnhanced(commands.Cog):
     @tasks.loop(hours=24)
     async def check_expiring_listings(self):
         try:
-            await db.execute(
-                """UPDATE marketplace_listings
-                   SET status = 'withdrawn'
-                   WHERE status = 'active'
-                   AND created_at < NOW() - INTERVAL '60 days'"""
+            # Flag listings older than 30 days as expired
+            expired_rows = await db.fetch_many(
+                """SELECT l.id, l.title, u.discord_id
+                   FROM marketplace_listings l
+                   JOIN users u ON l.seller_id = u.id
+                   WHERE l.status = 'active'
+                   AND l.is_expired = FALSE
+                   AND l.created_at < NOW() - INTERVAL '30 days'"""
             )
-            logger.info('Cleaned up expired listings')
+
+            if expired_rows:
+                await db.execute(
+                    """UPDATE marketplace_listings
+                       SET is_expired = TRUE
+                       WHERE status = 'active'
+                       AND is_expired = FALSE
+                       AND created_at < NOW() - INTERVAL '30 days'"""
+                )
+
+                for row in expired_rows:
+                    seller = self.bot.get_user(int(row['discord_id']))
+                    if seller:
+                        try:
+                            embed = nextcord.Embed(
+                                title='Listing Expired',
+                                description=f'Your listing **{row["title"]}** has expired after 30 days.',
+                                color=nextcord.Color.orange(),
+                            )
+                            embed.add_field(
+                                name='Action',
+                                value=f'Use `/market bump {row["id"]}` to refresh it, or re-list with `/marketplace post`.',
+                                inline=False,
+                            )
+                            await seller.send(embed=embed)
+                        except Exception:
+                            pass
+
+                logger.info('Flagged %d expired listings', len(expired_rows))
+
         except Exception as e:
             logger.error(f'Expiring listings error: {str(e)}')
 

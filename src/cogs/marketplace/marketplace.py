@@ -1,6 +1,6 @@
 import datetime
 import logging
-from datetime import UTC
+from datetime import UTC, timedelta
 
 import nextcord
 from nextcord.ext import commands
@@ -537,6 +537,153 @@ class Marketplace(commands.Cog):
         )
         await safe_send(ctx, embed=embed)
 
+    @marketplace.subcommand(name='bump', description='Bump a listing to the top (24h cooldown)')
+    @safe_slash_command(requires_db=True)
+    async def mp_bump(self, interaction: nextcord.Interaction, listing_id: str):
+        """Bump a listing to refresh its position."""
+        listing = await db.fetch_one(
+            """SELECT l.id, l.status, l.last_bumped_at, u.discord_id
+               FROM marketplace_listings l
+               JOIN users u ON l.seller_id = u.id
+               WHERE l.id = $1""",
+            listing_id,
+        )
+
+        if not listing:
+            embed = await error_embed(
+                'Not Found', 'The listing could not be found.', user=interaction.user, contributor_source=__name__
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        if listing['discord_id'] != str(interaction.user.id):
+            embed = await error_embed(
+                'Permission Denied',
+                'You can only bump your own listings.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        if listing['status'] != 'active':
+            embed = await error_embed(
+                'Invalid Action',
+                'Only active listings can be bumped.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        # Enforce 24-hour cooldown
+        if listing['last_bumped_at']:
+            last_bumped = listing['last_bumped_at']
+            if last_bumped.tzinfo is None:
+                last_bumped = last_bumped.replace(tzinfo=UTC)
+            cooldown_remaining = (last_bumped + timedelta(hours=24)) - datetime.datetime.now(UTC)
+            if cooldown_remaining.total_seconds() > 0:
+                hours, remainder = divmod(int(cooldown_remaining.total_seconds()), 3600)
+                minutes = remainder // 60
+                embed = await error_embed(
+                    'Cooldown Active',
+                    f'You must wait **{hours}h {minutes}m** before bumping this listing again.',
+                    user=interaction.user,
+                    contributor_source=__name__,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
+        await db.execute(
+            'UPDATE marketplace_listings SET last_bumped_at = NOW() WHERE id = $1',
+            listing_id,
+        )
+
+        embed = await success_embed(
+            'Listing Bumped',
+            f'Listing `{listing_id}` has been bumped to the top!',
+            user=interaction.user,
+            contributor_source=__name__,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=False)
+
+    @marketplace.subcommand(name='stats', description='View marketplace analytics')
+    @safe_slash_command(requires_db=True)
+    async def mp_stats(self, interaction: nextcord.Interaction):
+        """Display marketplace analytics."""
+        try:
+            stats = await db.fetch_one(
+                """SELECT
+                   COUNT(*) FILTER (WHERE status = 'active' AND is_expired = FALSE) as active_listings,
+                   COUNT(*) FILTER (WHERE status = 'sold') as sold_listings,
+                   COUNT(DISTINCT seller_id) as active_sellers,
+                   AVG(price) FILTER (WHERE status = 'active' AND is_expired = FALSE) as avg_price
+                   FROM marketplace_listings"""
+            )
+
+            if stats is None:
+                embed = await error_embed(
+                    'Stats Error',
+                    'Could not retrieve marketplace statistics.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
+            top_categories = await db.fetch_many(
+                """SELECT c.name, c.emoji, COUNT(*) as count
+                   FROM marketplace_listings l
+                   JOIN marketplace_categories c ON l.category_id = c.id
+                   WHERE l.status = 'active' AND l.is_expired = FALSE
+                   GROUP BY c.id
+                   ORDER BY count DESC
+                   LIMIT 5"""
+            )
+
+            top_sellers = await db.fetch_many(
+                """SELECT u.discord_id, s.total_sales, s.average_rating
+                   FROM marketplace_seller_stats s
+                   JOIN users u ON s.user_id = u.id
+                   ORDER BY s.total_sales DESC
+                   LIMIT 5"""
+            )
+
+            embed = await info_embed(title='Marketplace Statistics', contributor_source=__name__, user=interaction.user)
+
+            embed.add_field(
+                name='Listings',
+                value=f'Active: **{stats["active_listings"] or 0}**\nSold: **{stats["sold_listings"] or 0}**',
+                inline=True,
+            )
+
+            embed.add_field(
+                name='Community',
+                value=f'Active Sellers: **{stats["active_sellers"] or 0}**\nAvg Price: **${stats["avg_price"] or 0:.2f}**',
+                inline=True,
+            )
+
+            if top_categories:
+                cat_text = '\n'.join([f'{c["emoji"]} {c["name"]}: {c["count"]}' for c in top_categories])
+                embed.add_field(name='Top Categories', value=cat_text, inline=False)
+
+            if top_sellers:
+                seller_text = ''
+                for i, seller in enumerate(top_sellers[:3], 1):
+                    user = interaction.guild.get_member(int(seller['discord_id'])) if interaction.guild else None
+                    name = user.display_name if user else 'Unknown'
+                    seller_text += f'#{i} {name}: {seller["total_sales"]} sales\n'
+                embed.add_field(name='Top Sellers', value=seller_text, inline=False)
+
+            await safe_send(interaction, embed=embed, ephemeral=False)
+
+        except Exception as e:
+            logger.error(f'Stats error: {e}')
+            embed = await error_embed(
+                'Stats Error', 'An error occurred.', contributor_source=__name__, user=interaction.user
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
     async def _delegate_unavailable(self, interaction: nextcord.Interaction) -> None:
         """Reply when a delegated marketplace cog is not loaded (degraded mode)."""
         embed = await error_embed(
@@ -602,6 +749,37 @@ class Marketplace(commands.Cog):
             await self._delegate_unavailable(interaction)
             return
         await cog.search_slash(interaction, query)
+
+    async def mp_search_autocomplete(self, interaction: nextcord.Interaction, query: str):
+        """Autocomplete for marketplace search — suggests active listing titles and tags."""
+        if not query or len(query) < 2:
+            await interaction.response.autocomplete([])
+            return
+        try:
+            rows = await db.fetch_many(
+                """SELECT title, tags FROM marketplace_listings
+                   WHERE status = 'active' AND is_expired = FALSE
+                   AND (to_tsvector('english', title) @@ plainto_tsquery('english', $1)
+                        OR $1 = ANY(tags))
+                   ORDER BY last_bumped_at DESC LIMIT 25""",
+                query,
+            )
+            suggestions = []
+            seen = set()
+            for row in rows:
+                title = row['title']
+                if title not in seen:
+                    suggestions.append((title[:100], title[:100]))
+                    seen.add(title)
+                for tag in row['tags'] or []:
+                    if tag not in seen and query.lower() in tag.lower():
+                        suggestions.append((f'tag: {tag}', tag))
+                        seen.add(tag)
+                if len(suggestions) >= 25:
+                    break
+            await interaction.response.autocomplete(suggestions)
+        except Exception:
+            await interaction.response.autocomplete([])
 
     @marketplace.subcommand(name='watch', description='Add a listing to your watchlist')
     @safe_slash_command(requires_db=True)
