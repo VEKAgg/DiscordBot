@@ -40,7 +40,7 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 - Global singleton: `from src.database.database import db`.
 - **`$1`/`$2` parameter style** (asyncpg native).
 - Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many`. All raise `DatabaseUnavailableError` on failure and flip `runtime_state.db_available = False`.
-- Migrations: `.sql` files in `migrations/` (currently 001–016), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
+- Migrations: `.sql` files in `migrations/` (currently 001–018), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) to avoid PostgreSQL rejecting them as unknown server_settings.
 
 ## Conventions
@@ -284,4 +284,80 @@ Implemented in `src/cogs/admin/massunban.py` (loaded as `src.cogs.admin.massunba
 - **Type Checking:** `mypy src/ main.py --explicit-package-bases`
 - **Pre-commit:** `pre-commit run --all-files`
 - Verify bot starts up cleanly with `python main.py` or docker dev environment.
+
+### Phase 2: Multi-Guild Engine & Dynamic Guild Settings
+
+> **Status:** Completed (2026-07-21)  
+> **Target files:** `migrations/018_guild_settings_schema.sql` (new), `src/services/guild_settings_service.py` (new), `src/cogs/admin/setup.py` (new), `src/core/app.py`, `src/services/admin_notifier.py`, `src/cogs/admin/massunban.py`, `src/cogs/admin/notifications.py`, `src/cogs/admin/honeypot.py`, `src/cogs/radio/radio.py`, `src/cogs/rpg/rpg_manager.py`, `src/config/config.py`.  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Guild Settings Migration (`migrations/018_guild_settings_schema.sql`)
+- Create `guild_settings` table to store per-server channel and role configurations:
+  ```sql
+  CREATE TABLE IF NOT EXISTS guild_settings (
+      guild_id BIGINT PRIMARY KEY,
+      log_channel_id BIGINT,
+      staff_channel_id BIGINT,
+      alert_channel_id BIGINT,
+      public_commands_channel_id BIGINT,
+      welcome_channel_id BIGINT,
+      radio_channel_id BIGINT,
+      leaderboard_channel_id BIGINT,
+      muted_role_id BIGINT,
+      honeypot_channel_ids BIGINT[] DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_guild_settings_guild_id ON guild_settings(guild_id);
+  ```
+- **Seed Backward-Compatibility Row:**
+  Insert a default row for the primary guild (`MAIN_GUILD_ID = 1088553066334273537`) pre-populated with the legacy channel IDs (`LOGS_CHANNEL_ID`, `STAFF_CHANNEL_ID`, `PUBLIC_BOT_COMMANDS_CHANNEL_ID`, `LEADERBOARD_CHANNEL_ID`) with `ON CONFLICT (guild_id) DO NOTHING` so existing server operations do not regress.
+
+#### 2. Guild Settings Service (`src/services/guild_settings_service.py`)
+- Define a strongly typed `GuildSettings` dataclass containing all schema fields with helper property methods.
+- Implement `GuildSettingsService` singleton:
+  - Maintain an in-memory TTL/dict cache (`_cache: dict[int, GuildSettings]`) to eliminate repetitive database lookups on every event.
+  - `async def get_settings(self, guild_id: int) -> GuildSettings`:
+    - Checks cache; on miss, queries `guild_settings` from database.
+    - If no row exists, inserts and returns a default `GuildSettings(guild_id=guild_id)`.
+  - `async def update_settings(self, guild_id: int, **kwargs) -> GuildSettings`:
+    - Executes parameterized SQL updating specified fields and sets `updated_at = NOW()`.
+    - Updates the in-memory cache and returns the refreshed `GuildSettings`.
+  - `def invalidate_cache(self, guild_id: int | None = None) -> None`:
+    - Clears cache for a single guild or all guilds.
+  - `async def resolve_channel(self, guild: nextcord.Guild, channel_type: str) -> nextcord.abc.GuildChannel | None`:
+    - Helper to fetch the channel ID from settings and resolve it to a `nextcord.TextChannel` or `nextcord.VoiceChannel` object on the given guild.
+
+#### 3. Interactive Server Setup Command (`src/cogs/admin/setup.py`)
+- Implement a dedicated cog loaded in `EXTENSIONS` as `src.cogs.admin.setup`.
+- Restrict to staff/admin via `@require_staff()`.
+- Expose both slash group `/setup` and prefix group `!setup`:
+  - **`/setup show` / `!setup show`:**
+    - Displays a comprehensive `veka_embed` detailing all configured channels and roles for the current server (Log channel, Staff channel, Alert channel, Commands channel, Welcome channel, Radio voice channel, Leaderboard channel, Muted role).
+  - **`/setup set <setting_type> <channel_or_role>`:**
+    - Directly configures a single channel or role with slash parameter autocomplete/choices.
+  - **`/setup interactive`:**
+    - Sends an interactive Nextcord UI `View` using `nextcord.ui.ChannelSelect` and `nextcord.ui.RoleSelect` allowing server admins to configure channels through native Discord dropdown menus without typing IDs.
+  - **`/setup reset <setting_type>`:**
+    - Clears a specific channel/role configuration back to `None`.
+
+#### 4. Decouple Hardcoded Constants Across Existing Modules
+Update all existing cogs and services to resolve channels dynamically via `GuildSettingsService`, using `src/config/config.py` constants solely as fallback defaults when no guild-specific channel is configured:
+- **`src/services/admin_notifier.py`:** Update `_get_channel()` to accept `guild_id: int | None` and resolve alerts and log channels from `GuildSettingsService`.
+- **`src/cogs/admin/massunban.py`:** Update log output destination to use the current guild's configured `log_channel_id`.
+- **`src/cogs/admin/honeypot.py`:** Direct honeypot trigger notifications to the guild's configured `log_channel_id`.
+- **`src/cogs/admin/notifications.py`:** Resolve staff channels for daily reminders and inactivity alerts dynamically per guild.
+- **`src/cogs/rpg/rpg_manager.py`:** Fetch `leaderboard_channel_id` from `guild_settings` rather than the hardcoded `1332399327100010569`.
+- **`src/cogs/radio/radio.py`:** Allow the target voice channel to be resolved per-guild from `guild_settings.radio_channel_id` if `RADIO_VOICE_CHANNEL_ID` is unset.
+- **`src/config/config.py`:** Add comments marking the legacy channel IDs as deprecated fallbacks.
+
+#### 5. Verification & Quality Gates
+- **Format & Lint:** `ruff check . --fix && ruff format .`
+- **Type Checking:** `mypy src/ main.py --explicit-package-bases`
+- **Pre-commit:** `pre-commit run --all-files`
+- **Functional Validation:**
+  - Verify `/setup show` displays correct seeded values for the primary server.
+  - Invite or simulate an external server and verify `/setup` creates a new row in `guild_settings` without collisions.
+  - Verify moderation logs and honeypot alerts route to the newly configured channels.
 

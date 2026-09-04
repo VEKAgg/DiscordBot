@@ -27,6 +27,7 @@ from src.config.config import (
     LEADERBOARD_UPDATE_INTERVAL,
     LIVE_ROLE_ID,
     LOGS_CHANNEL_ID,
+    MAIN_GUILD_ID,
     MESSAGE_XP_COOLDOWN,
     RPG_POINTS,
     XP_MULTIPLIERS,
@@ -34,6 +35,7 @@ from src.config.config import (
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services import inactivity_service
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed
 from src.utils.safety import admin_only, safe_send, safe_slash_command
 
@@ -108,6 +110,16 @@ class RPGManager(commands.Cog):
         # Cache of active activities per user for diffing
         self._user_active_activities: dict[int, dict[str, set[str]]] = {}
 
+    async def _get_leaderboard_channel_id(self) -> int | None:
+        """Resolve leaderboard channel ID from guild settings, falling back to config."""
+        try:
+            settings = await guild_settings_service.get_settings(MAIN_GUILD_ID)
+            if settings.leaderboard_channel_id:
+                return settings.leaderboard_channel_id
+        except Exception:
+            pass
+        return LEADERBOARD_CHANNEL_ID
+
     async def cog_load(self):
         """Start background tasks."""
         self.update_leaderboard.start()
@@ -115,7 +127,8 @@ class RPGManager(commands.Cog):
         self.check_inactivity.start()
         self.flush_activity_details.start()
         # Restore leaderboard message reference if channel is configured
-        if LEADERBOARD_CHANNEL_ID:
+        channel_id = await self._get_leaderboard_channel_id()
+        if channel_id:
             await self._restore_leaderboard_message()
 
     async def cog_unload(self):
@@ -266,12 +279,13 @@ class RPGManager(commands.Cog):
 
     async def _restore_leaderboard_message(self):
         """Restore the leaderboard message reference from the channel."""
-        if not LEADERBOARD_CHANNEL_ID:
+        channel_id = await self._get_leaderboard_channel_id()
+        if not channel_id:
             return
         try:
-            channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+            channel = self.bot.get_channel(channel_id)
             if channel is None:
-                channel = await self.bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+                channel = await self.bot.fetch_channel(channel_id)
             # Look for the most recent bot message in the channel
             async for message in channel.history(limit=10):  # type: ignore[union-attr]
                 if message.author == self.bot.user:
@@ -694,13 +708,14 @@ class RPGManager(commands.Cog):
     @tasks.loop(seconds=LEADERBOARD_UPDATE_INTERVAL)
     async def update_leaderboard(self):
         """Periodically update the leaderboard embed."""
-        if not LEADERBOARD_CHANNEL_ID or not runtime_state.db_available:
+        channel_id = await self._get_leaderboard_channel_id()
+        if not channel_id or not runtime_state.db_available:
             return
 
         try:
-            channel = self.bot.get_channel(LEADERBOARD_CHANNEL_ID)
+            channel = self.bot.get_channel(channel_id)
             if channel is None:
-                channel = await self.bot.fetch_channel(LEADERBOARD_CHANNEL_ID)
+                channel = await self.bot.fetch_channel(channel_id)
 
             embed = await self._build_leaderboard_embed(guild=channel.guild if channel else None)
             if not embed:
@@ -1149,6 +1164,12 @@ class RPGManager(commands.Cog):
         global LEADERBOARD_CHANNEL_ID  # noqa: PLW0603
 
         LEADERBOARD_CHANNEL_ID = channel.id
+
+        # Also persist to guild_settings
+        try:
+            await guild_settings_service.update_settings(interaction.guild.id, leaderboard_channel_id=channel.id)
+        except Exception:
+            logger.debug('Failed to persist leaderboard channel to guild_settings', exc_info=True)
 
         # Send initial leaderboard embed
         embed = await self._build_leaderboard_embed(guild=interaction.guild)
