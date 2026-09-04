@@ -179,7 +179,7 @@ Implemented in `src/cogs/admin/massunban.py` (loaded as `src.cogs.admin.massunba
 
 ### Phase 1: Foundations, Radio Overhaul & Migration Integrity
 
-> **Status:** Pending implementation  
+> **Status:** Completed (2026-07-21)  
 > **Target files:** `src/cogs/radio/radio.py`, `src/database/database.py`, `migrations/`, `pyproject.toml`, removal of `src/cogs/quiz.py`, `src/cogs/workshops/`, `src/cogs/gamification/`.  
 > **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
 
