@@ -53,6 +53,9 @@ class GuildSettings:
     leaderboard_channel_id: int | None = None
     muted_role_id: int | None = None
     honeypot_channel_ids: list[int] = field(default_factory=list)
+    warn_mute_threshold: int = 3
+    warn_ban_threshold: int = 5
+    honeypot_cooldown_seconds: int = 60
     created_at: object | None = None
     updated_at: object | None = None
 
@@ -93,6 +96,9 @@ class GuildSettingsService:
                 leaderboard_channel_id=row['leaderboard_channel_id'],
                 muted_role_id=row['muted_role_id'],
                 honeypot_channel_ids=list(row['honeypot_channel_ids']) if row['honeypot_channel_ids'] else [],
+                warn_mute_threshold=row.get('warn_mute_threshold') or 3,
+                warn_ban_threshold=row.get('warn_ban_threshold') or 5,
+                honeypot_cooldown_seconds=row.get('honeypot_cooldown_seconds') or 60,
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
             )

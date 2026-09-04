@@ -267,6 +267,7 @@ class MassUnban(commands.Cog):
             description=(
                 '**Available subcommands:**\n\n'
                 '\u2022 `/massunban run` \u2014 Start a mass unban\n'
+                '\u2022 `/massunban preview` \u2014 Preview matching bans without executing\n'
                 '\u2022 `/massunban status` \u2014 Check job status\n'
                 '\u2022 `/massunban cancel` \u2014 Cancel a job\n'
                 '\u2022 `/massunban recent` \u2014 View recent jobs'
@@ -332,6 +333,30 @@ class MassUnban(commands.Cog):
     async def massunban_recent_slash(self, interaction: nextcord.Interaction) -> None:
         await self._show_recent(interaction)
 
+    @massunban_group.subcommand(
+        name='preview',
+        description='Preview how many bans match your filters without executing',
+    )
+    @admin_only()
+    @safe_slash_command(requires_db=True)
+    async def massunban_preview_slash(
+        self,
+        interaction: nextcord.Interaction,
+        start_datetime: str = nextcord.SlashOption(
+            description='Start of ban date range (ISO format, e.g. 2024-01-01)',
+            required=True,
+        ),
+        end_datetime: str = nextcord.SlashOption(
+            description='End of ban date range (ISO format, e.g. 2024-12-31)',
+            required=True,
+        ),
+        banned_by: nextcord.Member | None = nextcord.SlashOption(
+            description='Only count bans placed by this moderator (limited audit history)',
+            required=False,
+        ),
+    ) -> None:
+        await self._preview_massunban(interaction, start_datetime, end_datetime, banned_by)
+
     # ============================================================
     # Prefix Commands
     # ============================================================
@@ -344,6 +369,7 @@ class MassUnban(commands.Cog):
             title='Mass Unban Commands',
             description=(
                 '**`!massunban run <start> <end> [@mod] [reason]`** — Start a mass unban\n'
+                '**`!massunban preview <start> <end> [@mod]`** — Preview matching bans without executing\n'
                 '**`!massunban status <job_id>`** — Check job status\n'
                 '**`!massunban cancel <job_id>`** — Cancel a job\n'
                 '**`!massunban recent`** — List recent jobs\n\n'
@@ -386,6 +412,19 @@ class MassUnban(commands.Cog):
     @safe_command(requires_db=True)
     async def massunban_recent_prefix(self, ctx: commands.Context) -> None:
         await self._show_recent(ctx)
+
+    @massunban_prefix.command(name='preview')
+    @admin_only()
+    @safe_command(requires_db=True)
+    async def massunban_preview_prefix(
+        self,
+        ctx: commands.Context,
+        start_datetime: str,
+        end_datetime: str,
+        banned_by: nextcord.Member | None = None,
+    ) -> None:
+        """Preview how many bans match your filters without executing"""
+        await self._preview_massunban(ctx, start_datetime, end_datetime, banned_by)
 
     # ============================================================
     # Core Logic — Start Mass Unban
@@ -678,6 +717,140 @@ class MassUnban(commands.Cog):
         self._rate_limit_count[job_id] = 0
         self._unban_interval[job_id] = BASE_UNBAN_INTERVAL
         await self._execute_job(job_id, resumed=False)
+
+    # ============================================================
+    # Core Logic — Preview Mass Unban
+    # ============================================================
+
+    async def _preview_massunban(
+        self,
+        target: commands.Context | nextcord.Interaction,
+        start_str: str,
+        end_str: str,
+        banned_by: nextcord.Member | None,
+    ) -> None:
+        """Preview how many bans match filters without executing any unbans."""
+        guild = getattr(target, 'guild', None)
+        if not guild:
+            embed = await error_embed('No Guild', 'This command must be used in a server.', contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        # Parse datetimes
+        try:
+            start_dt = datetime.fromisoformat(start_str).replace(tzinfo=UTC)
+        except ValueError:
+            embed = await error_embed(
+                'Invalid Date',
+                f'Could not parse start date: `{start_str}`\nUse ISO format (e.g. `2024-01-01` or `2024-01-01T00:00:00`).',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        try:
+            end_dt = datetime.fromisoformat(end_str).replace(tzinfo=UTC)
+        except ValueError:
+            embed = await error_embed(
+                'Invalid Date',
+                f'Could not parse end date: `{end_str}`\nUse ISO format (e.g. `2024-12-31` or `2024-12-31T23:59:59`).',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        if start_dt >= end_dt:
+            embed = await error_embed(
+                'Invalid Range',
+                'Start date must be before end date.',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        # Fetch bans
+        try:
+            bans = [ban async for ban in guild.bans()]
+        except (nextcord.Forbidden, nextcord.HTTPException):
+            embed = await error_embed(
+                'Missing Permission',
+                'I need the **Ban Members** permission to list bans.',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        if not bans:
+            embed = await info_embed(
+                'No Bans',
+                'There are no banned users in this server.',
+                contributor_source=__name__,
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        # Match bans against audit logs
+        audit_records = await self._fetch_audit_records(guild.id)
+
+        matched_count = 0
+        no_audit_count = 0
+        for ban in bans:
+            user_id = str(ban.user.id)
+            audit_record = audit_records.get(user_id)
+
+            if audit_record:
+                ban_time = audit_record.get('created_at')
+                if ban_time:
+                    if ban_time < start_dt or ban_time > end_dt:
+                        continue
+                if banned_by and audit_record.get('moderator_id') != str(banned_by.id):
+                    continue
+                matched_count += 1
+            else:
+                no_audit_count += 1
+                if banned_by:
+                    continue
+                matched_count += 1
+
+        estimated_seconds = matched_count * 1.5
+        estimated_minutes = estimated_seconds / 60
+
+        embed = await veka_embed(
+            title='Mass Unban — Preview',
+            description=(
+                f'**{len(bans)}** total ban(s) in this server.\n'
+                f'**{matched_count}** ban(s) match your filters.\n\n'
+                f'**Estimated duration:** ~{estimated_minutes:.1f} minutes'
+            ),
+            contributor_source=__name__,
+        )
+        embed.add_field(
+            name='Date Range',
+            value=f'{start_dt.strftime("%Y-%m-%d %H:%M:%S UTC")} \u2192 {end_dt.strftime("%Y-%m-%d %H:%M:%S UTC")}',
+            inline=False,
+        )
+        if banned_by:
+            embed.add_field(name='Moderator Filter', value=banned_by.mention, inline=False)
+        if no_audit_count > 0:
+            embed.add_field(
+                name='Audit Limitation',
+                value=(
+                    f'{no_audit_count} ban(s) have no audit history and will be '
+                    f'{"skipped (moderator filter active)" if banned_by else "included"}.'
+                ),
+                inline=False,
+            )
+        embed.add_field(
+            name='Important Note',
+            value=(
+                "Discord's API does not store ban timestamps or the moderator who placed the ban. "
+                "Date and moderator filters only match bans logged in the bot's audit database "
+                'while the bot was active. Bans placed externally or before the bot was running '
+                'cannot be filtered by date or moderator.'
+            ),
+            inline=False,
+        )
+        await safe_send(target, embed=embed, ephemeral=True)
 
     # ============================================================
     # Core Logic — Execute Job
@@ -1070,6 +1243,16 @@ class MassUnban(commands.Cog):
                 value=f'{no_audit_count} ban(s) have no audit history and will be included.',
                 inline=False,
             )
+        embed.add_field(
+            name='Audit Limitation',
+            value=(
+                "Discord's API does not store ban timestamps or the moderator who placed the ban. "
+                "Date and moderator filters only match bans logged in the bot's audit database "
+                'while the bot was active. Bans placed externally or before the bot was running '
+                'cannot be filtered by date or moderator.'
+            ),
+            inline=False,
+        )
         embed.add_field(
             name='Confirm',
             value='This action will unban all matched users. Double confirmation required.',
