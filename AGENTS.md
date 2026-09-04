@@ -361,3 +361,90 @@ Update all existing cogs and services to resolve channels dynamically via `Guild
   - Invite or simulate an external server and verify `/setup` creates a new row in `guild_settings` without collisions.
   - Verify moderation logs and honeypot alerts route to the newly configured channels.
 
+### Phase 3: Moderation & Safety Upgrades
+
+> **Status:** Pending implementation (Execute after Phase 2)  
+> **Target files:** `migrations/019_moderation_upgrades.sql` (new), `src/cogs/admin/moderation.py`, `src/cogs/admin/honeypot.py`, `src/cogs/admin/massunban.py`, `src/services/guild_settings_service.py`, `src/cogs/admin/setup.py`.  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Database Schema Additions (`migrations/019_moderation_upgrades.sql`)
+- **Warnings Table:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS warnings (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      user_id BIGINT NOT NULL,
+      moderator_id BIGINT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      active BOOLEAN DEFAULT TRUE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_warnings_guild_user ON warnings(guild_id, user_id, active);
+  CREATE INDEX IF NOT EXISTS idx_warnings_moderator ON warnings(moderator_id, created_at);
+  ```
+- **Extend `guild_settings`:**
+  ```sql
+  ALTER TABLE guild_settings
+  ADD COLUMN IF NOT EXISTS warn_mute_threshold INT DEFAULT 3,
+  ADD COLUMN IF NOT EXISTS warn_ban_threshold INT DEFAULT 5,
+  ADD COLUMN IF NOT EXISTS honeypot_cooldown_seconds INT DEFAULT 60;
+  ```
+
+#### 2. Warning & Auto-Escalation System (`src/cogs/admin/moderation.py`)
+- Restrict all warning commands to staff (`@require_mod()` / `@require_staff()`).
+- Expose dual command surface (slash + prefix):
+  - **`/warn <user> <reason>` & `!warn <user> <reason>`:**
+    - Inserts a new warning record into `warnings`.
+    - Queries total active warnings for the user on this guild.
+    - Sends a direct message to the warned user with server name, reason, and warning count (handle `nextcord.Forbidden` gracefully).
+    - **Auto-escalation logic:**
+      - Fetch `warn_mute_threshold` and `warn_ban_threshold` from `GuildSettingsService`.
+      - If active count $\ge$ `warn_ban_threshold`: Automatically ban the user (`reason=f"Auto-ban: reached {active_count} warnings"`), log to guild log channel.
+      - Else if active count $\ge$ `warn_mute_threshold`: Automatically apply timeout or assign `muted_role_id` from `guild_settings`, log to guild log channel.
+    - Responds with `success_embed` or `alert_embed` highlighting the new warning count and any automated escalation triggered.
+  - **`/warnings <user>` & `!warnings <user>`:**
+    - Fetches active and past warnings for the target user.
+    - If more than 5 warnings exist, display in a paginated embed using interactive buttons (`Previous` / `Next` via `nextcord.ui.View`).
+    - Format entries with Warning ID, timestamp (`<t:ts:R>`), issuing moderator mention, reason, and active status badge.
+  - **`/clearwarnings <user>` & `!clearwarnings <user>`:**
+    - Sets `active = FALSE` for all warnings of the user on the current guild.
+    - Returns `success_embed` indicating how many warnings were resolved.
+  - **`/modstats` & `!modstats`:**
+    - Aggregates moderation activity over the past 30 days from `audit_logs` and `warnings`.
+    - Shows a leaderboard table of staff members detailing: Bans, Kicks, Mutes/Timeouts, and Warns issued.
+
+#### 3. Honeypot System Enhancements (`src/cogs/admin/honeypot.py`)
+- **Configurable Actions per Channel:**
+  - Update `/honeypot add` choices to support: `softban`, `timeout`, `ban`, `role`, and `log` (log only without punitive action).
+  - Store selected action directly in `honeypots.action`.
+- **Honeypot Status Overview:**
+  - Add `/honeypot status` and `!honeypot status` displaying a `veka_embed` listing all registered honeypot channels, current enabled status, action type, and total triggered count.
+- **Configurable Cooldown:**
+  - Replace the hardcoded 5-second deduplication with `guild_settings.honeypot_cooldown_seconds` (default 60s) to prevent spamming logs when bots flood multiple messages.
+- **Rich Honeypot Audit Embed:**
+  - Post detailed trigger logs to `guild_settings.log_channel_id`:
+    - Embed fields: User (mention + tag + ID), Account age / creation date, Trigger channel, Message content preview, Action executed, and Timestamp.
+
+#### 4. Mass Unban Preview & Disclosure (`src/cogs/admin/massunban.py`)
+- **`/massunban preview` & `!massunban preview`:**
+  - Takes the exact same filter arguments as `/massunban run` (`start_datetime`, `end_datetime`, `banned_by`).
+  - Fetches guild bans, cross-references against `audit_logs`, and calculates matching bans without executing unbans.
+  - Returns a `veka_embed` with:
+    - Total bans in guild.
+    - Total bans matching the criteria.
+    - Estimated processing duration (based on sequential 1.5s rate-limit interval).
+    - Prominent note explaining Discord API constraints:
+      > *"Note: Discord's API does not store ban timestamps or banning moderators. Date and moderator filters only match bans logged in the bot's audit database while the bot was active."*
+- **Audit Limitation Notice in Execution:**
+  - Ensure the same disclosure note is prominently displayed on the `/massunban run` confirmation view before staff click confirmation.
+
+#### 5. Verification & Quality Gates
+- **Format & Lint:** `ruff check . --fix && ruff format .`
+- **Type Checking:** `mypy src/ main.py --explicit-package-bases`
+- **Pre-commit:** `pre-commit run --all-files`
+- **Functional Validation:**
+  - Verify `/warn` increments active warnings and triggers auto-mute upon hitting the threshold.
+  - Verify `/massunban preview` calculates matching bans without executing changes.
+  - Verify honeypot trigger events send complete embeds to the configured log channel.
+
