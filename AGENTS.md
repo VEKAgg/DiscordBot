@@ -40,7 +40,7 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 - Global singleton: `from src.database.database import db`.
 - **`$1`/`$2` parameter style** (asyncpg native).
 - Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many`. All raise `DatabaseUnavailableError` on failure and flip `runtime_state.db_available = False`.
-- Migrations: `.sql` files in `migrations/` (currently 001–018), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
+- Migrations: `.sql` files in `migrations/` (currently 001–020), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) to avoid PostgreSQL rejecting them as unknown server_settings.
 
 ## Conventions
@@ -363,7 +363,7 @@ Update all existing cogs and services to resolve channels dynamically via `Guild
 
 ### Phase 3: Moderation & Safety Upgrades
 
-> **Status:** Pending implementation (Execute after Phase 2)  
+> **Status:** Completed (2026-09-05)  
 > **Target files:** `migrations/019_moderation_upgrades.sql` (new), `src/cogs/admin/moderation.py`, `src/cogs/admin/honeypot.py`, `src/cogs/admin/massunban.py`, `src/services/guild_settings_service.py`, `src/cogs/admin/setup.py`.  
 > **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
 
@@ -447,4 +447,133 @@ Update all existing cogs and services to resolve channels dynamically via `Guild
   - Verify `/warn` increments active warnings and triggers auto-mute upon hitting the threshold.
   - Verify `/massunban preview` calculates matching bans without executing changes.
   - Verify honeypot trigger events send complete embeds to the configured log channel.
+
+### Phase 4: Activity, XP & Leaderboards Overhaul
+
+> **Status:** Completed (2026-09-05)  
+> **Target files:** `migrations/020_activity_and_leaderboard_schema.sql` (new), `pyproject.toml`, `src/cogs/rpg/rpg_manager.py`, `src/utils/card_generator.py` (new).  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Database Schema Additions (`migrations/020_activity_and_leaderboard_schema.sql`)
+- **Daily Activity Rollup Table:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS user_activity_daily (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL,
+      guild_id BIGINT NOT NULL,
+      activity_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      xp_earned INT NOT NULL DEFAULT 0,
+      messages INT NOT NULL DEFAULT 0,
+      voice_minutes INT NOT NULL DEFAULT 0,
+      gaming_minutes INT NOT NULL DEFAULT 0,
+      streaming_minutes INT NOT NULL DEFAULT 0,
+      coding_minutes INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(user_id, guild_id, activity_date)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_activity_daily_lookup
+  ON user_activity_daily(guild_id, user_id, activity_date);
+  ```
+- **Streaks Tracking in `users`:**
+  ```sql
+  ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS last_streak_date DATE;
+  ```
+- **Leaderboard Snapshots Table:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS leaderboard_snapshots (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      season_month VARCHAR(7) NOT NULL, -- Format: YYYY-MM
+      category VARCHAR(32) NOT NULL,    -- 'xp', 'voice', 'chat', 'gaming', 'streaming', 'coding'
+      user_id BIGINT NOT NULL,
+      rank INT NOT NULL,
+      score BIGINT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_leaderboard_snapshots
+  ON leaderboard_snapshots(guild_id, season_month, category);
+  ```
+
+#### 2. Streak Tracking & XP Multipliers (`src/cogs/rpg/rpg_manager.py`)
+- **Consecutive Day Tracking:**
+  - Track user activity (sending messages or voice sessions $\ge 1$ min).
+  - Compare `last_streak_date` against `today = datetime.now(UTC).date()`:
+    - If `last_streak_date == today`: Streak already accounted for today; no change.
+    - If `last_streak_date == today - timedelta(days=1)`: Consecutive day! Increment `current_streak += 1`, update `longest_streak = max(longest_streak, current_streak)`, set `last_streak_date = today`.
+    - If `last_streak_date < today - timedelta(days=1)`: Streak broken! Reset `current_streak = 1`, set `last_streak_date = today`.
+- **Streak Bonus XP Multipliers:**
+  - When awarding XP for any activity:
+    - $\ge 30$-day streak: `2.0x` XP
+    - $\ge 7$-day streak: `1.5x` XP
+    - $\ge 3$-day streak: `1.25x` XP
+    - Default: `1.0x`
+- **Daily Rollup Upsert:**
+  - In `_award_points` and activity listeners, perform an upsert into `user_activity_daily`:
+    ```sql
+    INSERT INTO user_activity_daily (user_id, guild_id, activity_date, xp_earned, {metric_col})
+    VALUES ($1, $2, CURRENT_DATE, $3, $4)
+    ON CONFLICT (user_id, guild_id, activity_date)
+    DO UPDATE SET
+        xp_earned = user_activity_daily.xp_earned + EXCLUDED.xp_earned,
+        {metric_col} = user_activity_daily.{metric_col} + EXCLUDED.{metric_col},
+        updated_at = NOW();
+    ```
+
+#### 3. Activity Summary with Unicode Mini Graphs (`src/cogs/rpg/rpg_manager.py`)
+- Command: `/activity summary [user]` and `!activity summary [user]`.
+- Fetch the last 7 days of rows from `user_activity_daily` for the target member.
+- Render clean mini bar graphs using Unicode block elements (` `, `▂`, `▃`, `▄`, `▅`, `▆`, `▇`, `█`) without external image libraries:
+  - Map each day's metric proportional to the week's maximum.
+  - Display 7-day sparkline charts for:
+    - 💬 Messages: `[ ▂▃▅█▃ ]` + 7-day total
+    - 🔊 Voice: `[   ▃▅█  ]` + total hours/minutes
+    - 💻 Coding: `[  ▅██▃  ]` + total hours/minutes
+    - 🎮 Gaming & 📺 Streaming breakdowns.
+  - Include streak badge: `🔥 Current Streak: X days (Best: Y days) | Bonus: Zx XP`.
+
+#### 4. Visual Rank Card Generator (`src/utils/card_generator.py`)
+- **Dependency:** Add `Pillow>=11.0.0` to `dependencies` in `pyproject.toml`.
+- Create `src/utils/card_generator.py` containing an asynchronous image generator:
+  - `async def generate_rank_card(username: str, avatar_bytes: bytes | None, level: int, current_xp: int, xp_needed: int, rank: int, streak: int) -> io.BytesIO`:
+    - Generates a sleek dark mode card (e.g. 900x260 canvas, dark gradient `#121216` to `#1E1F28`).
+    - Circular avatar with anti-aliasing mask and VEKA orange accent border (`#FF6B00`).
+    - Render username, global rank badge (`#1`, `#5`), level, and current streak (`🔥 7d`).
+    - Rounded gradient progress bar showing current XP vs XP needed for next level.
+    - Export into a high-quality PNG `BytesIO` buffer.
+  - Run the CPU-bound Pillow drawing code inside `await asyncio.to_thread(...)` to prevent blocking the async event loop.
+- **Command Integration:**
+  - Slash command `/rank card [user]` and prefix `!rank card [user]`.
+  - Downloads avatar via `aiohttp`, calls `generate_rank_card()`, and sends the image via `safe_send(interaction, file=nextcord.File(fp=buffer, filename='rank_card.png'))`.
+
+#### 5. Leaderboard Overhaul & Seasonal Archive (`src/cogs/rpg/rpg_manager.py`)
+- **Category Leaderboards:**
+  - Slash command `/leaderboard [category]` and `!leaderboard [category]` with choices:
+    - `xp` (Total XP), `chat` (Messages), `voice` (Voice minutes), `gaming` (Gaming minutes), `streaming` (Streaming minutes), `coding` (Coding minutes).
+- **Interactive Button Pagination:**
+  - Replace static truncation with an interactive `PaginationView` (`nextcord.ui.View`):
+    - `◀ Previous` button, `Page X/Y` indicator button (disabled), and `Next ▶` button.
+    - 10 entries per page with medal badges (`🥇`, `🥈`, `🥉`) on page 1.
+    - Auto-disable buttons after 120 seconds of inactivity.
+- **Monthly Season Reset & Archives:**
+  - Slash command `/leaderboard season`:
+    - Shows current monthly standings and previous season podium winners.
+  - Automated Monthly Cron Loop (`@tasks.loop` running at start of each calendar month):
+    - Archives top 25 users for each category into `leaderboard_snapshots`.
+    - Automatically sends a celebratory end-of-season announcement embed in `guild_settings.leaderboard_channel_id` highlighting the top 3 champions with trophy awards.
+
+#### 6. Verification & Quality Gates
+- **Format & Lint:** `ruff check . --fix && ruff format .`
+- **Type Checking:** `mypy src/ main.py --explicit-package-bases`
+- **Pre-commit:** `pre-commit run --all-files`
+- **Functional Validation:**
+  - Verify streak increments on consecutive days and resets if a day is skipped.
+  - Verify `/activity summary` renders 7-day sparkline characters cleanly on desktop and mobile.
+  - Verify `/rank card` returns a crisp PNG image with no loop lag.
+  - Verify leaderboard pagination switches pages seamlessly without timeout errors.
 
