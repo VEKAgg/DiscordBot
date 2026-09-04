@@ -1,13 +1,12 @@
 """
-24/7 Radio Cog — streams audio from a URL (e.g. Lofi Girl) using FFmpeg.
+24/7 Radio Cog — streams audio from Icecast/SHOUTcast streams using FFmpeg.
 
 Requires: ffmpeg, opus, PyNaCl installed on the host system.
-Stream URLs are extracted from YouTube via yt-dlp and refreshed periodically.
+Streams are direct Icecast/SHOUTcast URLs — no yt-dlp or YouTube extraction needed.
 """
 
 import asyncio
 import logging
-import time
 from datetime import UTC, datetime
 
 import nextcord
@@ -15,14 +14,12 @@ from nextcord.ext import commands, tasks
 
 from src.config.config import (
     RADIO_RECOVERY_PINGS_REQUIRED,
-    RADIO_REFRESH_INTERVAL,
     RADIO_STABILITY_INTERVAL,
-    RADIO_STREAM_URL,
     RADIO_VOICE_CHANNEL_ID,
 )
 from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.guild_gate import owner_in_external_only
 from src.utils.safety import admin_only, safe_send, safe_slash_command
 
@@ -33,34 +30,52 @@ FFMPEG_OPTIONS = {
     'options': '-vn -ar 48000 -ac 2 -f opus',
 }
 
+RADIO_STATIONS: dict[str, dict[str, str]] = {
+    'lofi': {
+        'name': 'Groove Salad (Lofi / Ambient)',
+        'url': 'https://ice1.somafm.com/groovesalad-128-mp3',
+        'description': 'Downtempo ambient groove and chillout beats',
+        'emoji': '\u2615',
+    },
+    'ambient': {
+        'name': 'Drone Zone',
+        'url': 'https://ice6.somafm.com/dronezone-128-mp3',
+        'description': 'Deep atmospheric ambient soundscapes',
+        'emoji': '\U0001f30c',
+    },
+    'chill': {
+        'name': 'Groove Salad Classic',
+        'url': 'https://ice6.somafm.com/gsclassic-128-mp3',
+        'description': 'Early 2000s nostalgic chillout and downtempo',
+        'emoji': '\U0001f6cb\ufe0f',
+    },
+    'spy': {
+        'name': 'Secret Agent',
+        'url': 'https://ice4.somafm.com/secretagent-128-mp3',
+        'description': 'Lounge, spy film themes, and vintage spy jazz',
+        'emoji': '\U0001f378',
+    },
+    'trip': {
+        'name': 'The Trip',
+        'url': 'https://ice2.somafm.com/thetrip-128-mp3',
+        'description': 'Progressive, psychedelic, and electronic vibes',
+        'emoji': '\U0001f680',
+    },
+    'chillhop': {
+        'name': 'Chillhop Music',
+        'url': 'https://streams.fluxfm.de/Chillhop/mp3-128/streams.fluxfm.de/',
+        'description': 'Relaxing lofi hip-hop beats to study and work to',
+        'emoji': '\U0001f3a7',
+    },
+    'jazz': {
+        'name': 'Smooth Jazz Global',
+        'url': 'https://smoothjazz.cdnstream1.com/2585_128.mp3',
+        'description': 'Modern and classic smooth jazz radio',
+        'emoji': '\U0001f3b7',
+    },
+}
 
-def _extract_stream_url(youtube_url: str) -> str | None:
-    """Extract a playable audio stream URL from a YouTube URL using yt-dlp."""
-    try:
-        import yt_dlp
-
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[attr-defined]
-            info = ydl.extract_info(youtube_url, download=False)
-            if info and 'url' in info:
-                return info['url']
-            # Some streams use a nested format
-            if info and 'formats' in info:
-                for fmt in info['formats']:
-                    if fmt.get('acodec') != 'none':
-                        return fmt['url']
-            return None
-    except ImportError:
-        logger.error('yt-dlp is not installed. Install it with: pip install yt-dlp')
-        return None
-    except Exception as exc:
-        logger.error('Failed to extract stream URL from %s: %s', youtube_url, exc, exc_info=True)
-        return None
+DEFAULT_STATION = 'lofi'
 
 
 class RadioManager(commands.Cog):
@@ -68,8 +83,8 @@ class RadioManager(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._stream_url: str | None = None
-        self._stream_url_fetched_at: float = 0.0
+        self._active_station: str = DEFAULT_STATION
+        self._stream_url: str = RADIO_STATIONS[DEFAULT_STATION]['url']
         self._voice_client: nextcord.VoiceClient | None = None
         self._target_channel_id: int | None = RADIO_VOICE_CHANNEL_ID
         self._auto_started: bool = False
@@ -80,9 +95,7 @@ class RadioManager(commands.Cog):
         """Auto-join on bot startup if channel is configured."""
         if self._target_channel_id:
             self.monitor_stability.start()
-            self.refresh_stream_url.start()
             self.track_radio_listeners.start()
-            # Delay auto-join slightly to let bot finish connecting
             await asyncio.sleep(5)
             if not self._manual_stop:
                 await self._auto_join()
@@ -90,13 +103,16 @@ class RadioManager(commands.Cog):
     async def cog_unload(self):
         """Disconnect and stop tasks when cog is unloaded."""
         self.monitor_stability.stop()
-        self.refresh_stream_url.stop()
         self.track_radio_listeners.stop()
         await self._disconnect()
 
     # ============================================================
     # Internal helpers
     # ============================================================
+
+    def _get_station_url(self) -> str:
+        """Get the URL for the currently active station."""
+        return RADIO_STATIONS[self._active_station]['url']
 
     async def _auto_join(self):
         """Join the configured voice channel and start playing."""
@@ -119,33 +135,19 @@ class RadioManager(commands.Cog):
             return
 
         try:
-            # Extract stream URL if not cached
-            if not self._stream_url or self._is_stream_url_expired():
-                await self._fetch_stream_url()
-
-            if not self._stream_url:
-                logger.error('No stream URL available, cannot start radio')
-                if hasattr(self.bot, 'notifier'):
-                    await self.bot.notifier.send_alert(
-                        title='Radio: Stream URL Unavailable',
-                        description='Could not extract a stream URL. Radio will not start.',
-                        severity='ERROR',
-                        dedupe_key='radio_no_stream_url',
-                        cooldown_minutes=30,
-                    )
-                return
-
+            self._stream_url = self._get_station_url()
             self._voice_client = await channel.connect(self_deaf=True)  # type: ignore[call-arg]
             self._play_stream()
             self._started_at = datetime.now(UTC)
             self._auto_started = True
             self._manual_stop = False
-            logger.info('Radio started in channel %s', channel.name)
+            logger.info('Radio started in channel %s (station: %s)', channel.name, self._active_station)
 
             if hasattr(self.bot, 'notifier'):
+                station = RADIO_STATIONS[self._active_station]
                 await self.bot.notifier.send_alert(
                     title='Radio Started',
-                    description=f'Now streaming in **{channel.name}**',
+                    description=f'{station["emoji"]} Now streaming **{station["name"]}** in **{channel.name}**',
                     severity='INFO',
                     dedupe_key='radio_status',
                     cooldown_minutes=60,
@@ -179,23 +181,21 @@ class RadioManager(commands.Cog):
             logger.error('Radio playback error: %s', error)
         else:
             logger.info('Radio stream ended normally, attempting restart')
-            # Stream ended — schedule restart
             if self._voice_client and self._voice_client.is_connected() and not self._manual_stop:
                 asyncio.ensure_future(self._restart_playback())
 
     async def _restart_playback(self):
-        """Restart playback after stream ends (re-extract URL if expired)."""
+        """Restart playback after stream ends."""
         try:
-            if self._is_stream_url_expired():
-                await self._fetch_stream_url()
-            if self._stream_url and self._voice_client and self._voice_client.is_connected():
-                await asyncio.sleep(2)  # Brief pause before restart
+            self._stream_url = self._get_station_url()
+            if self._voice_client and self._voice_client.is_connected():
+                await asyncio.sleep(2)
                 self._play_stream()
         except Exception as exc:
             logger.error('Failed to restart radio playback: %s', exc, exc_info=True)
 
     async def _disconnect(self):
-        """Disconnect from voice channel."""
+        """Disconnect from voice channel and clear uptime."""
         if self._voice_client and self._voice_client.is_connected():
             try:
                 self._voice_client.stop()
@@ -206,22 +206,7 @@ class RadioManager(commands.Cog):
             except Exception:
                 pass
         self._voice_client = None
-
-    async def _fetch_stream_url(self):
-        """Extract and cache a fresh stream URL."""
-        url = await asyncio.to_thread(_extract_stream_url, RADIO_STREAM_URL)
-        if url:
-            self._stream_url = url
-            self._stream_url_fetched_at = time.monotonic()
-            logger.info('Stream URL refreshed successfully')
-        else:
-            logger.warning('Stream URL extraction returned None')
-
-    def _is_stream_url_expired(self) -> bool:
-        """Check if the cached stream URL has expired."""
-        if self._stream_url_fetched_at == 0.0:
-            return True
-        return (time.monotonic() - self._stream_url_fetched_at) > RADIO_REFRESH_INTERVAL
+        self._started_at = None
 
     def _is_connected(self) -> bool:
         """Check if the bot is currently connected to a voice channel."""
@@ -282,28 +267,6 @@ class RadioManager(commands.Cog):
     async def before_monitor_stability(self):
         await self.bot.wait_until_ready()
 
-    @tasks.loop(seconds=RADIO_REFRESH_INTERVAL)
-    async def refresh_stream_url(self):
-        """Periodically refresh the stream URL before it expires."""
-        if self._is_connected() and not self._is_stream_url_expired():
-            return
-
-        old_url = self._stream_url
-        await self._fetch_stream_url()
-
-        if self._stream_url and self._stream_url != old_url and self._is_connected():
-            # Restart playback with new URL
-            try:
-                self._voice_client.stop()  # type: ignore[union-attr]
-                await asyncio.sleep(1)
-                self._play_stream()
-            except Exception as exc:
-                logger.error('Failed to restart playback after URL refresh: %s', exc)
-
-    @refresh_stream_url.before_loop
-    async def before_refresh_stream_url(self):
-        await self.bot.wait_until_ready()
-
     # ============================================================
     # Radio listener tracking — every 5 minutes
     # ============================================================
@@ -317,7 +280,6 @@ class RadioManager(commands.Cog):
         if not self._voice_client or not self._voice_client.channel:
             return
 
-        # Get all non-bot members in the radio voice channel
         channel = self._voice_client.channel
         if not isinstance(channel, nextcord.VoiceChannel):
             return
@@ -352,11 +314,15 @@ class RadioManager(commands.Cog):
         description='Control the 24/7 radio stream',
     )
     async def radio_group(self, interaction: nextcord.Interaction):
-        embed = await info_embed(
+        station = RADIO_STATIONS[self._active_station]
+        embed = await veka_embed(
             title='Radio Commands',
             description=(
-                '**Available subcommands:**\n\n'
+                f'**Current station:** {station["emoji"]} {station["name"]}\n\n'
+                '**Subcommands:**\n\n'
                 '\u2022 `/radio status` \u2014 Show stream status\n'
+                '\u2022 `/radio station <name>` \u2014 Switch station\n'
+                '\u2022 `/radio list` \u2014 Browse all stations\n'
                 '\u2022 `/radio start` \u2014 Start radio (admin)\n'
                 '\u2022 `/radio stop` \u2014 Stop radio (admin)\n'
                 '\u2022 `/radio move` \u2014 Move to another channel (admin)'
@@ -376,16 +342,80 @@ class RadioManager(commands.Cog):
         if connected and self._voice_client and self._voice_client.channel:
             channel_name = self._voice_client.channel.name  # type: ignore[attr-defined]
 
+        station = RADIO_STATIONS[self._active_station]
         description = (
             f'**Status**: {"Streaming" if connected else "Stopped"}\n'
             f'**Channel**: {channel_name}\n'
+            f'**Station**: {station["emoji"]} {station["name"]}\n'
+            f'**Description**: {station["description"]}\n'
             f'**Uptime**: {self._get_uptime()}\n'
-            f'**Stream URL**: {"Cached" if self._stream_url and not self._is_stream_url_expired() else "Expired/Missing"}\n'
-            f'**Source**: {RADIO_STREAM_URL}'
+            f'**Stream URL**: {"Active" if connected else "Idle"}'
         )
         embed = await info_embed(
             title='Radio Status',
             description=description,
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @radio_group.subcommand(name='station', description='Switch the radio station')
+    @safe_slash_command()
+    @admin_only()
+    @owner_in_external_only()
+    async def radio_station(
+        self,
+        interaction: nextcord.Interaction,
+        name: str = nextcord.SlashOption(
+            description='Station to play',
+            choices={f'{s["emoji"]} {s["name"]}': k for k, s in RADIO_STATIONS.items()},
+        ),
+    ):
+        """Switch to a different radio station."""
+        if name not in RADIO_STATIONS:
+            embed = await error_embed(
+                title='Unknown Station',
+                description=f'Station `{name}` not found. Use `/radio list` to see available stations.',
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=interaction.guild,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        old_station = self._active_station
+        self._active_station = name
+        self._stream_url = RADIO_STATIONS[name]['url']
+
+        if self._is_connected() and self._voice_client:
+            self._voice_client.stop()
+            await asyncio.sleep(1)
+            self._play_stream()
+
+        station = RADIO_STATIONS[name]
+        embed = await success_embed(
+            title='Station Changed',
+            description=f'{station["emoji"]} Now playing **{station["name"]}**\n{station["description"]}',
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+        logger.info('Station changed from %s to %s', old_station, name)
+
+    @radio_group.subcommand(name='list', description='List all available radio stations')
+    @safe_slash_command()
+    async def radio_list(self, interaction: nextcord.Interaction):
+        """Show all available radio stations."""
+        lines = []
+        for key, station in RADIO_STATIONS.items():
+            badge = ' \u25b6 Active' if key == self._active_station else ''
+            lines.append(f'{station["emoji"]} **{station["name"]}** (`{key}`){badge}\n{station["description"]}')
+
+        embed = await veka_embed(
+            title='Radio Stations',
+            description='\n\n'.join(lines),
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
@@ -424,9 +454,10 @@ class RadioManager(commands.Cog):
         await self._auto_join()
 
         if self._is_connected():
+            station = RADIO_STATIONS[self._active_station]
             embed = await success_embed(
                 title='Radio Started',
-                description='The radio is now streaming.',
+                description=f'{station["emoji"]} Now streaming **{station["name"]}**',
                 contributor_source=__name__,
                 user=interaction.user,
                 guild=interaction.guild,
@@ -460,7 +491,6 @@ class RadioManager(commands.Cog):
 
         self._manual_stop = True
         await self._disconnect()
-        self._started_at = None
 
         embed = await success_embed(
             title='Radio Stopped',
@@ -491,9 +521,10 @@ class RadioManager(commands.Cog):
         await self._auto_join()
 
         if self._is_connected():
+            station = RADIO_STATIONS[self._active_station]
             embed = await success_embed(
                 title='Radio Moved',
-                description=f'Now streaming in **{channel.name}**',
+                description=f'{station["emoji"]} Now streaming **{station["name"]}** in **{channel.name}**',
                 contributor_source=__name__,
                 user=interaction.user,
                 guild=interaction.guild,
@@ -507,6 +538,39 @@ class RadioManager(commands.Cog):
                 guild=interaction.guild,
             )
         await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ============================================================
+    # Prefix commands
+    # ============================================================
+
+    @commands.command(name='radiostation')
+    @admin_only()
+    async def prefix_radio_station(self, ctx: commands.Context, name: str):
+        """Switch the radio station. Usage: !radiostation <name>"""
+        if name not in RADIO_STATIONS:
+            await safe_send(ctx, f'\u274c Station `{name}` not found. Use `!radiolist` to see available stations.')
+            return
+
+        self._active_station = name
+        self._stream_url = RADIO_STATIONS[name]['url']
+
+        if self._is_connected() and self._voice_client:
+            self._voice_client.stop()
+            await asyncio.sleep(1)
+            self._play_stream()
+
+        station = RADIO_STATIONS[name]
+        await safe_send(ctx, f'{station["emoji"]} Now playing **{station["name"]}** — {station["description"]}')
+
+    @commands.command(name='radiolist')
+    async def prefix_radio_list(self, ctx: commands.Context):
+        """List all available radio stations."""
+        lines = ['**Radio Stations:**\n']
+        for key, station in RADIO_STATIONS.items():
+            badge = ' \u25b6 Active' if key == self._active_station else ''
+            lines.append(f'{station["emoji"]} **{station["name"]}** (`{key}`){badge}\n{station["description"]}')
+
+        await safe_send(ctx, '\n'.join(lines))
 
 
 def setup(bot: commands.Bot):

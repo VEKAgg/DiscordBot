@@ -1,5 +1,5 @@
 -- VEKA Discord Bot - Support Schema
--- Migration: 005_guild_and_rss_schema.sql
+-- Migration: 005b_guild_and_rss_schema.sql (renamed from 005_guild_and_rss_schema.sql to avoid collision with 005_community_additions.sql)
 -- Created: 2026-06-02
 
 -- Drop rss_cache if it exists from the incompatible 005_community_additions.sql schema

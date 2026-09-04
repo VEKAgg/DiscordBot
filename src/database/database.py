@@ -1,4 +1,5 @@
 import logging
+import re
 import urllib.parse
 from typing import Any
 
@@ -181,6 +182,19 @@ class Database:
         if not migration_files:
             logger.info('No migration files found')
             return
+
+        # Check for duplicate numeric prefixes — prevents silent ordering bugs
+        prefix_pattern = re.compile(r'^(\d{3})')
+        seen_prefixes: dict[str, list[str]] = {}
+        for mf in migration_files:
+            match = prefix_pattern.match(mf.name)
+            if match:
+                prefix = match.group(1)
+                seen_prefixes.setdefault(prefix, []).append(mf.name)
+        duplicates = {k: v for k, v in seen_prefixes.items() if len(v) > 1}
+        if duplicates:
+            detail = '; '.join(f'prefix {k}: {v}' for k, v in duplicates.items())
+            raise RuntimeError(f'Duplicate migration prefix detected: {detail}')
 
         async with self.pool.acquire() as connection:
             await connection.execute(

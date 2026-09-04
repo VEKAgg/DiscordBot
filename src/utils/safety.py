@@ -70,10 +70,7 @@ def map_exception_to_message(error: Exception) -> str:
             '\U0001f4a1 Try again later. If this persists, contact staff.'
         )
     if isinstance(error, commands.CommandNotFound):
-        return (
-            '\u274c Command not found.\n'
-            '\U0001f4a1 Use `/help` to see all available commands.'
-        )
+        return '\u274c Command not found.\n\U0001f4a1 Use `/help` to see all available commands.'
     if isinstance(error, commands.MissingPermissions):
         return (
             '\u274c You do not have permission to use this command.\n'
@@ -84,10 +81,7 @@ def map_exception_to_message(error: Exception) -> str:
         seconds = int(error.retry_after % 60)
         time_str = f'{minutes}m {seconds}s' if minutes > 0 else f'{seconds}s'
         return f'\u23f3 This command is on cooldown. Try again in **{time_str}**.'
-    return (
-        '\u274c An unexpected error occurred.\n'
-        '\U0001f4a1 Try again later. If this persists, contact staff.'
-    )
+    return '\u274c An unexpected error occurred.\n\U0001f4a1 Try again later. If this persists, contact staff.'
 
 
 # ============================================================

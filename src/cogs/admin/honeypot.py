@@ -424,9 +424,7 @@ class Honeypot(commands.Cog):
     # Moderation action executors
     # ------------------------------------------------------------------
 
-    async def _delete_user_messages_across_channels(
-        self, guild: nextcord.Guild, user_id: int, days: int
-    ) -> int:
+    async def _delete_user_messages_across_channels(self, guild: nextcord.Guild, user_id: int, days: int) -> int:
         """Delete a user's messages across all accessible text channels.
 
         Scans every text channel the bot can see, fetches messages from the
