@@ -1,6 +1,6 @@
 # AGENTS.md — VEKA Discord Bot
 
-> Python ≥3.13, nextcord, PostgreSQL (asyncpg). No test framework. Package management via `uv`.
+> Python ≥3.13, nextcord, PostgreSQL (asyncpg). Package management via `uv`.
 
 ## Quick Start
 
@@ -20,7 +20,13 @@ ruff check . --fix && ruff format .
 mypy src/ main.py --explicit-package-bases
 ```
 
-Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-added-large-files, ruff (with `--fix --unsafe-fixes`), ruff-format, and mypy — `pre-commit run --all-files`.
+**Tests — 126 unit/integration tests, no DB or network required:**
+
+```bash
+uv run pytest tests/ -v
+```
+
+Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, selects `F/I/UP/B/W/ARG`, ignores `E501/B008`. Mypy: `ignore_missing_imports=true`, `check_untyped_defs=true`, **`disable_error_code=["union-attr"]`** (Discord User/Member unions are noisy). Pre-commit runs trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-added-large-files, ruff (with `--fix --unsafe-fixes`), ruff-format, mypy, and pytest — `pre-commit run --all-files`.
 
 ## Architecture
 
@@ -747,7 +753,7 @@ Update all existing cogs and services to resolve channels dynamically via `Guild
 
 ### Phase 6: Automated Testing & QA Suite
 
-> **Status:** Pending implementation (Execute after Phase 5)  
+> **Status:** Completed (2026-09-05)  
 > **Target files:** `pyproject.toml`, `tests/conftest.py` (new), `tests/test_embeds.py` (new), `tests/test_safety.py` (new), `tests/test_runtime_state.py` (new), `tests/test_guild_settings.py` (new), `tests/test_migrations.py` (new), `tests/test_cog_loading.py` (new).  
 > **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
 
