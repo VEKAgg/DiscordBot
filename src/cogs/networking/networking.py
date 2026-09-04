@@ -177,13 +177,42 @@ class ConnectionResponseView(nextcord.ui.View):
 
 
 class Networking(commands.Cog):
-    @nextcord.slash_command(name='profile', description='Professional profile commands')
+    @nextcord.slash_command(
+        name='profile',
+        description='Professional profile commands',
+    )
     async def profile(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Profile Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/profile setup` \u2014 Create or update your profile\n'
+                '\u2022 `/profile edit` \u2014 Edit profile fields\n'
+                '\u2022 `/profile view` \u2014 View a profile'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(name='connect', description='Connection request commands')
+    @nextcord.slash_command(
+        name='connect',
+        description='Connection request commands',
+    )
     async def connect(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Connect Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/connect request` \u2014 Send a connection request\n'
+                '\u2022 `/connect list` \u2014 View pending requests'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     def __init__(self, bot):
         self.bot = bot

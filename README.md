@@ -44,18 +44,21 @@ is kept for Docker images that don't have `uv`.
 
 Loaded modules (see `EXTENSIONS` in `src/core/app.py`):
 
-- 🤝 **Networking** — professional profiles, connection requests, and connections (`/profile`, `/connect`, plus `!` prefix equivalents)
-- 🛒 **Marketplace** — listings, reviews, and enhanced marketplace features
-- 📚 **Resource Feeds** — curated RSS (tech news, jobs, dev blogs) refreshed every 15 minutes
-- 🎮 **RPG / Leveling** — XP from messages, voice time, and commands; level-up system; activity role evaluation; background tasks for leaderboard auto-update, inactivity monitoring, and activity role assessment
-- 📊 **Leaderboard & Stats** — auto-updating leaderboard embed (`/setupleaderboard`), `/leaderboard [stat]`, `/level [@user]`, `/most streamed|played|listened|coded` activity leaderboards
+- 🤝 **Networking** — professional profiles, connection requests, connections, and profile search (`/profile`, `/connect`, `/networking search`)
+- 🛒 **Marketplace** — listings, reviews, offers, transactions, fraud detection, and enhanced marketplace features (`/marketplace`, `/reviews`)
+- 📚 **Resource Feeds** — curated RSS (tech news, jobs, dev blogs) refreshed every 15 minutes (`/feeds`)
+- 🎮 **RPG / Leveling** — XP from messages, voice time, and commands; level-up system; activity role evaluation; background tasks for leaderboard auto-update, inactivity monitoring, and activity role assessment (`/rpg`)
+- 📊 **Leaderboard & Stats** — auto-updating leaderboard embed (`/setupleaderboard`), `/leaderboard [stat]`, `/level [@user]`, `/most streamed|played|listened|coded` activity leaderboards, server statistics
 - 🔍 **Activity Tracking** — streaming, gaming, listening, and coding activity duration tracking with detailed activity logging (game names, songs, coding apps)
-- 🛠️ **Admin / Health** — administrative commands, help, health/diagnostics, moderation, notifications, and honeypot anti-spam
-- 📋 **Mentorship** — mentorship matching and management
-- 💼 **Portfolio** — portfolio management and display
-- 📻 **Radio** — voice channel radio/audio features
-- 🔗 **External** — info and export commands
-- 📡 **Status** — bot status and system information
+- 🛠️ **Admin / Health** — administrative commands, help, health/diagnostics, moderation (warns, kicks, bans), notifications, and honeypot anti-spam
+- 🚫 **Honeypot Anti-Spam** — trap channels that catch spam bots with configurable actions (softban, ban, timeout, role assignment) (`/honeypot`)
+- 🔥 **Mass Unban** — resumable bulk-unban jobs with double confirmation, per-user tracking, adaptive rate limiting, and DM apology on failure (`/massunban`)
+- 📋 **Mentorship** — mentorship matching, categories, accept/complete/cancel workflow (`/mentorship`)
+- 💼 **Portfolio** — portfolio management, project display, and search (`/portfolio`)
+- 📻 **Radio** — voice channel radio/audio streaming with stability monitoring, auto-recovery, and stream refresh (`/radio`)
+- 🔗 **External** — info, export commands (`/info`, `/export`)
+- 📡 **Status** — bot status, system information, and runtime health (`/status`)
+- 🖼️ **Directus CMS Sync** — automatic profile sync from Directus CMS with image rehosting (enabled via `DIRECTUS_URL` + `DIRECTUS_SERVICE_TOKEN`)
 
 Additional cogs exist in `src/cogs/` (quiz, gamification, workshops) but are **not loaded** until added to `EXTENSIONS`. Gamification is an intentional disabled stub.
 
@@ -117,17 +120,38 @@ src/
 │   ├── database.py         → asyncpg pool, global `db` singleton, run_migrations()
 │   └── migrations.py       → migration file discovery (schema_migrations table)
 ├── cogs/
-│   ├── admin/              → basic.py, help.py, health.py
-│   ├── networking/         → networking.py (profiles, connections)
+│   ├── admin/
+│   │   ├── basic.py        → ping, hello, commands, server info
+│   │   ├── help.py         → custom help command
+│   │   ├── health.py       → health/diagnostics commands
+│   │   ├── moderation.py   → warn, kick, ban, audit log commands
+│   │   ├── notifications.py→ notification management
+│   │   ├── honeypot.py     → anti-spam honeypot trap channels
+│   │   └── massunban.py    → resumable bulk-unban system
+│   ├── networking/         → networking.py (profiles, connections, search)
 │   ├── marketplace/        → marketplace.py, reviews.py
-│   └── resources/feeds.py  → RSS (@tasks.loop every 15 min)
-├── services/               → networking, mentorship, quiz, rss
+│   ├── marketplace_enhanced.py → enhanced marketplace features
+│   ├── resources/feeds.py  → RSS feeds (@tasks.loop every 15 min)
+│   ├── mentorship.py       → mentorship matching and management
+│   ├── portfolio/          → portfolio_manager.py (portfolio CRUD, projects, search)
+│   ├── radio/radio.py      → voice channel radio/audio streaming
+│   ├── rpg/rpg_manager.py  → RPG/leveling/activity tracking
+│   ├── stats.py            → server statistics
+│   ├── status.py           → bot status and runtime info
+│   └── external/
+│       ├── info.py         → info/help commands
+│       └── export.py       → data export
+├── services/               → business logic (networking, mentorship, quiz, rss, inactivity, admin_notifier, directus_sync)
 └── utils/
     ├── safety.py           → safe_command / safe_send / safe_background_task
     ├── embeds.py           → VEKA embed builders
+    ├── logger.py           → logging setup (RotatingFileHandler)
+    ├── http.py             → shared aiohttp client
+    ├── footer.py           → embed footer helpers
+    ├── guild_gate.py       → guild membership gate checks
     ├── security/           → rbac.py, rate_limiter.py, audit.py, validation.py
     └── marketplace/        → fraud_detection.py
-migrations/                 → SQL files, auto-applied on startup
+migrations/                 → SQL files (001–016), auto-applied on startup
 ```
 
 ---
@@ -148,7 +172,10 @@ Key tables: `users`, `profiles`, `connections`, `connection_requests`,
 `mentorships`, `quizzes`, `quiz_attempts`, `workshops`, `portfolios`,
 `resources`, `rss_cache`, `guild_config`, `marketplace_listings`,
 `marketplace_offers`, `marketplace_reviews`, `marketplace_transactions`,
-and the security tables (`audit_logs`, `user_security`, `security_events`).
+`massunban_jobs`, `massunban_job_items`, `honeypots`, `honeypot_logging_config`,
+`honeypot_events`, `warnings`, `user_activity_log`, `user_rpg_roles`,
+`user_activity_details`, `user_active_activities`, `user_security`,
+`security_events`, `audit_logs`, and `directus_profiles`.
 
 ---
 
@@ -179,10 +206,10 @@ Persisted to `audit_logs`; `user_security` and `security_events` track
 warnings/blocks. Suspicious-activity detection:
 `await audit_log.detect_suspicious_activity(user_id)`.
 
-**RBAC** — hierarchy `USER < VERIFIED < MODERATOR < ADMIN < OWNER`, mapped from
-Discord role names (`everyone`, `verified`, `mod`/`moderator`,
-`admin`/`administrator`, and guild owner). Gate commands with `@require_mod()`,
-`@require_admin()`, `@require_verified()`, or check `rbac.get_user_role(ctx)`.
+**RBAC** — hierarchy `USER < VERIFIED < INTERN < DONATOR < ACTIVE_PRO < STAFF < ADMIN < FOUNDER`,
+mapped from Discord role names. Gate commands with `@require_mod()` (aliased to
+`require_staff()`), `@require_admin()`, `@require_verified()`, or check
+`rbac.get_user_role(ctx)`.
 
 > Note: `safety.py` also exposes a simpler `admin_only()` check keyed off
 > `ADMIN_IDS`/`OWNER_IDS` from config — two parallel auth mechanisms exist.
@@ -205,8 +232,20 @@ by `src/config/config.py`:
 | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | ✅* | `localhost`/`5432`/`veka_bot`/`veka_bot_user`/`example` | Used to compose `DATABASE_URL` if it isn't set |
 | `ADMIN_IDS` | — | empty | Comma-separated Discord user IDs |
 | `OWNER_IDS` | — | empty | Comma-separated Discord user IDs |
+| `FOUNDER_IDS` | — | empty | Comma-separated Discord user IDs (highest RBAC tier) |
+| `STAFF_IDS` | — | empty | Comma-separated Discord user IDs |
+| `INTERN_IDS` | — | empty | Comma-separated Discord user IDs |
+| `DONATOR_IDS` | — | empty | Comma-separated Discord user IDs |
+| `ACTIVE_PRO_IDS` | — | empty | Comma-separated Discord user IDs |
 | `ADMIN_ALERT_CHANNEL_ID` | — | none | Channel for operational alerts |
-| `MASSUNBAN_LOG_CHANNEL_ID` | — | none | Dedicated channel for per-user mass-unban audit logs (separate from admin alert channel) |
+| `MASSUNBAN_LOG_CHANNEL_ID` | — | none | Dedicated channel for per-user mass-unban audit logs |
+| `LEADERBOARD_CHANNEL_ID` | — | none | Channel for auto-updating leaderboard embed |
+| `RADIO_STREAM_URL` | — | Lofi Girl live | Stream URL for the radio feature |
+| `RADIO_VOICE_CHANNEL_ID` | — | none | Voice channel for radio playback |
+| `MAIN_GUILD_ID` | — | `1088553066334273537` | Primary guild ID (hardcoded) |
+| `MAIN_SERVER_INVITE_URL` | — | `https://discord.gg/veka` | Server invite URL |
+| `DIRECTUS_URL` | — | empty | Directus CMS instance URL (enables profile sync) |
+| `DIRECTUS_SERVICE_TOKEN` | — | empty | Directus API service token |
 | `BOT_VERSION` | — | `1.0.0` | |
 | `LOG_LEVEL` | — | `INFO` | |
 | `ENVIRONMENT` | — | `development` | |
@@ -260,20 +299,145 @@ reachable PostgreSQL. Docker is simply how it is packaged and deployed.
 Both slash commands and `!`-prefix commands are provided, often side by side for
 the same feature — keep them in sync when changing behavior.
 
+### General
+
+| Command | Description |
+|---|---|
+| `/ping` / `!ping` | Check bot latency |
+| `/hello` / `!hello` | Greeting / info |
+| `/commands` / `!commands` | List available commands |
+| `/help [command]` / `!help [command]` | List commands or show command detail |
+| `/status` | Bot status and system information |
+
+### Networking & Profiles
+
 | Command | Description |
 |---|---|
 | `/profile [@user]` / `!profile` | View a professional profile |
 | `!setupprofile` | Set up your profile |
 | `/connect @user` / `!connect @user [message]` | Send a connection request |
+| `/networking search` | Search for users by skills/interests |
+
+### Marketplace
+
+| Command | Description |
+|---|---|
+| `/marketplace` / `!marketplace` | Browse, create, and manage marketplace listings |
+| `/reviews` / `!reviews` | View and leave reviews |
+| `/marketplace_enhanced` | Enhanced marketplace features |
+
+### RPG & Leveling
+
+| Command | Description |
+|---|---|
 | `/leaderboard [stat]` / `!leaderboard` | View leaderboard (xp, messages, voice, streaming, gaming, listening, coded) |
 | `/level [@user]` / `!level` | View your or another user's level and XP |
 | `/most streamed\|played\|listened\|coded` | Activity-specific leaderboards |
 | `/setupleaderboard` | (Admin) Configure the auto-updating leaderboard channel |
-| `/massunban` | (Admin) Bulk-unban users within a date range with double confirmation, resumable job tracking, and per-user audit logs |
-| `/massunban status <job_id>` | (Admin) Check status of a running or completed mass-unban job |
-| `/massunban cancel <job_id>` | (Admin) Cancel a pending or running mass-unban job |
-| `/massunban recent` | (Admin) List recent mass-unban jobs for this server |
-| `/help` / `!help [command]` | List commands / command detail |
+| `/rpg` | RPG/leveling commands |
+
+### Resource Feeds
+
+| Command | Description |
+|---|---|
+| `/feeds list` / `!feeds list` | List configured RSS feeds |
+| `/feeds check` / `!feeds check` | Force-check all feeds now |
+| `/feeds add <url>` / `!feeds add <url>` | Add a new RSS feed |
+| `/feeds remove <id>` / `!feeds remove <id>` | Remove an RSS feed |
+
+### Mentorship
+
+| Command | Description |
+|---|---|
+| `/mentorship request` | Request a mentor |
+| `/mentorship accept` | Accept a mentorship request |
+| `/mentorship complete` | Mark a mentorship as completed |
+| `/mentorship cancel` | Cancel an active mentorship |
+| `/mentorship status` | View your mentorship status |
+| `/mentorship categories` | Browse mentorship categories |
+
+### Portfolio
+
+| Command | Description |
+|---|---|
+| `/portfolio view [@user]` | View a user's portfolio |
+| `/portfolio add` | Add a project to your portfolio |
+| `/portfolio remove <id>` | Remove a project from your portfolio |
+| `/portfolio edit <id>` | Edit a portfolio project |
+| `/portfolio project <id>` | View a specific project |
+| `/portfolio search` | Search portfolios |
+
+### Radio
+
+| Command | Description |
+|---|---|
+| `/radio join` / `!radio join` | Join your voice channel and start playing |
+| `/radio leave` / `!radio leave` | Leave voice channel and stop |
+| `/radio start` / `!radio start` | Start radio playback |
+| `/radio stop` / `!radio stop` | Stop radio playback |
+| `/radio np` / `!radio np` | Show now playing |
+| `/radio skip` / `!radio skip` | Skip current track |
+| `/radio uptime` / `!radio uptime` | Show radio uptime |
+| `/radio seturl <url>` / `!radio seturl <url>` | Change the stream URL |
+
+### Admin
+
+| Command | Description |
+|---|---|
+| `/admin featurestatus` | View status of all features |
+| `/admin startupchecks` | View startup check results |
+| `/admin reloadcog <name>` | Reload a cog |
+| `/admin unloadcog <name>` | Unload a cog |
+| `/admin loadcog <name>` | Load a cog |
+| `/admin dbstatus` | Check database status |
+| `/admin serverinfo` | View server information |
+| `/admin guildgate` | Configure guild gate settings |
+| `/admin testmail` | Test email delivery |
+| `/admin testnotifications` | Test notification system |
+| `/admin testradio` | Test radio connection |
+| `/admin testdm` | Test DM delivery |
+| `!honk` | Fun admin command |
+
+### Moderation
+
+| Command | Description |
+|---|---|
+| `/mod warn @user <reason>` | Issue a warning |
+| `/mod warnings @user` | View a user's warnings |
+| `/mod warnings-user @user` | View warnings for a user |
+| `/mod warningsclear @user` | Clear all warnings for a user |
+| `/mod setlogchannel` | Set the moderation log channel |
+
+### Honeypot Anti-Spam
+
+| Command | Description |
+|---|---|
+| `/honeypot setchannel #channel` | Register a channel as a honeypot trap |
+| `/honeypot config` | Configure honeypot settings |
+| `/honeypot stats` | View honeypot statistics |
+| `/honeypot test` | Test honeypot detection |
+
+### Mass Unban
+
+| Command | Description |
+|---|---|
+| `/massunban execute` | Start a bulk unban job with filters |
+| `/massunban status <job_id>` | Check status of a mass-unban job |
+| `/massunban jobs` | List recent mass-unban jobs |
+| `/massunban cancel <job_id>` | Cancel a pending or running job |
+| `/massunban pause <job_id>` | Pause a running job |
+| `/massunban resume <job_id>` | Resume a paused job |
+| `/massunban simulate` | Simulate a mass-unban without executing |
+| `/massunban dmtest` | Test DM delivery to a user |
+| `/massunban config` | Configure mass-unban settings |
+| `/massunban setlogchannel` | Set the mass-unban log channel |
+
+### External
+
+| Command | Description |
+|---|---|
+| `/info` | Bot information |
+| `/export` | Export your data |
 
 ---
 
@@ -332,10 +496,12 @@ Configure these in the repository's GitHub settings:
 
 ## Known Issues
 
-1. ~~**CRITICAL — Activity tracking broken.**~~ **FIXED.** Listener renamed from `on_member_update` to `on_presence_update`. Activity tracking now fires on the correct Discord event.
-2. **HIGH — Leaderboard auto-update requires setup.** `LEADERBOARD_CHANNEL_ID` defaults to `None`. Must set the env var or run `/setupleaderboard` (admin-only).
-3. ~~**MEDIUM — `joined_at` column missing.**~~ **FIXED.** Migration `015_add_joined_at.sql` adds the column. `inactivity_service.py` uses `COALESCE(joined_at, created_at)` as fallback.
-4. **NOTE — `/massunban` `banned_by` filter** only works for bans logged by the bot after its moderation audit system was in place. Historical bans placed before the bot was running cannot be filtered by moderator — Discord's audit log API is ephemeral and not stored retroactively.
+1. **HIGH — Leaderboard auto-update requires setup.** `LEADERBOARD_CHANNEL_ID` defaults to `None`. Must set the env var or run `/setupleaderboard` (admin-only).
+2. **MEDIUM — Radio `_started_at` not reset on disconnect.** `/uptime` shows stale time after radio disconnect/reconnect.
+3. **LOW — Honeypot cache not invalidated on reconnect.** In-memory cache goes stale if DB is modified externally. Acceptable for normal usage.
+4. **LOW — Duplicate `profiles.user_id` unique constraint** across migrations `005` and `006`. Harmless but wasteful.
+5. **NOTE — `/massunban` `banned_by` filter** only works for bans logged by the bot after its moderation audit system was in place. Historical bans placed before the bot was running cannot be filtered by moderator — Discord's audit log API is ephemeral and not stored retroactively.
+6. **NOTE — Old migrations create naive `TIMESTAMP` columns** (no timezone). Newer migrations and code use `TIMESTAMPTZ`. A future migration should convert affected columns to avoid potential comparison issues.
 
 ---
 

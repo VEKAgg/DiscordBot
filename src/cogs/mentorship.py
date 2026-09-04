@@ -18,9 +18,27 @@ class Mentorship(commands.Cog):
 
     # ==================== SLASH COMMANDS ====================
 
-    @nextcord.slash_command(name='mentor', description='Mentorship commands')
+    @nextcord.slash_command(
+        name='mentor',
+        description='Mentorship commands',
+    )
     async def mentor(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Mentorship Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/mentor register` \u2014 Register as mentor/mentee\n'
+                '\u2022 `/mentor list` \u2014 List available mentors\n'
+                '\u2022 `/mentor request` \u2014 Request mentorship\n'
+                '\u2022 `/mentor accept` \u2014 Accept a request\n'
+                '\u2022 `/mentor complete` \u2014 Complete mentorship\n'
+                '\u2022 `/mentor stats` \u2014 View stats'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @mentor.subcommand(name='register', description='Register as a mentor or mentee')
     @safe_slash_command()

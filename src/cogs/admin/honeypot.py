@@ -48,9 +48,29 @@ class Honeypot(commands.Cog):
     # /honeypot slash command group
     # ------------------------------------------------------------------
 
-    @nextcord.slash_command(name='honeypot', description='Honeypot anti-spam trap management')
+    @nextcord.slash_command(
+        name='honeypot',
+        description='Honeypot anti-spam trap management',
+    )
     async def honeypot_group(self, interaction: nextcord.Interaction) -> None:
-        pass
+        embed = await info_embed(
+            title='Honeypot Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/honeypot create` \u2014 Create a trap channel\n'
+                '\u2022 `/honeypot list` \u2014 List all honeypots\n'
+                '\u2022 `/honeypot view` \u2014 View honeypot details\n'
+                '\u2022 `/honeypot delete` \u2014 Remove a honeypot\n'
+                '\u2022 `/honeypot enable` \u2014 Enable a honeypot\n'
+                '\u2022 `/honeypot disable` \u2014 Disable a honeypot\n'
+                '\u2022 `/honeypot edit` \u2014 Edit honeypot settings\n'
+                '\u2022 `/honeypot test` \u2014 Test honeypot permissions'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @honeypot_group.subcommand(name='create', description='Create a softban honeypot for a channel')
     @require_admin()
@@ -151,9 +171,25 @@ class Honeypot(commands.Cog):
     # /logging slash command group
     # ------------------------------------------------------------------
 
-    @nextcord.slash_command(name='logging', description='Honeypot logging configuration')
+    @nextcord.slash_command(
+        name='logging',
+        description='Honeypot logging configuration',
+    )
     async def logging_group(self, interaction: nextcord.Interaction) -> None:
-        pass
+        embed = await info_embed(
+            title='Logging Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/logging setchannel` \u2014 Set alert channel\n'
+                '\u2022 `/logging setrole` \u2014 Set notification role\n'
+                '\u2022 `/logging clearrole` \u2014 Clear notification role\n'
+                '\u2022 `/logging view` \u2014 View current config'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @logging_group.subcommand(name='setchannel', description='Set the logging channel for honeypot alerts')
     @require_admin()
@@ -323,16 +359,36 @@ class Honeypot(commands.Cog):
 
         action_type: str = honeypot['action_type']
         result = 'failed'
+        delete_days = honeypot.get('delete_message_days') or 1
 
         try:
             member = message.guild.get_member(message.author.id)
             if member is None:
                 return
 
+            # Delete user's messages across ALL channels before taking action
+            try:
+                cross_deleted = await self._delete_user_messages_across_channels(
+                    message.guild, message.author.id, delete_days
+                )
+                if cross_deleted > 0:
+                    logger.info(
+                        'Cross-channel cleanup: deleted %d messages from user %s in guild %s',
+                        cross_deleted,
+                        message.author.id,
+                        message.guild.id,
+                    )
+            except Exception:
+                logger.warning(
+                    'Cross-channel message deletion failed for user %s',
+                    message.author.id,
+                    exc_info=True,
+                )
+
             if action_type == 'softban':
-                result = await self._execute_softban(message.guild, member, honeypot.get('delete_message_days') or 1)
+                result = await self._execute_softban(message.guild, member, delete_days)
             elif action_type == 'ban':
-                result = await self._execute_ban(message.guild, member, honeypot.get('delete_message_days') or 0)
+                result = await self._execute_ban(message.guild, member, delete_days)
             elif action_type == 'timeout':
                 result = await self._execute_timeout(message.guild, member, honeypot.get('timeout_hours') or 24)
             elif action_type == 'role':
@@ -367,6 +423,58 @@ class Honeypot(commands.Cog):
     # ------------------------------------------------------------------
     # Moderation action executors
     # ------------------------------------------------------------------
+
+    async def _delete_user_messages_across_channels(
+        self, guild: nextcord.Guild, user_id: int, days: int
+    ) -> int:
+        """Delete a user's messages across all accessible text channels.
+
+        Scans every text channel the bot can see, fetches messages from the
+        specified user within the time window, and bulk-deletes them.
+
+        Returns the total number of messages deleted.
+        """
+        if days < 1:
+            return 0
+
+        cutoff = nextcord.utils.utcnow() - timedelta(days=days)
+        total_deleted = 0
+
+        for channel in guild.text_channels:
+            try:
+                # Skip channels where bot lacks permissions
+                perms = channel.permissions_for(guild.me)
+                if not perms.read_message_history or not perms.manage_messages:
+                    continue
+
+                deleted_in_channel = 0
+                # Iterate in batches of 100 (Discord API limit)
+                async for msg in channel.history(limit=None, after=cutoff, oldest_first=False):
+                    if msg.author.id == user_id:
+                        try:
+                            await msg.delete()
+                            deleted_in_channel += 1
+                        except nextcord.NotFound:
+                            pass  # Already deleted
+                        except nextcord.Forbidden:
+                            break  # No permission to delete in this channel
+                        except Exception:
+                            logger.debug('Failed to delete message %s in %s', msg.id, channel.id)
+
+                if deleted_in_channel > 0:
+                    total_deleted += deleted_in_channel
+                    logger.info(
+                        'Deleted %d messages from user %s in #%s',
+                        deleted_in_channel,
+                        user_id,
+                        channel.name,
+                    )
+            except nextcord.Forbidden:
+                continue
+            except Exception:
+                logger.debug('Failed to scan channel %s for user messages', channel.id, exc_info=True)
+
+        return total_deleted
 
     async def _execute_softban(self, guild: nextcord.Guild, member: nextcord.Member, delete_days: int) -> str:
         try:

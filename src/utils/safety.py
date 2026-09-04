@@ -56,20 +56,38 @@ def format_context(source) -> str:
 
 
 def map_exception_to_message(error: Exception) -> str:
-    """Map an exception to a user-friendly message string."""
+    """Map an exception to a user-friendly message string with actionable suggestions."""
     if isinstance(error, DatabaseUnavailableError):
-        return 'The database is currently unavailable. Please try again later.'
+        return (
+            '\u274c The database is currently unavailable.\n'
+            '\U0001f4a1 Try again in a few minutes. If this persists, contact staff.'
+        )
     if isinstance(error, ValidationError):
-        return f'Invalid input: {error}'
+        return f'\u274c Invalid input: {error}\n\U0001f4a1 Check the command description for valid options.'
     if isinstance(error, ExternalRequestError):
-        return 'An external service is currently unavailable. Please try again later.'
+        return (
+            '\u274c An external service is currently unavailable.\n'
+            '\U0001f4a1 Try again later. If this persists, contact staff.'
+        )
     if isinstance(error, commands.CommandNotFound):
-        return 'Command not found. Use `/help` to see available commands.'
+        return (
+            '\u274c Command not found.\n'
+            '\U0001f4a1 Use `/help` to see all available commands.'
+        )
     if isinstance(error, commands.MissingPermissions):
-        return 'You do not have permission to use this command.'
+        return (
+            '\u274c You do not have permission to use this command.\n'
+            '\U0001f4a1 This command requires administrator or staff permissions.'
+        )
     if isinstance(error, commands.CommandOnCooldown):
-        return f'This command is on cooldown. Try again in {error.retry_after:.0f} seconds.'
-    return 'An unexpected error occurred. Please try again later.'
+        minutes = int(error.retry_after // 60)
+        seconds = int(error.retry_after % 60)
+        time_str = f'{minutes}m {seconds}s' if minutes > 0 else f'{seconds}s'
+        return f'\u23f3 This command is on cooldown. Try again in **{time_str}**.'
+    return (
+        '\u274c An unexpected error occurred.\n'
+        '\U0001f4a1 Try again later. If this persists, contact staff.'
+    )
 
 
 # ============================================================
@@ -221,13 +239,26 @@ def safe_slash_command(requires_db: bool = False):
             if requires_db and not runtime_state.db_available:
                 embed = nextcord.Embed(
                     title='Database Unavailable',
-                    description='This command requires the database, which is currently offline. Please try again later.',
+                    description=(
+                        'This command requires the database, which is currently offline.\n'
+                        '\U0001f4a1 Please try again later or contact staff.'
+                    ),
                     color=nextcord.Color.red(),
                 )
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
             try:
                 return await func(self, interaction, *args, **kwargs)
+            except commands.CommandOnCooldown as error:
+                minutes = int(error.retry_after // 60)
+                seconds = int(error.retry_after % 60)
+                time_str = f'{minutes}m {seconds}s' if minutes > 0 else f'{seconds}s'
+                embed = nextcord.Embed(
+                    title='\u23f3 Cooldown',
+                    description=f'This command is on cooldown. Try again in **{time_str}**.',
+                    color=nextcord.Color.orange(),
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
             except commands.CommandError:
                 raise
             except Exception as error:

@@ -13,9 +13,23 @@ logger = logging.getLogger('VEKA.feeds')
 
 
 class Feeds(commands.Cog):
-    @nextcord.slash_command(name='resource', description='Commands to browse community resources and RSS feeds')
+    @nextcord.slash_command(
+        name='resource',
+        description='Browse community resources and RSS feeds',
+    )
     async def resource(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Resource Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/resource sources` \u2014 List available categories\n'
+                '\u2022 `/resource latest` \u2014 Show latest entries'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     def __init__(self, bot):
         self.bot = bot
