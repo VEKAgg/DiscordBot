@@ -256,9 +256,25 @@ class MassUnban(commands.Cog):
     # Slash Commands
     # ============================================================
 
-    @nextcord.slash_command(name='massunban', description='Bulk unban users with date-range filters')
+    @nextcord.slash_command(
+        name='massunban',
+        description='Bulk unban users with date-range filters',
+    )
     async def massunban_group(self, interaction: nextcord.Interaction) -> None:
-        pass
+        embed = await info_embed(
+            title='Mass Unban Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/massunban run` \u2014 Start a mass unban\n'
+                '\u2022 `/massunban status` \u2014 Check job status\n'
+                '\u2022 `/massunban cancel` \u2014 Cancel a job\n'
+                '\u2022 `/massunban recent` \u2014 View recent jobs'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @massunban_group.subcommand(
         name='run',

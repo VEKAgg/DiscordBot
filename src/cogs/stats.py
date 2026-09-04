@@ -193,9 +193,25 @@ class Stats(commands.Cog):
     # Commands — Most Streamed
     # ============================================================
 
-    @nextcord.slash_command(name='most', description='Community activity leaderboards')
+    @nextcord.slash_command(
+        name='most',
+        description='Community activity leaderboards',
+    )
     async def most_group(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Activity Leaderboards',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/most streamed` \u2014 Top streamers and games\n'
+                '\u2022 `/most played` \u2014 Most popular games\n'
+                '\u2022 `/most listened` \u2014 Top Spotify and listening\n'
+                '\u2022 `/most coded` \u2014 Top coders and apps'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @most_group.subcommand(name='streamed', description='Top streamers and most streamed games')
     @safe_slash_command()
@@ -563,6 +579,129 @@ class Stats(commands.Cog):
             )
             embed.timestamp = datetime.now(UTC)
             await interaction.followup.send(embed=embed)
+
+    @nextcord.slash_command(
+        name='serverstats',
+        description='View server-wide analytics and activity overview',
+    )
+    @safe_slash_command()
+    async def serverstats_command(self, interaction: nextcord.Interaction):
+        """Show server-wide analytics dashboard."""
+        await interaction.response.defer()
+
+        if not interaction.guild:
+            await interaction.followup.send('This command can only be used in a server.')
+            return
+
+        try:
+            # Total users with XP
+            total_users_row = await db.fetch_one(
+                'SELECT COUNT(*) as count FROM users WHERE points > 0'
+            )
+            total_users = total_users_row['count'] if total_users_row else 0
+
+            # Total messages
+            total_msgs_row = await db.fetch_one(
+                'SELECT SUM(total_messages) as total FROM users'
+            )
+            total_messages = total_msgs_row['total'] if total_msgs_row else 0
+
+            # Total voice minutes
+            total_voice_row = await db.fetch_one(
+                'SELECT SUM(total_voice_minutes) as total FROM users'
+            )
+            total_voice = total_voice_row['total'] if total_voice_row else 0
+
+            # Total streaming minutes
+            total_streaming_row = await db.fetch_one(
+                'SELECT SUM(total_streaming_minutes) as total FROM users'
+            )
+            total_streaming = total_streaming_row['total'] if total_streaming_row else 0
+
+            # Total gaming minutes
+            total_gaming_row = await db.fetch_one(
+                'SELECT SUM(total_gaming_minutes) as total FROM users'
+            )
+            total_gaming = total_gaming_row['total'] if total_gaming_row else 0
+
+            # Total listening minutes
+            total_listening_row = await db.fetch_one(
+                'SELECT SUM(total_listening_minutes) as total FROM users'
+            )
+            total_listening = total_listening_row['total'] if total_listening_row else 0
+
+            # Active users (active in last 7 days)
+            active_week_row = await db.fetch_one(
+                "SELECT COUNT(*) as count FROM users WHERE last_active >= NOW() - INTERVAL '7 days'"
+            )
+            active_week = active_week_row['count'] if active_week_row else 0
+
+            # Active users (active in last 30 days)
+            active_month_row = await db.fetch_one(
+                "SELECT COUNT(*) as count FROM users WHERE last_active >= NOW() - INTERVAL '30 days'"
+            )
+            active_month = active_month_row['count'] if active_month_row else 0
+
+            # Top XP holder
+            top_xp_row = await db.fetch_one(
+                'SELECT discord_id, points, level FROM users WHERE points > 0 ORDER BY points DESC LIMIT 1'
+            )
+
+            # Average level
+            avg_level_row = await db.fetch_one(
+                'SELECT AVG(level) as avg_level FROM users WHERE points > 0'
+            )
+            avg_level = round(avg_level_row['avg_level'], 1) if avg_level_row and avg_level_row['avg_level'] else 0
+
+        except Exception as exc:
+            logger.warning('Failed to fetch server stats: %s', exc)
+            embed = await info_embed(
+                title='Error',
+                description='Could not fetch server statistics.',
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=interaction.guild,
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        def _format_min(m):
+            if not m:
+                return '0'
+            if m >= 60:
+                return f'{m / 60:.1f}h'
+            return f'{m:,}'
+
+        description = (
+            f'\U0001f465 **Members**: {total_users:,} active \u2022 {active_week} this week \u2022 {active_month} this month\n\n'
+            f'\U0001f4ac **Total Messages**: {total_messages:,}\n'
+            f'\U0001f50a **Voice Time**: {_format_min(total_voice)}\n'
+            f'\U0001f4fa **Streaming**: {_format_min(total_streaming)}\n'
+            f'\U0001f3ae **Gaming**: {_format_min(total_gaming)}\n'
+            f'\U0001f3b5 **Listening**: {_format_min(total_listening)}\n\n'
+            f'\U0001f3af **Average Level**: {avg_level}'
+        )
+
+        if top_xp_row:
+            top_uid = int(top_xp_row['discord_id'])
+            top_member = interaction.guild.get_member(top_uid)
+            top_name = top_member.display_name if top_member else f'User {top_uid}'
+            description += (
+                f'\n\U0001f3c6 **Top Member**: {top_name} '
+                f'(Level {top_xp_row["level"] or 0} | {top_xp_row["points"] or 0:,} XP)'
+            )
+
+        embed = await success_embed(
+            title=f'\U0001f3d7\ufe0f Server Stats \u2014 {interaction.guild.name}',
+            description=description,
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.timestamp = datetime.now(UTC)
+        await interaction.followup.send(embed=embed)
 
 
 def setup(bot: commands.Bot):

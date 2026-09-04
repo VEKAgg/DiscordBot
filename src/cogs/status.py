@@ -37,13 +37,17 @@ STATUSES: list[dict] = [
 ROTATION_INTERVAL = 10  # seconds between status changes
 
 
-def _format_uptime(start_time: datetime) -> str:
+def _format_uptime(start_time: datetime | None) -> str:
     """Format uptime as a human-readable string."""
+    if start_time is None:
+        return 'unknown'
     try:
         delta = datetime.now(UTC) - start_time
-    except TypeError:
+    except (TypeError, ValueError):
         return 'unknown'
     total_seconds = int(delta.total_seconds())
+    if total_seconds < 0:
+        return 'unknown'
     days, remainder = divmod(total_seconds, 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
@@ -58,10 +62,13 @@ def _format_uptime(start_time: datetime) -> str:
 def _get_total_users(bot: commands.Bot) -> int:
     """Count total members across all guilds."""
     total = 0
-    for guild in bot.guilds:
-        count = guild.member_count
-        if count:
-            total += count
+    try:
+        for guild in bot.guilds:
+            count = guild.member_count
+            if count:
+                total += count
+    except Exception:
+        pass
     return total
 
 
@@ -82,26 +89,42 @@ class StatusRotator(commands.Cog):
 
     def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming | nextcord.Game:
         """Build a nextcord activity from a status definition."""
-        text = status_def['text']
+        text = status_def.get('text', 'VEKA')
+        status_type = status_def.get('type', 'watching')
 
-        # Format dynamic placeholders
-        if '{guilds}' in text:
-            text = text.format(guilds=len(self.bot.guilds))
-        if '{users}' in text:
-            text = text.format(users=f'{_get_total_users(self.bot):,}')
-        if '{uptime}' in text:
-            text = text.format(uptime=_format_uptime(runtime_state.startup_time))
+        # Format dynamic placeholders with individual error handling
+        try:
+            if '{guilds}' in text:
+                text = text.format(guilds=len(self.bot.guilds))
+        except Exception:
+            text = text.replace('{guilds}', '?')
 
-        status_type = status_def['type']
+        try:
+            if '{users}' in text:
+                text = text.format(users=f'{_get_total_users(self.bot):,}')
+        except Exception:
+            text = text.replace('{users}', '?')
 
-        if status_type == 'streaming':
-            return nextcord.Streaming(name=text, url=status_def.get('url', STREAMING_URL))
-        if status_type == 'listening':
-            return nextcord.Activity(type=nextcord.ActivityType.listening, name=text)
-        if status_type == 'playing':
-            return nextcord.Game(name=text)
-        # Default: watching
-        return nextcord.Activity(type=nextcord.ActivityType.watching, name=text)
+        try:
+            if '{uptime}' in text:
+                text = text.format(uptime=_format_uptime(runtime_state.startup_time))
+        except Exception:
+            text = text.replace('{uptime}', '?')
+
+        try:
+            if status_type == 'streaming':
+                url = status_def.get('url', STREAMING_URL)
+                return nextcord.Streaming(name=text, url=url)
+            if status_type == 'listening':
+                return nextcord.Activity(type=nextcord.ActivityType.listening, name=text)
+            if status_type == 'playing':
+                return nextcord.Game(name=text)
+            # Default: watching
+            return nextcord.Activity(type=nextcord.ActivityType.watching, name=text)
+        except Exception as exc:
+            logger.warning('Failed to build activity for type=%s text=%r: %s', status_type, text, exc)
+            # Fallback to a simple watching activity
+            return nextcord.Activity(type=nextcord.ActivityType.watching, name='VEKA')
 
     @tasks.loop(seconds=ROTATION_INTERVAL)
     async def rotate_status(self):
@@ -110,6 +133,12 @@ class StatusRotator(commands.Cog):
         try:
             activity = self._build_activity(status_def)
             await self.bot.change_presence(activity=activity)
+            logger.debug(
+                'Status [%d/%d] set: %s',
+                self._status_index + 1,
+                len(STATUSES),
+                status_def.get('text', '?'),
+            )
         except Exception as exc:
             logger.warning(
                 'Failed to update status [%d/%d] (%s): %s',

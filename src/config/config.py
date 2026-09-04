@@ -98,7 +98,9 @@ RADIO_RECOVERY_PINGS_REQUIRED = 3  # consecutive healthy checks before rejoining
 
 # --- RPG / Leaderboard Configuration ---
 _leaderboard_channel = os.getenv('LEADERBOARD_CHANNEL_ID', '')
-LEADERBOARD_CHANNEL_ID = int(_leaderboard_channel) if _leaderboard_channel.strip().isdigit() else None
+LEADERBOARD_CHANNEL_ID = (
+    int(_leaderboard_channel) if _leaderboard_channel.strip().isdigit() else 1332399327100010569
+)
 LEADERBOARD_UPDATE_INTERVAL = 1800  # seconds (30 minutes)
 LEADERBOARD_TOP_N = 10
 MESSAGE_XP_COOLDOWN = 10  # seconds between message XP awards

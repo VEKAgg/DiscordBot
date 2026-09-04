@@ -36,10 +36,29 @@ async def _get_system_stats() -> dict:
 
 
 class Health(commands.Cog):
-    @nextcord.slash_command(name='admin', description='Staff and admin commands')
+    @nextcord.slash_command(
+        name='admin',
+        description='Staff and admin commands for server management',
+    )
     @safe_slash_command()
     async def admin(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Admin Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/admin featurestatus` \u2014 Check feature status\n'
+                '\u2022 `/admin startupchecks` \u2014 View startup checks\n'
+                '\u2022 `/admin reloadcog` \u2014 Reload a bot module\n'
+                '\u2022 `/admin pingsquad` \u2014 Ping notification squad\n'
+                '\u2022 `/admin panic` \u2014 Toggle server lockdown\n'
+                '\u2022 `/admin broadcast` \u2014 Send announcement\n'
+                '\u2022 `/admin detailedstatus` \u2014 Detailed bot status'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     def __init__(self, bot):
         self.bot = bot

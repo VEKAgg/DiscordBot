@@ -18,9 +18,26 @@ class PortfolioManager(commands.Cog):
 
     # ==================== SLASH COMMANDS ====================
 
-    @nextcord.slash_command(name='portfolio', description='Showcase your projects and view others work')
+    @nextcord.slash_command(
+        name='portfolio',
+        description='Showcase your projects and view others work',
+    )
     async def portfolio(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Portfolio Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/portfolio add` \u2014 Add a project\n'
+                '\u2022 `/portfolio list` \u2014 List projects\n'
+                '\u2022 `/portfolio view` \u2014 View project details\n'
+                '\u2022 `/portfolio delete` \u2014 Delete a project\n'
+                '\u2022 `/portfolio search` \u2014 Search projects'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @portfolio.subcommand(name='add', description='Add a new project to your portfolio')
     @safe_slash_command(requires_db=True)

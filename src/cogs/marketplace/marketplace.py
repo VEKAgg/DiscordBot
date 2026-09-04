@@ -16,9 +16,29 @@ logger = logging.getLogger('VEKA.marketplace')
 
 
 class Marketplace(commands.Cog):
-    @nextcord.slash_command(name='marketplace', description='Buy and sell items within the community')
+    @nextcord.slash_command(
+        name='marketplace',
+        description='Buy and sell items within the community',
+    )
     async def marketplace(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Marketplace Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/marketplace post` \u2014 Create a listing\n'
+                '\u2022 `/marketplace browse` \u2014 Browse listings\n'
+                '\u2022 `/marketplace view` \u2014 View listing details\n'
+                '\u2022 `/marketplace mylistings` \u2014 Your listings\n'
+                '\u2022 `/marketplace withdraw` \u2014 Remove a listing\n'
+                '\u2022 `/marketplace search` \u2014 Search listings\n'
+                '\u2022 `/marketplace offer` \u2014 Make an offer\n'
+                '\u2022 `/marketplace watchlist` \u2014 Your watchlist'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     def __init__(self, bot):
         self.bot = bot

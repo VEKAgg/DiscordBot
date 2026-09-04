@@ -347,9 +347,25 @@ class RadioManager(commands.Cog):
     # Commands
     # ============================================================
 
-    @nextcord.slash_command(name='radio', description='Control the 24/7 radio stream')
+    @nextcord.slash_command(
+        name='radio',
+        description='Control the 24/7 radio stream',
+    )
     async def radio_group(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Radio Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/radio status` \u2014 Show stream status\n'
+                '\u2022 `/radio start` \u2014 Start radio (admin)\n'
+                '\u2022 `/radio stop` \u2014 Stop radio (admin)\n'
+                '\u2022 `/radio move` \u2014 Move to another channel (admin)'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @radio_group.subcommand(name='status', description='Show radio status')
     @safe_slash_command()
