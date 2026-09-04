@@ -12,7 +12,7 @@ from nextcord.ext import commands
 
 from src.database.database import db
 from src.utils.embeds import info_embed, success_embed
-from src.utils.safety import safe_slash_command
+from src.utils.safety import safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.stats')
 
@@ -595,39 +595,27 @@ class Stats(commands.Cog):
 
         try:
             # Total users with XP
-            total_users_row = await db.fetch_one(
-                'SELECT COUNT(*) as count FROM users WHERE points > 0'
-            )
+            total_users_row = await db.fetch_one('SELECT COUNT(*) as count FROM users WHERE points > 0')
             total_users = total_users_row['count'] if total_users_row else 0
 
             # Total messages
-            total_msgs_row = await db.fetch_one(
-                'SELECT SUM(total_messages) as total FROM users'
-            )
+            total_msgs_row = await db.fetch_one('SELECT SUM(total_messages) as total FROM users')
             total_messages = total_msgs_row['total'] if total_msgs_row else 0
 
             # Total voice minutes
-            total_voice_row = await db.fetch_one(
-                'SELECT SUM(total_voice_minutes) as total FROM users'
-            )
+            total_voice_row = await db.fetch_one('SELECT SUM(total_voice_minutes) as total FROM users')
             total_voice = total_voice_row['total'] if total_voice_row else 0
 
             # Total streaming minutes
-            total_streaming_row = await db.fetch_one(
-                'SELECT SUM(total_streaming_minutes) as total FROM users'
-            )
+            total_streaming_row = await db.fetch_one('SELECT SUM(total_streaming_minutes) as total FROM users')
             total_streaming = total_streaming_row['total'] if total_streaming_row else 0
 
             # Total gaming minutes
-            total_gaming_row = await db.fetch_one(
-                'SELECT SUM(total_gaming_minutes) as total FROM users'
-            )
+            total_gaming_row = await db.fetch_one('SELECT SUM(total_gaming_minutes) as total FROM users')
             total_gaming = total_gaming_row['total'] if total_gaming_row else 0
 
             # Total listening minutes
-            total_listening_row = await db.fetch_one(
-                'SELECT SUM(total_listening_minutes) as total FROM users'
-            )
+            total_listening_row = await db.fetch_one('SELECT SUM(total_listening_minutes) as total FROM users')
             total_listening = total_listening_row['total'] if total_listening_row else 0
 
             # Active users (active in last 7 days)
@@ -648,9 +636,7 @@ class Stats(commands.Cog):
             )
 
             # Average level
-            avg_level_row = await db.fetch_one(
-                'SELECT AVG(level) as avg_level FROM users WHERE points > 0'
-            )
+            avg_level_row = await db.fetch_one('SELECT AVG(level) as avg_level FROM users WHERE points > 0')
             avg_level = round(avg_level_row['avg_level'], 1) if avg_level_row and avg_level_row['avg_level'] else 0
 
         except Exception as exc:

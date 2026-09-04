@@ -27,7 +27,7 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, sets up logging (`%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s`), builds bot, loads extensions, `bot.run()`.
 - **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py` — 20 entries):
   `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.admin.moderation`, `src.cogs.admin.notifications`, `src.cogs.admin.honeypot`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.marketplace.reviews`, `src.cogs.resources.feeds`, `src.cogs.mentorship`, `src.cogs.marketplace_enhanced`, `src.cogs.portfolio.portfolio_manager`, `src.cogs.radio.radio`, `src.cogs.rpg.rpg_manager`, `src.cogs.stats`, `src.cogs.external.info`, `src.cogs.external.export`, `src.cogs.status`.
-  Add a cog's dotted module path to `EXTENSIONS` to enable it. Unloaded stubs: `gamification/` (intentionally disabled), `quiz.py`, `workshops/`.
+  Add a cog's dotted module path to `EXTENSIONS` to enable it.
 - **Degraded-mode:** DB/cog failures never crash the bot. `bot.runtime_state` (`src/core/runtime_state.py`) tracks `db_available`, `loaded_cogs`, `failed_cogs`, `degraded_features`, `startup_check_results`, `alert_state_cache`, `last_db_error`, `last_recovery_time`.
 - **Layers:** `src/cogs/` (thin command handlers) → `src/services/` (business logic) → `src/database/` (data access).
 - **Startup:** `on_ready` → set `bot.notifier` → `initialize_database()` → `StartupChecks.run_all_checks()` → `bot.notifier.send_startup_summary()` → `db_health_check.start()` (30s loop) → `bot.sync_all_application_commands()`.
@@ -174,4 +174,114 @@ Implemented in `src/cogs/admin/massunban.py` (loaded as `src.cogs.admin.massunba
 44. **Duplicated unique constraint on `profiles.user_id`** across migrations `005_community_additions` and `006_profiles_and_requests`. Harmless but wasteful. Can be cleaned up in a future migration.
 
 45. **`_is_staff_user` in `safety.py` creates a `SimpleNamespace` to fake a context** (`src/utils/safety.py:103-106`). Fragile coupling — if `rbac.get_user_role` changes its context expectations, this breaks silently. Low priority.
+
+## Roadmap & Implementation Instructions
+
+### Phase 1: Foundations, Radio Overhaul & Migration Integrity
+
+> **Status:** Pending implementation  
+> **Target files:** `src/cogs/radio/radio.py`, `src/database/database.py`, `migrations/`, `pyproject.toml`, removal of `src/cogs/quiz.py`, `src/cogs/workshops/`, `src/cogs/gamification/`.  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Radio System Overhaul (`src/cogs/radio/radio.py`)
+- **Eliminate `yt-dlp` scraping entirely:** Remove `import yt_dlp`, `_extract_stream_url()`, and any YouTube format extraction logic. Radio must stream directly from reliable, 24/7 Icecast/SHOUTcast audio streams.
+- **Define `RADIO_STATIONS` dictionary:**
+  ```python
+  RADIO_STATIONS: dict[str, dict[str, str]] = {
+      'lofi': {
+          'name': 'Groove Salad (Lofi / Ambient)',
+          'url': 'https://ice1.somafm.com/groovesalad-128-mp3',
+          'description': 'Downtempo ambient groove and chillout beats',
+          'emoji': '☕',
+      },
+      'ambient': {
+          'name': 'Drone Zone',
+          'url': 'https://ice6.somafm.com/dronezone-128-mp3',
+          'description': 'Deep atmospheric ambient soundscapes',
+          'emoji': '🌌',
+      },
+      'chill': {
+          'name': 'Groove Salad Classic',
+          'url': 'https://ice6.somafm.com/gsclassic-128-mp3',
+          'description': 'Early 2000s nostalgic chillout and downtempo',
+          'emoji': '🛋️',
+      },
+      'spy': {
+          'name': 'Secret Agent',
+          'url': 'https://ice4.somafm.com/secretagent-128-mp3',
+          'description': 'Lounge, spy film themes, and vintage spy jazz',
+          'emoji': '🍸',
+      },
+      'trip': {
+          'name': 'The Trip',
+          'url': 'https://ice2.somafm.com/thetrip-128-mp3',
+          'description': 'Progressive, psychedelic, and electronic vibes',
+          'emoji': '🚀',
+      },
+      'chillhop': {
+          'name': 'Chillhop Music',
+          'url': 'https://streams.fluxfm.de/Chillhop/mp3-128/streams.fluxfm.de/',
+          'description': 'Relaxing lofi hip-hop beats to study and work to',
+          'emoji': '🎧',
+      },
+      'jazz': {
+          'name': 'Smooth Jazz Global',
+          'url': 'https://smoothjazz.cdnstream1.com/2585_128.mp3',
+          'description': 'Modern and classic smooth jazz radio',
+          'emoji': '🎷',
+      },
+  }
+  DEFAULT_STATION = 'lofi'
+  ```
+- **Track current station:** In `RadioManager.__init__`, set `self._active_station = DEFAULT_STATION`.
+- **Implement station switching:**
+  - Slash command `/radio station <name>` and prefix `!radio station <name>` (with autocomplete for station names on slash command).
+  - If bot is currently streaming in voice, call `self._voice_client.stop()` (do NOT disconnect), switch `self._active_station`, and start playing the new stream URL immediately with FFmpeg.
+  - Return a success embed indicating the newly active station with its emoji and description.
+- **Implement station directory:**
+  - Slash command `/radio list` and prefix `!radio list`.
+  - Sends a `veka_embed` listing all stations from `RADIO_STATIONS`, highlighting the currently playing station with a `▶ Active` badge.
+- **Fix Known Issue #7 (`_started_at` bug):**
+  - In `_disconnect()`, ensure `self._started_at = None` is set so `/uptime` and status indicators do not display stale radio uptime after leaving a voice channel.
+- **Dependency cleanup:** Remove `yt-dlp` from `pyproject.toml` dependencies if no other module relies on it.
+
+#### 2. Migration System Audit & Duplicate Prefix Guard
+- **Rename Duplicate `005_` Migration:**
+  - Rename `migrations/005_guild_and_rss_schema.sql` to avoid collisions with `migrations/005_community_additions.sql`.
+  - Guard the renamed migration with `CREATE TABLE IF NOT EXISTS` / `DROP TABLE IF EXISTS` to ensure backwards compatibility on databases where `005_guild_and_rss_schema.sql` was already executed.
+- **Startup Migration Assertion (`src/database/database.py`):**
+  - Inside `db.run_migrations()`, before running migrations, scan all filenames in `migrations/`.
+  - Parse the numerical prefix (e.g. `001`, `002`, `005`).
+  - Check for duplicate numeric prefixes. If any duplicates exist, raise `RuntimeError("Duplicate migration prefix detected: ...")` and prevent startup.
+  - Ensure all files follow strict three-digit sequential numbering (`001_`, `002_`, ...).
+
+#### 3. Database Timestamp Consistency (`migrations/017_timestamptz_conversion.sql`)
+- Add migration `migrations/017_timestamptz_conversion.sql` converting all legacy naive `TIMESTAMP` columns to `TIMESTAMPTZ`.
+- Target all columns created in migrations 001–013:
+  - `users.created_at`, `users.updated_at`, `users.last_active`
+  - `audit_logs.created_at`
+  - `profiles.created_at`, `profiles.updated_at`
+  - `mentorships.created_at`, `mentorships.updated_at`
+  - `marketplace_listings.created_at`, `marketplace_listings.updated_at`
+  - `rss_cache.published_at`, `rss_cache.fetched_at`
+  - Any remaining `TIMESTAMP` column without timezone across the database schema.
+- Syntax pattern:
+  ```sql
+  ALTER TABLE users ALTER COLUMN created_at TYPE TIMESTAMPTZ USING created_at AT TIME ZONE 'UTC';
+  ```
+- All future migrations must strictly use `TIMESTAMPTZ DEFAULT NOW()`.
+
+#### 4. Dead Code Removal
+- Delete unloaded stub cogs:
+  - `src/cogs/quiz.py`
+  - `src/cogs/workshops/` (`src/cogs/workshops/workshop_manager.py`)
+  - `src/cogs/gamification/` (`src/cogs/gamification/gamification_manager.py`)
+- Remove references to these stubs from comments in `src/core/app.py` and `AGENTS.md`.
+- *Note:* Do NOT delete root-level legacy folders (`cogs/`, `commands/`, etc.) during Phase 1; keep them untouched until external references/scripts are verified in later phases.
+
+#### 5. Verification & Quality Gates
+- **Format & Lint:** `ruff check . --fix && ruff format .`
+- **Type Checking:** `mypy src/ main.py --explicit-package-bases`
+- **Pre-commit:** `pre-commit run --all-files`
+- Verify bot starts up cleanly with `python main.py` or docker dev environment.
 

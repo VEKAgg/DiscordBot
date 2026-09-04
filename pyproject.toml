@@ -12,7 +12,6 @@ dependencies = [
     "feedparser==6.0.12",
     "beautifulsoup4==4.15.0",
     "validators==0.35.0",
-    "yt-dlp>=2024.1.1",
     "psutil>=5.9.0",
 ]
 

@@ -71,7 +71,7 @@ def points_to_next_level(points: int) -> int:
 def _progress_bar(points: int, width: int = 12) -> str:
     """Build a visual progress bar with percentage to the next level."""
     current_level = calculate_level(points)
-    level_start = current_level ** 2 * 100
+    level_start = current_level**2 * 100
     next_level = (current_level + 1) ** 2 * 100
     if next_level == level_start:
         filled = width
