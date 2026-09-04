@@ -25,8 +25,8 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 ## Architecture
 
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, sets up logging (`%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s`), builds bot, loads extensions, `bot.run()`.
-- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py` — 20 entries):
-  `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.admin.moderation`, `src.cogs.admin.notifications`, `src.cogs.admin.honeypot`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.marketplace.reviews`, `src.cogs.resources.feeds`, `src.cogs.mentorship`, `src.cogs.marketplace_enhanced`, `src.cogs.portfolio.portfolio_manager`, `src.cogs.radio.radio`, `src.cogs.rpg.rpg_manager`, `src.cogs.stats`, `src.cogs.external.info`, `src.cogs.external.export`, `src.cogs.status`.
+- **Extensions loaded from explicit allowlist** (`EXTENSIONS` in `src/core/app.py` — 22 entries):
+  `src.cogs.admin.basic`, `src.cogs.admin.help`, `src.cogs.admin.health`, `src.cogs.admin.moderation`, `src.cogs.admin.notifications`, `src.cogs.admin.honeypot`, `src.cogs.admin.massunban`, `src.cogs.admin.setup`, `src.cogs.admin.welcome`, `src.cogs.networking.networking`, `src.cogs.marketplace.marketplace`, `src.cogs.marketplace.reviews`, `src.cogs.resources.feeds`, `src.cogs.mentorship`, `src.cogs.marketplace_enhanced`, `src.cogs.portfolio.portfolio_manager`, `src.cogs.radio.radio`, `src.cogs.rpg.rpg_manager`, `src.cogs.stats`, `src.cogs.external.info`, `src.cogs.external.export`, `src.cogs.status`.
   Add a cog's dotted module path to `EXTENSIONS` to enable it.
 - **Degraded-mode:** DB/cog failures never crash the bot. `bot.runtime_state` (`src/core/runtime_state.py`) tracks `db_available`, `loaded_cogs`, `failed_cogs`, `degraded_features`, `startup_check_results`, `alert_state_cache`, `last_db_error`, `last_recovery_time`.
 - **Layers:** `src/cogs/` (thin command handlers) → `src/services/` (business logic) → `src/database/` (data access).
@@ -40,7 +40,7 @@ Config in `pyproject.toml`. Ruff: `line-length=120`, `quote-style="single"`, sel
 - Global singleton: `from src.database.database import db`.
 - **`$1`/`$2` parameter style** (asyncpg native).
 - Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many`. All raise `DatabaseUnavailableError` on failure and flip `runtime_state.db_available = False`.
-- Migrations: `.sql` files in `migrations/` (currently 001–020), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
+- Migrations: `.sql` files in `migrations/` (currently 001–021), auto-applied on connect by `db.run_migrations()`, tracked in `schema_migrations` table. Add as `migrations/00N_name.sql`. Note: two files share the `005_` prefix — ordering is filesystem-dependent.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) to avoid PostgreSQL rejecting them as unknown server_settings.
 
 ## Conventions
@@ -576,4 +576,248 @@ Update all existing cogs and services to resolve channels dynamically via `Guild
   - Verify `/activity summary` renders 7-day sparkline characters cleanly on desktop and mobile.
   - Verify `/rank card` returns a crisp PNG image with no loop lag.
   - Verify leaderboard pagination switches pages seamlessly without timeout errors.
+
+### Phase 5: Community, Marketplace, Directory & Utilities
+
+> **Status:** Completed (2026-09-05)  
+> **Target files:** `migrations/021_community_and_utilities_schema.sql` (new), `src/cogs/marketplace/marketplace.py`, `src/cogs/marketplace_enhanced.py`, `src/services/directus_service.py`, `src/cogs/networking/networking.py`, `src/cogs/resources/feeds.py`, `src/services/rss_service.py`, `src/cogs/stats.py`, `src/cogs/mentorship.py`, `src/cogs/status.py`, `src/utils/card_generator.py`, `src/cogs/admin/welcome.py` (new).  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Database Schema Additions (`migrations/021_community_and_utilities_schema.sql`)
+- **Marketplace Listing Enhancements:**
+  ```sql
+  ALTER TABLE marketplace_listings
+  ADD COLUMN IF NOT EXISTS last_bumped_at TIMESTAMPTZ DEFAULT NOW(),
+  ADD COLUMN IF NOT EXISTS is_expired BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+
+  CREATE INDEX IF NOT EXISTS idx_marketplace_active_listings
+  ON marketplace_listings(status, is_expired, last_bumped_at DESC);
+  ```
+- **Dynamic RSS Feeds & Deduplication Tables:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS feed_subscriptions (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      channel_id BIGINT NOT NULL,
+      feed_url TEXT NOT NULL,
+      feed_name VARCHAR(64) NOT NULL,
+      poll_interval_minutes INT DEFAULT 30,
+      last_polled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id, feed_url)
+  );
+
+  CREATE TABLE IF NOT EXISTS feed_seen_items (
+      id BIGSERIAL PRIMARY KEY,
+      feed_url TEXT NOT NULL,
+      item_guid TEXT NOT NULL,
+      seen_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(feed_url, item_guid)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_feed_seen_lookup ON feed_seen_items(feed_url, item_guid);
+  ```
+- **Server Stats Daily Tracking:**
+  ```sql
+  CREATE TABLE IF NOT EXISTS server_stats_daily (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      stat_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      total_members INT NOT NULL,
+      joins INT DEFAULT 0,
+      leaves INT DEFAULT 0,
+      max_online INT DEFAULT 0,
+      boost_level INT DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(guild_id, stat_date)
+  );
+  ```
+- **Profile Enhancements & Mentorship Matches:**
+  ```sql
+  ALTER TABLE profiles
+  ADD COLUMN IF NOT EXISTS skills TEXT[] DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS timezone VARCHAR(64);
+
+  CREATE TABLE IF NOT EXISTS mentorship_matches (
+      id BIGSERIAL PRIMARY KEY,
+      guild_id BIGINT NOT NULL,
+      mentor_id BIGINT NOT NULL,
+      mentee_id BIGINT NOT NULL,
+      category VARCHAR(64) NOT NULL,
+      status VARCHAR(32) DEFAULT 'active',
+      started_at TIMESTAMPTZ DEFAULT NOW(),
+      ended_at TIMESTAMPTZ,
+      outcome TEXT,
+      last_checkin_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  ALTER TABLE guild_settings
+  ADD COLUMN IF NOT EXISTS welcome_message_template TEXT DEFAULT 'Welcome {user} to {server}!',
+  ADD COLUMN IF NOT EXISTS welcome_card_enabled BOOLEAN DEFAULT TRUE;
+  ```
+
+#### 2. Marketplace Overhaul (`src/cogs/marketplace/` & `src/cogs/marketplace_enhanced.py`)
+- **Listing Bumps:**
+  - Slash command `/market bump <listing_id>` and prefix `!market bump <listing_id>`.
+  - Enforce a strict 24-hour cooldown based on `last_bumped_at`.
+  - Sets `last_bumped_at = NOW()`, moving the listing to the top of feed queries.
+- **Search with Autocomplete:**
+  - Slash command `/market search <query>` with dynamic autocomplete suggestions matching active listing titles and tags.
+  - Automatically filter out expired listings (`WHERE is_expired = FALSE AND status = 'active'`).
+- **Automated Listing Expiration:**
+  - Daily background loop (`@tasks.loop(hours=24)`):
+    - Flags listings older than 30 days as `is_expired = TRUE`.
+    - DMs sellers informing them their listing has expired with advice on how to re-list or renew.
+    - If `DIRECTUS_SYNC_ENABLED`: updates the Directus CMS record to status `expired`.
+- **Marketplace Analytics:**
+  - Slash command `/market stats`:
+    - Displays total active listings, most active category, average listing price, and total transactions in a styled embed.
+
+#### 3. Welcome System & Visual Cards (`src/utils/card_generator.py` & event listeners)
+- **On Member Join:**
+  - When a user joins a guild, check `guild_settings.welcome_channel_id`.
+  - Render `welcome_message_template` with `{user}`, `{server}`, `{member_count}`.
+  - If `welcome_card_enabled`:
+    - Generate a visual welcome card using Pillow in `card_generator.py`:
+      - Server icon background, user avatar, welcome greeting, and member join count badge (`Member #X,XXX`).
+    - Send the welcome card and embed directly to the configured welcome channel.
+- **Preview Command:**
+  - Staff command `/welcome test` and `!welcome test` to generate and send a preview card for the calling user.
+
+#### 4. Dynamic RSS Feeds (`src/cogs/resources/feeds.py` & `src/services/rss_service.py`)
+- Replace hardcoded RSS lists with database-backed feeds from `feed_subscriptions`.
+- **Feed Management Commands:**
+  - `/feed add <url> <channel> [name] [interval_minutes]`: validates RSS endpoint via `feedparser`, records subscription in DB.
+  - `/feed remove <feed_name_or_url>`: deletes feed subscription.
+  - `/feed list`: lists all registered guild RSS feeds with configured posting channels and polling intervals.
+  - `/feed test <feed_url>`: fetches the single latest entry and renders an embed preview.
+- **Robust Deduplication:**
+  - Use `feed_seen_items` to record `(feed_url, item_guid)` so bot reboots never re-announce previously posted entries.
+
+#### 5. Server Analytics & Demographic Reports (`src/cogs/stats.py`)
+- **Daily Stats Collector:**
+  - Background task at UTC midnight snapshots current server metrics into `server_stats_daily`.
+  - Listeners for `on_member_join` and `on_member_remove` increment daily join/leave counters.
+- **`/stats server` Command:**
+  - Displays: Total member count, 7-day join count, 7-day leave count, current online count, server boost level, most active channel (from `user_activity_daily`), and most active member.
+  - Generates a 7-day member growth trend visualized using Unicode sparkline bars (` ▂▃▅▆▇█`).
+- **`/stats demographics` Command:**
+  - Visualizes member distribution based on activity tiers (Active vs Inactive vs New members based on XP and recent messages).
+
+#### 6. Profile System & Member Directory (`src/cogs/networking/networking.py`)
+- **Profile Customization Commands:**
+  - `/profile set bio <text>`
+  - `/profile set links [github] [linkedin] [website] [twitter]`
+  - `/profile set skills <comma_separated_skills>`
+  - `/profile set timezone <timezone_string>`
+- **Full Profile Card:**
+  - `/profile [user]` displays avatar, bio, clickable social icons/links, verified skills tags, local time calculated from timezone, XP level, and streak badge.
+- **Member Directory Search:**
+  - `/directory search [skill] [timezone]`:
+    - Queries community profiles by matching skills (e.g. `Python`, `React`, `DevOps`) or timezone offset to connect collaborators.
+
+#### 7. Mentorship Matching Engine (`src/cogs/mentorship.py`)
+- **Mentor Registration & Matching:**
+  - `/mentor apply <skills> <bio>`: registers user as an available mentor in their categories.
+  - `/mentee request <category> <desired_skills>`: scans available mentors with overlapping skills, creates a pairing in `mentorship_matches`, and sends intro DMs to both parties.
+- **Automated Check-in DMs:**
+  - Weekly task checks active matches where `last_checkin_at < NOW() - INTERVAL '7 days'`.
+  - Dispatches automated check-in DMs asking how the mentorship is progressing.
+- **`/mentor end <match_id> <outcome>`:**
+  - Closes an active mentorship session, records the outcome, and awards bonus XP to both mentor and mentee.
+
+#### 8. Dynamic Status Rotator Expansions (`src/cogs/status.py`)
+- Expand status definition templates to support live server metrics:
+  - `{online}`: count of online/active members.
+  - `{boosts}`: server Nitro boost count.
+  - `{active_radio_station}`: active station name and emoji if radio is currently streaming.
+  - `{open_listings}`: count of active marketplace listings.
+  - `{season}`: current competitive RPG season month.
+
+#### 9. Verification & Quality Gates
+- **Format & Lint:** `ruff check . --fix && ruff format .`
+- **Type Checking:** `mypy src/ main.py --explicit-package-bases`
+- **Pre-commit:** `pre-commit run --all-files`
+- **Functional Validation:**
+  - Verify `/market bump` respects the 24h cooldown.
+  - Verify `/feed add` polls entries and logs duplicates in `feed_seen_items`.
+  - Verify `/welcome test` generates and posts the Pillow welcome image card.
+  - Verify `/directory search` successfully filters profiles by skill tag.
+
+### Phase 6: Automated Testing & QA Suite
+
+> **Status:** Pending implementation (Execute after Phase 5)  
+> **Target files:** `pyproject.toml`, `tests/conftest.py` (new), `tests/test_embeds.py` (new), `tests/test_safety.py` (new), `tests/test_runtime_state.py` (new), `tests/test_guild_settings.py` (new), `tests/test_migrations.py` (new), `tests/test_cog_loading.py` (new).  
+> **Rule:** Do not edit bot code unless executing this specification. Follow all project conventions (dual prefix + slash commands, safe wrappers, ruff, mypy).
+
+#### 1. Test Dependencies & Configuration (`pyproject.toml`)
+- Add testing dependencies to `[project.optional-dependencies] dev`:
+  ```toml
+  dev = [
+      "ruff>=0.11.0",
+      "mypy>=1.15.0",
+      "pre-commit>=4.2.0",
+      "pytest>=8.0.0",
+      "pytest-asyncio>=0.23.0",
+      "pytest-mock>=3.12.0",
+  ]
+  ```
+- Configure pytest in `pyproject.toml`:
+  ```toml
+  [tool.pytest.ini_options]
+  asyncio_mode = "auto"
+  testpaths = ["tests"]
+  python_files = ["test_*.py"]
+  filterwarnings = [
+      "ignore::DeprecationWarning",
+  ]
+  ```
+
+#### 2. Shared Test Fixtures (`tests/conftest.py`)
+- Create `tests/conftest.py` providing reusable async fixtures:
+  - `mock_db`: Async mock simulating `Database` pool methods (`fetch`, `fetch_one`, `execute`, `execute_many`).
+  - `mock_bot`: Headless `commands.Bot` instance initialized with `get_intents()` and `runtime_state`.
+  - `mock_interaction`: Mocked `nextcord.Interaction` with fake user, guild, response, and followup objects.
+  - `mock_context`: Mocked `commands.Context` with mocked `send()` and `reply()` helpers.
+
+#### 3. Core Unit Tests
+- **`tests/test_embeds.py`:**
+  - Test all embed helpers: `veka_embed`, `success_embed`, `error_embed`, `info_embed`, `alert_embed`.
+  - Assert correct brand color codes: VEKA Orange (`0xFF6B00`), Success Green (`0x2ECC71`), Error Red (`0xE74C3C`).
+  - Assert author header format: `"VEKA Bot"` linked to `"https://veka.gg"`.
+  - Assert footer attribution: validates static map resolution with fallback to `"Contributor: shifu"`.
+- **`tests/test_safety.py`:**
+  - `@safe_command(requires_db=True)` & `@safe_slash_command(requires_db=True)`:
+    - When `runtime_state.db_available = False`: verify the command aborts execution and sends a degraded-mode error embed without raising an unhandled exception.
+    - When `runtime_state.db_available = True`: verify the command callback executes normally.
+  - `@safe_background_task`:
+    - Verify that 3 consecutive task exceptions trigger the admin notifier alert hook.
+  - Rate limiting:
+    - Verify token consumption per user and assert that requests exceeding the limit receive a rate-limit notice.
+- **`tests/test_runtime_state.py`:**
+  - Verify tracking of loaded cogs, failed cogs, and degraded features.
+  - Verify `last_db_error` is populated on failure and cleared on recovery.
+- **`tests/test_guild_settings.py`:**
+  - Test cache hit: calling `get_settings(guild_id)` twice queries DB only once.
+  - Test fallback: returns default values when guild settings row is absent.
+  - Test invalidation: `update_settings(guild_id)` refreshes the in-memory cache.
+
+#### 4. Database Migration Tests (`tests/test_migrations.py`)
+- Scan all `.sql` files in `migrations/`:
+  - Assert all filenames strictly follow three-digit formatting: `^[0-9]{3}_[a-z0-9_]+\.sql$`.
+  - Assert no duplicate numeric prefixes exist.
+  - Assert migrations are strictly sequential starting from `001` with zero gaps.
+  - Parse SQL files to detect syntax errors before running in production.
+
+#### 5. Cog Loading Integration Tests (`tests/test_cog_loading.py`)
+- Iterate over the `EXTENSIONS` list from `src/core/app.py`:
+  - Test dynamic extension loading (`bot.load_extension(ext)`).
+  - Verify all 20+ cogs load without import errors, syntax errors, or circular dependencies.
+  - Unload each extension cleanly (`bot.unload_extension(ext)`).
+
+#### 6. Verification & Quality Gates
+- Run test suite: `pytest tests/ -v`
+- Assert all unit and integration tests pass cleanly in under 5 seconds with zero network or external database dependencies.
+- Verify pre-commit hook runs tests alongside `ruff` and `mypy`.
 

@@ -1,20 +1,38 @@
 """
-Stats Cog — Most Streamed, Most Played, Most Listened, Most Coded leaderboards.
-
-Provides community statistics for activity types tracked by the RPG manager.
+Stats Cog — Most Streamed, Most Played, Most Listened, Most Coded leaderboards
+and server analytics with daily tracking.
 """
 
 import logging
 from datetime import UTC, datetime
 
 import nextcord
-from nextcord.ext import commands
+from nextcord.ext import commands, tasks
 
+from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.utils.embeds import info_embed, success_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.safety import (
+    DatabaseUnavailableError,
+    safe_background_task,
+    safe_send,
+    safe_slash_command,
+)
 
 logger = logging.getLogger('VEKA.stats')
+
+# Unicode sparkline blocks (empty → full)
+SPARKLINE_BLOCKS = [' ', '\u2582', '\u2583', '\u2584', '\u2585', '\u2586', '\u2587', '\u2588']
+
+
+def _sparkline(values: list[int]) -> str:
+    """Render a list of integers as a Unicode sparkline string."""
+    if not values:
+        return ''
+    max_val = max(values) if max(values) > 0 else 1
+    return ''.join(
+        SPARKLINE_BLOCKS[min(len(SPARKLINE_BLOCKS) - 1, int(v / max_val * (len(SPARKLINE_BLOCKS) - 1)))] for v in values
+    )
 
 
 class Stats(commands.Cog):
@@ -22,6 +40,67 @@ class Stats(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._daily_joins: dict[int, int] = {}  # guild_id → join count today
+        self._daily_leaves: dict[int, int] = {}  # guild_id → leave count today
+        self.daily_stats_collector.start()
+
+    def cog_unload(self):
+        self.daily_stats_collector.cancel()
+
+    # ============================================================
+    # Daily Stats Background Task
+    # ============================================================
+
+    @tasks.loop(minutes=30)
+    @safe_background_task(name='daily_stats_collector')
+    async def daily_stats_collector(self):
+        """Snapshot server metrics into server_stats_daily every 30 minutes."""
+        if not runtime_state.db_available:
+            return
+
+        for guild in self.bot.guilds:
+            try:
+                online_count = sum(1 for m in guild.members if m.status != nextcord.Status.offline and not m.bot)
+                await db.execute(
+                    """INSERT INTO server_stats_daily (guild_id, stat_date, total_members, joins, leaves, max_online, boost_level)
+                       VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6)
+                       ON CONFLICT (guild_id, stat_date)
+                       DO UPDATE SET
+                           total_members = $2,
+                           joins = server_stats_daily.joins + $3,
+                           leaves = server_stats_daily.leaves + $4,
+                           max_online = GREATEST(server_stats_daily.max_online, $5),
+                           boost_level = $6""",
+                    guild.id,
+                    guild.member_count or 0,
+                    self._daily_joins.get(guild.id, 0),
+                    self._daily_leaves.get(guild.id, 0),
+                    online_count,
+                    guild.premium_tier or 0,
+                )
+                # Reset daily counters after persisting
+                self._daily_joins[guild.id] = 0
+                self._daily_leaves[guild.id] = 0
+            except DatabaseUnavailableError:
+                break
+            except Exception as e:
+                logger.debug('Failed to snapshot stats for guild %s: %s', guild.id, e)
+
+    @daily_stats_collector.before_loop
+    async def before_daily_stats(self):
+        await self.bot.wait_until_ready()
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: nextcord.Member):
+        if member.bot:
+            return
+        self._daily_joins[member.guild.id] = self._daily_joins.get(member.guild.id, 0) + 1
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member: nextcord.Member):
+        if member.bot:
+            return
+        self._daily_leaves[member.guild.id] = self._daily_leaves.get(member.guild.id, 0) + 1
 
     # ============================================================
     # DB helpers
@@ -679,6 +758,189 @@ class Stats(commands.Cog):
 
         embed = await success_embed(
             title=f'\U0001f3d7\ufe0f Server Stats \u2014 {interaction.guild.name}',
+            description=description,
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.timestamp = datetime.now(UTC)
+        await interaction.followup.send(embed=embed)
+
+    # ============================================================
+    # /stats server — Member growth with sparkline
+    # ============================================================
+
+    @nextcord.slash_command(name='stats', description='Server analytics and demographics')
+    @safe_slash_command()
+    async def stats_group(self, interaction: nextcord.Interaction):
+        embed = await info_embed(
+            title='Stats Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '• `/stats server` — Server overview with 7-day growth sparkline\n'
+                '• `/stats demographics` — Member activity tier breakdown'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @stats_group.subcommand(name='server', description='Server overview with 7-day member growth trend')
+    @safe_slash_command(requires_db=True)
+    async def stats_server(self, interaction: nextcord.Interaction):
+        if not interaction.guild:
+            await safe_send(
+                interaction,
+                embed=await error_embed(
+                    'Server Only',
+                    'This command can only be used in a server.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        try:
+            # Current totals
+            total_members = interaction.guild.member_count or 0
+            online_count = sum(
+                1 for m in interaction.guild.members if m.status != nextcord.Status.offline and not m.bot
+            )
+
+            # 7-day daily stats from server_stats_daily
+            rows = await db.fetch_many(
+                """SELECT stat_date, total_members, joins, leaves
+                   FROM server_stats_daily
+                   WHERE guild_id = $1 AND stat_date >= CURRENT_DATE - INTERVAL '7 days'
+                   ORDER BY stat_date ASC""",
+                interaction.guild.id,
+            )
+
+            # 7-day join/leave totals
+            week_joins = sum(r['joins'] or 0 for r in rows)
+            week_leaves = sum(r['leaves'] or 0 for r in rows)
+
+            # Sparkline: total_members over 7 days
+            member_counts = [r['total_members'] or 0 for r in rows]
+            if len(member_counts) < 7:
+                # Pad with current count if not enough data
+                member_counts = [total_members] * (7 - len(member_counts)) + member_counts
+            growth_sparkline = _sparkline(member_counts[-7:])
+
+            # Join sparkline
+            join_counts = [r['joins'] or 0 for r in rows]
+            if len(join_counts) < 7:
+                join_counts = [0] * (7 - len(join_counts)) + join_counts
+            join_sparkline = _sparkline(join_counts[-7:])
+
+            # Boost level
+            boost_level = interaction.guild.premium_tier or 0
+            boost_count = interaction.guild.premium_subscription_count or 0
+
+            # Most active channel (from user_activity_daily)
+            active_channel_row = await db.fetch_one(
+                """SELECT channel_id, SUM(messages) as total_msgs
+                   FROM user_activity_daily
+                   WHERE guild_id = $1 AND activity_date >= CURRENT_DATE - INTERVAL '7 days'
+                   GROUP BY channel_id
+                   ORDER BY total_msgs DESC LIMIT 1""",
+                interaction.guild.id,
+            )
+            active_channel_text = 'N/A'
+            if active_channel_row and active_channel_row['channel_id']:
+                ch = interaction.guild.get_channel(active_channel_row['channel_id'])
+                active_channel_text = ch.mention if ch else f'Channel {active_channel_row["channel_id"]}'
+
+            description = (
+                f'\U0001f465 **Members**: {total_members:,} total \u2022 {online_count} online\n\n'
+                f'\U0001f4e3 **7-Day Growth**: +{week_joins} joins \u2014 {week_leaves} leaves '
+                f'= **{week_joins - week_leaves:+d}** net\n'
+                f'`{growth_sparkline}` (member count trend)\n'
+                f'`{join_sparkline}` (daily joins)\n\n'
+                f'\U0001f451 **Boosts**: Level {boost_level} \u2022 {boost_count} boosts\n'
+                f'\U0001f4ac **Most Active Channel**: {active_channel_text}'
+            )
+
+        except Exception as exc:
+            logger.warning('Failed to fetch server stats: %s', exc)
+            description = 'Could not fetch server statistics.'
+
+        embed = await success_embed(
+            title=f'\U0001f3d7\ufe0f Server Analytics \u2014 {interaction.guild.name}',
+            description=description,
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.timestamp = datetime.now(UTC)
+        await interaction.followup.send(embed=embed)
+
+    @stats_group.subcommand(name='demographics', description='Member activity tier breakdown')
+    @safe_slash_command(requires_db=True)
+    async def stats_demographics(self, interaction: nextcord.Interaction):
+        if not interaction.guild:
+            await safe_send(
+                interaction,
+                embed=await error_embed(
+                    'Server Only',
+                    'This command can only be used in a server.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                ),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+
+        try:
+            total = await db.fetchval('SELECT COUNT(*) FROM users') or 0
+
+            # Active: messaged in last 7 days
+            active_7d = (
+                await db.fetchval("SELECT COUNT(*) FROM users WHERE last_active >= NOW() - INTERVAL '7 days'") or 0
+            )
+
+            # Active: last 30 days
+            active_30d = (
+                await db.fetchval("SELECT COUNT(*) FROM users WHERE last_active >= NOW() - INTERVAL '30 days'") or 0
+            )
+
+            # Inactive: never active or last active > 30 days ago
+            inactive = total - active_30d
+
+            # XP tiers
+            tier_active = await db.fetchval('SELECT COUNT(*) FROM users WHERE points >= 1000') or 0
+            tier_regular = await db.fetchval('SELECT COUNT(*) FROM users WHERE points >= 100 AND points < 1000') or 0
+            tier_new = await db.fetchval('SELECT COUNT(*) FROM users WHERE points > 0 AND points < 100') or 0
+            tier_zero = await db.fetchval('SELECT COUNT(*) FROM users WHERE points = 0 OR points IS NULL') or 0
+
+            description = (
+                f'**Activity Tiers** (of {total:,} tracked users)\n\n'
+                f'\U0001f525 **Active (7d)**: {active_7d:,} ({active_7d / max(total, 1) * 100:.1f}%)\n'
+                f'\U0001f4a1 **Active (30d)**: {active_30d:,} ({active_30d / max(total, 1) * 100:.1f}%)\n'
+                f'\U0001f4a4 **Inactive**: {inactive:,} ({inactive / max(total, 1) * 100:.1f}%)\n\n'
+                f'**XP Distribution**\n'
+                f'\U0001f31f **Power Users** (1000+ XP): {tier_active:,}\n'
+                f'\u2b50 **Regulars** (100\u2013999 XP): {tier_regular:,}\n'
+                f'\U0001f331 **Newcomers** (1\u201399 XP): {tier_new:,}\n'
+                f'\U0001f6ab **No XP**: {tier_zero:,}'
+            )
+
+        except Exception as exc:
+            logger.warning('Failed to fetch demographics: %s', exc)
+            description = 'Could not fetch demographics data.'
+
+        embed = await success_embed(
+            title=f'\U0001f3d7\ufe0f Demographics \u2014 {interaction.guild.name}',
             description=description,
             contributor_source=__name__,
             user=interaction.user,

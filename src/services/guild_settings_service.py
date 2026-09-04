@@ -56,6 +56,8 @@ class GuildSettings:
     warn_mute_threshold: int = 3
     warn_ban_threshold: int = 5
     honeypot_cooldown_seconds: int = 60
+    welcome_message_template: str = 'Welcome {user} to {server}!'
+    welcome_card_enabled: bool = True
     created_at: object | None = None
     updated_at: object | None = None
 
@@ -99,6 +101,8 @@ class GuildSettingsService:
                 warn_mute_threshold=row.get('warn_mute_threshold') or 3,
                 warn_ban_threshold=row.get('warn_ban_threshold') or 5,
                 honeypot_cooldown_seconds=row.get('honeypot_cooldown_seconds') or 60,
+                welcome_message_template=row.get('welcome_message_template') or 'Welcome {user} to {server}!',
+                welcome_card_enabled=row.get('welcome_card_enabled', True),
                 created_at=row['created_at'],
                 updated_at=row['updated_at'],
             )

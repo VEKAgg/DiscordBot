@@ -534,6 +534,172 @@ class Networking(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
+    # ==================== /profile set — Granular Subcommands ====================
+
+    @profile.subcommand(name='set', description='Set a specific profile field')
+    @safe_slash_command(requires_db=True)
+    async def profile_set(
+        self,
+        interaction: nextcord.Interaction,
+        field: str = nextcord.SlashOption(
+            name='field',
+            description='Which field to set',
+            choices={'Bio': 'bio', 'Links': 'links', 'Skills': 'skills', 'Timezone': 'timezone'},
+        ),
+        value: str = nextcord.SlashOption(name='value', description='Value to set'),
+    ):
+        """Set a single profile field (bio, links, skills, or timezone)."""
+        try:
+            existing = await self.svc.get_profile(str(interaction.user.id))
+            updates: dict[str, object] = {}
+
+            if field == 'bio':
+                updates['bio'] = value.strip()[:1000]
+            elif field == 'links':
+                updates['links'] = self._normalize_links(value)
+            elif field == 'skills':
+                # Skills stored as TEXT[] — accept comma-separated
+                skills_list = [s.strip() for s in value.split(',') if s.strip()]
+                if len(skills_list) > 20:
+                    skills_list = skills_list[:20]
+                updates['skills'] = skills_list
+            elif field == 'timezone':
+                updates['timezone'] = value.strip()[:64]
+
+            # Preserve existing fields
+            profile_data: dict[str, object] = {}
+            for f in ['title', 'skills', 'bio', 'links', 'looking_for', 'timezone']:
+                if f in updates:
+                    profile_data[f] = updates[f]
+                elif existing:
+                    profile_data[f] = existing.get(f)
+
+            if not profile_data.get('title') and existing:
+                profile_data['title'] = existing.get('title')
+
+            await self.svc.upsert_profile(str(interaction.user.id), profile_data)
+            embed = await success_embed(
+                title='Profile Updated',
+                description=f'**{field.title()}** has been updated.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+        except ValueError as exc:
+            embed = await error_embed(
+                title='Update Failed',
+                description=str(exc),
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ==================== /directory — Member Search ====================
+
+    @nextcord.slash_command(name='directory', description='Search the member directory')
+    @safe_slash_command(requires_db=True)
+    async def directory_group(self, interaction: nextcord.Interaction):
+        embed = await info_embed(
+            title='Directory Commands',
+            description=('**Available subcommands:**\n\n• `/directory search` — Find members by skill or timezone'),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @directory_group.subcommand(name='search', description='Search members by skill or timezone')
+    @safe_slash_command(requires_db=True)
+    async def directory_search(
+        self,
+        interaction: nextcord.Interaction,
+        skill: str = nextcord.SlashOption(name='skill', description='Skill to search for', required=False),
+        timezone: str = nextcord.SlashOption(
+            name='timezone', description='Timezone to search for (e.g. UTC, EST)', required=False
+        ),
+    ):
+        if not skill and not timezone:
+            embed = await error_embed(
+                'Missing Filter',
+                'Provide at least one filter: `skill` or `timezone`.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            if skill:
+                # Search for profiles where skills array contains the skill (case-insensitive)
+                rows = await db.fetch(
+                    """SELECT p.user_id, p.title, p.skills, p.bio, u.discord_id
+                       FROM profiles p
+                       JOIN users u ON p.user_id = u.id
+                       WHERE EXISTS (
+                           SELECT 1 FROM unnest(p.skills) AS s
+                           WHERE LOWER(s) = LOWER($1)
+                       )
+                       ORDER BY p.last_updated DESC
+                       LIMIT 25""",
+                    skill,
+                )
+            else:
+                # Search by timezone
+                rows = await db.fetch(
+                    """SELECT p.user_id, p.title, p.skills, p.bio, p.timezone, u.discord_id
+                       FROM profiles p
+                       JOIN users u ON p.user_id = u.id
+                       WHERE LOWER(p.timezone) = LOWER($1)
+                       ORDER BY p.last_updated DESC
+                       LIMIT 25""",
+                    timezone,
+                )
+
+            if not rows:
+                embed = await info_embed(
+                    title='No Results',
+                    description=f'No members found matching **{skill or timezone}**.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            embed = await info_embed(
+                title=f'Directory: {skill or timezone}',
+                description=f'{len(rows)} member{"s" if len(rows) != 1 else ""} found.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+
+            for row in rows[:10]:
+                member = interaction.guild.get_member(int(row['discord_id'])) if interaction.guild else None
+                name = member.display_name if member else f'User {row["discord_id"]}'
+                skills = row.get('skills') or []
+                if isinstance(skills, str):
+                    skills = [s.strip() for s in skills.split(',') if s.strip()]
+                skills_text = ', '.join(skills[:5]) if skills else 'None'
+                bio_text = (row.get('bio') or 'No bio')[:80]
+                embed.add_field(
+                    name=name,
+                    value=f'Title: {row.get("title") or "N/A"}\nSkills: {skills_text}\nBio: {bio_text}',
+                    inline=False,
+                )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error('Directory search error: %s', e, exc_info=True)
+            embed = await error_embed(
+                'Search Error',
+                'An error occurred while searching the directory.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     @commands.command(name='profile', description='View a professional profile')
     @safe_command(requires_db=True)
     async def profile_fallback(self, ctx, member: nextcord.Member = None):

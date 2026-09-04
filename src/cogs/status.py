@@ -30,8 +30,12 @@ STATUSES: list[dict] = [
     {'type': 'watching', 'text': 'VEKA community and resources'},
     {'type': 'listening', 'text': '/level to check your XP'},
     {'type': 'streaming', 'text': 'Join VEKA on Twitch', 'url': 'https://twitch.tv/whoisshafaat'},
-    {'type': 'watching', 'text': 'over the marketplace'},
+    {'type': 'watching', 'text': '{online} members online'},
     {'type': 'playing', 'text': 'with slash commands'},
+    {'type': 'watching', 'text': '{boosts} server boosts'},
+    {'type': 'listening', 'text': '{active_radio_station}'},
+    {'type': 'watching', 'text': '{open_listings} marketplace listings'},
+    {'type': 'playing', 'text': 'Season {season}'},
 ]
 
 ROTATION_INTERVAL = 10  # seconds between status changes
@@ -87,7 +91,7 @@ class StatusRotator(commands.Cog):
         """Stop the rotation loop."""
         self.rotate_status.stop()
 
-    def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming | nextcord.Game:
+    async def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming | nextcord.Game:
         """Build a nextcord activity from a status definition."""
         text = status_def.get('text', 'VEKA')
         status_type = status_def.get('type', 'watching')
@@ -112,6 +116,57 @@ class StatusRotator(commands.Cog):
             text = text.replace('{uptime}', '?')
 
         try:
+            if '{online}' in text:
+                online = sum(
+                    1 for g in self.bot.guilds for m in g.members if m.status != nextcord.Status.offline and not m.bot
+                )
+                text = text.format(online=f'{online:,}')
+        except Exception:
+            text = text.replace('{online}', '?')
+
+        try:
+            if '{boosts}' in text:
+                boosts = sum(g.premium_subscription_count or 0 for g in self.bot.guilds)
+                text = text.format(boosts=f'{boosts:,}')
+        except Exception:
+            text = text.replace('{boosts}', '?')
+
+        try:
+            if '{active_radio_station}' in text:
+                radio_cog = self.bot.get_cog('RadioManager')
+                if radio_cog and hasattr(radio_cog, '_active_station') and radio_cog._active_station:
+                    from src.cogs.radio.radio import RADIO_STATIONS
+
+                    station = RADIO_STATIONS.get(radio_cog._active_station, {})
+                    station_name = station.get('name', radio_cog._active_station)
+                    station_emoji = station.get('emoji', '')
+                    text = text.format(active_radio_station=f'{station_emoji} {station_name}')
+                else:
+                    text = text.replace('{active_radio_station}', 'Radio is offline')
+        except Exception:
+            text = text.replace('{active_radio_station}', 'Radio')
+
+        try:
+            if '{open_listings}' in text:
+                from src.database.database import db
+
+                count = await db.fetchval(
+                    "SELECT COUNT(*) FROM marketplace_listings WHERE status = 'active' AND is_expired = FALSE"
+                )
+                text = text.format(open_listings=f'{count or 0}')
+        except Exception:
+            text = text.replace('{open_listings}', '?')
+
+        try:
+            if '{season}' in text:
+                from datetime import UTC, datetime
+
+                season = datetime.now(UTC).strftime('%Y-%m')
+                text = text.format(season=season)
+        except Exception:
+            text = text.replace('{season}', '?')
+
+        try:
             if status_type == 'streaming':
                 url = status_def.get('url', STREAMING_URL)
                 return nextcord.Streaming(name=text, url=url)
@@ -131,7 +186,7 @@ class StatusRotator(commands.Cog):
         """Rotate to the next status."""
         status_def = STATUSES[self._status_index]
         try:
-            activity = self._build_activity(status_def)
+            activity = await self._build_activity(status_def)
             await self.bot.change_presence(activity=activity)
             logger.debug(
                 'Status [%d/%d] set: %s',
@@ -156,7 +211,7 @@ class StatusRotator(commands.Cog):
         # Set initial status immediately
         status_def = STATUSES[0]
         try:
-            activity = self._build_activity(status_def)
+            activity = await self._build_activity(status_def)
             await self.bot.change_presence(activity=activity)
         except Exception as exc:
             logger.warning('Failed to set initial status: %s', exc)

@@ -1,12 +1,13 @@
 import logging
 
 import nextcord
-from nextcord.ext import commands
+from nextcord.ext import commands, tasks
 
 from src.config.config import MENTORSHIP_CATEGORIES, MENTORSHIP_ROLES, POINTS_CONFIG
+from src.database.database import db, get_or_create_user
 from src.services.mentorship_service import MentorshipService
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import DatabaseUnavailableError, safe_background_task, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.mentorship')
 
@@ -15,6 +16,10 @@ class Mentorship(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.mentorship_service = MentorshipService(bot)
+        self.check_in_loop.start()
+
+    def cog_unload(self):
+        self.check_in_loop.cancel()
 
     # ==================== SLASH COMMANDS ====================
 
@@ -382,6 +387,220 @@ class Mentorship(commands.Cog):
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ==================== PHASE 5: Mentorship Matching ====================
+
+    @mentor.subcommand(name='apply', description='Register as an available mentor with skills')
+    @safe_slash_command()
+    async def mentor_apply(
+        self,
+        interaction: nextcord.Interaction,
+        skills: str,
+        bio: str,
+    ):
+        """Register as a mentor. Skills are comma-separated (e.g. Python, React, DevOps)."""
+        try:
+            skills_list = [s.strip() for s in skills.split(',') if s.strip()]
+            if not skills_list:
+                embed = await error_embed(
+                    'Missing Skills',
+                    'Please provide at least one skill.',
+                    user=interaction.user,
+                    contributor_source=__name__,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
+            # Ensure user exists
+            await get_or_create_user(str(interaction.user.id))
+
+            # Upsert into mentorship_matches as a mentor registration
+            resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
+            await db.execute(
+                """INSERT INTO mentorship_matches (guild_id, mentor_id, mentee_id, category, status)
+                   VALUES ($1, $2, $2, 'registered', 'active')
+                   ON CONFLICT DO NOTHING""",
+                interaction.guild.id if interaction.guild else 0,
+                resolved_id,
+            )
+
+            # Add Mentor role
+            mentor_role = nextcord.utils.get(interaction.guild.roles, name='Mentor') if interaction.guild else None
+            if not mentor_role and interaction.guild:
+                try:
+                    mentor_role = await interaction.guild.create_role(
+                        name='Mentor',
+                        color=nextcord.Color.blue(),
+                        reason='Mentorship registration',
+                    )
+                except Exception:
+                    pass
+            if mentor_role:
+                try:
+                    await interaction.user.add_roles(mentor_role)
+                except Exception:
+                    pass
+
+            # Update profile skills
+            profile_data = {
+                'title': f'Mentor ({", ".join(skills_list[:3])})',
+                'skills': skills_list,
+                'bio': bio[:1000],
+            }
+            from src.services.networking_service import NetworkingService
+
+            svc = NetworkingService()
+            await svc.upsert_profile(str(interaction.user.id), profile_data)
+
+            embed = await success_embed(
+                title='Mentor Registration Complete',
+                description=(
+                    f'You are now registered as a mentor!\n\n**Skills:** {", ".join(skills_list)}\n**Bio:** {bio[:200]}'
+                ),
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error('Mentor apply error: %s', e, exc_info=True)
+            embed = await error_embed(
+                'Registration Failed',
+                'An error occurred during registration.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @mentor.subcommand(name='end', description='End an active mentorship and record the outcome')
+    @safe_slash_command()
+    async def mentor_end(
+        self,
+        interaction: nextcord.Interaction,
+        match_id: int,
+        outcome: str = nextcord.SlashOption(
+            description='Outcome of the mentorship',
+            choices={'Successful': 'successful', 'Incomplete': 'incomplete', 'Cancelled': 'cancelled'},
+        ),
+    ):
+        """Close an active mentorship session."""
+        try:
+            resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
+
+            match = await db.fetch_one(
+                """SELECT * FROM mentorship_matches
+                   WHERE id = $1 AND (mentor_id = $2 OR mentee_id = $2) AND status = 'active'""",
+                match_id,
+                resolved_id,
+            )
+
+            if not match:
+                embed = await error_embed(
+                    'Not Found',
+                    'No active mentorship match found with that ID.',
+                    user=interaction.user,
+                    contributor_source=__name__,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
+            await db.execute(
+                """UPDATE mentorship_matches
+                   SET status = 'completed', ended_at = NOW(), outcome = $1
+                   WHERE id = $2""",
+                outcome,
+                match_id,
+            )
+
+            # Award XP to both parties
+            for uid in [match['mentor_id'], match['mentee_id']]:
+                try:
+                    await db.execute(
+                        'UPDATE users SET points = points + $1, total_commands = total_commands + 1 WHERE id = $2',
+                        POINTS_CONFIG['mentor_session'],
+                        uid,
+                    )
+                except Exception:
+                    pass
+
+            embed = await success_embed(
+                title='Mentorship Ended',
+                description=(
+                    f'Mentorship match `#{match_id}` has been closed.\n'
+                    f'**Outcome:** {outcome.title()}\n'
+                    f'Both mentor and mentee received **{POINTS_CONFIG["mentor_session"]} XP**.'
+                ),
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+        except Exception as e:
+            logger.error('Mentor end error: %s', e, exc_info=True)
+            embed = await error_embed(
+                'Error',
+                'An error occurred while ending the mentorship.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+    # ==================== Weekly Check-in DMs ====================
+
+    @tasks.loop(hours=24)
+    @safe_background_task(name='mentorship_checkins')
+    async def check_in_loop(self):
+        """Send check-in DMs to active mentorships that haven't been checked in for 7+ days."""
+        try:
+            stale = await db.fetch(
+                """SELECT id, mentor_id, mentee_id, category
+                   FROM mentorship_matches
+                   WHERE status = 'active'
+                   AND last_checkin_at < NOW() - INTERVAL '7 days'"""
+            )
+        except DatabaseUnavailableError:
+            return
+
+        for match in stale:
+            for uid_field in ['mentor_id', 'mentee_id']:
+                try:
+                    user_id = match[uid_field]
+                    user_row = await db.fetch_one('SELECT discord_id FROM users WHERE id = $1', user_id)
+                    if not user_row:
+                        continue
+                    member = self.bot.get_user(int(user_row['discord_id']))
+                    if not member:
+                        continue
+
+                    checkin_embed = await info_embed(
+                        title='Mentorship Check-in',
+                        description=(
+                            f'Hi! This is a friendly check-in for your **{match["category"]}** mentorship '
+                            f'(match `#{match["id"]}`).\n\n'
+                            f'How is everything going? If the mentorship is complete, '
+                            f'you can end it with `/mentor end {match["id"]}`.'
+                        ),
+                        user=member,
+                        contributor_source=__name__,
+                    )
+                    await member.send(embed=checkin_embed)
+                except nextcord.Forbidden:
+                    pass
+                except Exception as e:
+                    logger.debug('Check-in DM failed for match %s: %s', match['id'], e)
+
+            # Update last_checkin_at
+            try:
+                await db.execute(
+                    'UPDATE mentorship_matches SET last_checkin_at = NOW() WHERE id = $1',
+                    match['id'],
+                )
+            except Exception:
+                pass
+
+    @check_in_loop.before_loop
+    async def before_check_in(self):
+        await self.bot.wait_until_ready()
 
     # ==================== PREFIX COMMANDS ====================
 
