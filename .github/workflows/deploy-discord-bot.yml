@@ -1,19 +1,33 @@
 name: Deploy Discord Bot
 
+# Deploys only after the CI workflow has passed for the pushed commit (lint, mypy, tests, audit, Docker
+# build). workflow_run fires for the CI run of a push to main/production; we deploy exactly that SHA.
+# Note: workflow_run triggers are read from the default branch, so changes here take effect once on main.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches:
       - main
       - production
 
+concurrency:
+  group: deploy-discord-bot
+  cancel-in-progress: false
+
 jobs:
   deploy:
-    if: startsWith(github.event.head_commit.message, 'Merge pull request')
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_commit.message, 'Merge pull request')
     runs-on: [self-hosted, X64, Linux, Veka]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Create .env file
         shell: bash
@@ -36,10 +50,10 @@ jobs:
             echo "LEADERBOARD_CHANNEL_ID=${{ vars.LEADERBOARD_CHANNEL_ID }}"
             echo "RADIO_STREAM_URL=${{ vars.RADIO_STREAM_URL || 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }}"
             echo "MAIN_SERVER_INVITE_URL=${{ vars.MAIN_SERVER_INVITE_URL || 'https://discord.gg/veka' }}"
-            echo "COMMIT_SHA=${{ github.sha }}"
-            echo "BOT_VERSION=${{ github.sha }}"
+            echo "COMMIT_SHA=${{ github.event.workflow_run.head_sha }}"
+            echo "BOT_VERSION=${{ github.event.workflow_run.head_sha }}"
             echo "LOG_LEVEL=${{ vars.LOG_LEVEL || 'INFO' }}"
-            echo "GIT_BRANCH=${{ github.ref_name }}"
+            echo "GIT_BRANCH=${{ github.event.workflow_run.head_branch }}"
             echo "ENVIRONMENT=production"
           } > .env
 
@@ -61,6 +75,10 @@ jobs:
             if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
               echo "Health check passed - Bot is ready"
               SUCCESS=1
+              # Migrations failing doesn't stop the bot (degraded mode), so surface it loudly.
+              if docker logs veka-discord-bot 2>&1 | grep -q "is ready.*migrations=degraded"; then
+                echo "::warning title=Migrations degraded::Database migrations failed on startup - check 'docker logs veka-discord-bot'"
+              fi
               break
             fi
             echo "Waiting for bot to become ready... ($ELAPSED seconds elapsed)"

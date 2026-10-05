@@ -89,3 +89,33 @@ class TestMigrationFilesExist:
     def test_initial_schema_present(self, migration_files):
         names = {f.name for f in migration_files}
         assert '001_initial_schema.sql' in names, '001_initial_schema.sql not found'
+
+
+class TestRuntimeDuplicateCheck:
+    """The runtime guard in Database.run_migrations must agree with the filename tests (audit C-03)."""
+
+    def test_real_migration_set_passes_runtime_check(self, migration_files):
+        from src.database.migrations import check_duplicate_prefixes
+
+        check_duplicate_prefixes(migration_files)  # must not raise for 005 + 005b
+
+    def test_letter_suffix_is_distinct_prefix(self, tmp_path):
+        from src.database.migrations import check_duplicate_prefixes
+
+        files = [tmp_path / '005_a.sql', tmp_path / '005b_b.sql']
+        check_duplicate_prefixes(files)
+
+    def test_true_duplicate_is_rejected(self, tmp_path):
+        from src.database.migrations import check_duplicate_prefixes
+
+        files = [tmp_path / '007_a.sql', tmp_path / '007_b.sql']
+        with pytest.raises(RuntimeError, match='prefix 007'):
+            check_duplicate_prefixes(files)
+
+    def test_legacy_names_point_at_existing_files(self, migration_files):
+        from src.database.migrations import LEGACY_MIGRATION_NAMES
+
+        names = {f.name for f in migration_files}
+        for current, legacy in LEGACY_MIGRATION_NAMES.items():
+            assert current in names, f'{current} (renamed from {legacy}) not found'
+            assert legacy not in names, f'legacy name {legacy} must not exist as a file too'

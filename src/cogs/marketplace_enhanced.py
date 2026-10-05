@@ -18,17 +18,23 @@ from src.utils.security import InputValidator, sanitize
 
 logger = logging.getLogger('VEKA.marketplace.enhanced')
 
+LISTING_EXPIRY_DAYS = 30
+LISTING_WARN_DAYS = 27
+# A bump refreshes a listing, so age counts from the most recent of creation / bump.
+_LISTING_AGE_SQL = 'COALESCE(GREATEST(l.created_at, l.last_bumped_at), l.created_at)'
+
 
 class MarketplaceEnhanced(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.check_price_drops.start()
-        self.update_featured_listings.start()
-        self.check_expiring_listings.start()
+
+    async def cog_ready(self):
+        for loop in (self.check_price_drops, self.check_expiring_listings):
+            if not loop.is_running():
+                loop.start()
 
     def cog_unload(self):
         self.check_price_drops.cancel()
-        self.update_featured_listings.cancel()
         self.check_expiring_listings.cancel()
 
     # ==================== SLASH COMMANDS (delegated via /marketplace group) ====================
@@ -551,13 +557,16 @@ class MarketplaceEnhanced(commands.Cog):
 
     @tasks.loop(hours=6)
     async def check_price_drops(self):
+        """Warn sellers once, a few days before a listing expires (age counts from the last bump)."""
         try:
             expiring = await db.fetch_many(
-                """SELECT l.*, u.discord_id
-                   FROM marketplace_listings l
-                   JOIN users u ON l.seller_id = u.id
-                   WHERE l.status = 'active'
-                   AND l.created_at < NOW() - INTERVAL '30 days'"""
+                f"""UPDATE marketplace_listings l SET expiry_warned_at = NOW()
+                   FROM users u
+                   WHERE l.seller_id = u.id AND l.status = 'active' AND l.is_expired = FALSE
+                     AND {_LISTING_AGE_SQL} < NOW() - INTERVAL '{LISTING_WARN_DAYS} days'
+                     AND {_LISTING_AGE_SQL} >= NOW() - INTERVAL '{LISTING_EXPIRY_DAYS} days'
+                     AND (l.expiry_warned_at IS NULL OR l.expiry_warned_at < {_LISTING_AGE_SQL})
+                   RETURNING l.id, l.title, u.discord_id"""
             )
 
             for listing in expiring:
@@ -566,45 +575,35 @@ class MarketplaceEnhanced(commands.Cog):
                     try:
                         embed = nextcord.Embed(
                             title='⏰ Listing Expiring Soon',
-                            description=f'Your listing **{listing["title"]}** is 30 days old.',
+                            description=(
+                                f'Your listing **{listing["title"]}** expires in about '
+                                f'{LISTING_EXPIRY_DAYS - LISTING_WARN_DAYS} days.'
+                            ),
                             color=nextcord.Color.orange(),
                         )
                         embed.add_field(
-                            name='Action', value=f'Use `/bump {listing["id"]}` to refresh it!', inline=False
+                            name='Action', value=f'Use `/marketplace bump {listing["id"]}` to refresh it!', inline=False
                         )
                         await seller.send(embed=embed)
                     except Exception:
                         pass
 
         except Exception as e:
-            logger.error(f'Price drop check error: {str(e)}')
-
-    @tasks.loop(hours=12)
-    async def update_featured_listings(self):
-        logger.info('Updated featured listings cache')
+            logger.error(f'Listing expiry warning error: {str(e)}')
 
     @tasks.loop(hours=24)
     async def check_expiring_listings(self):
         try:
             # Flag listings older than 30 days as expired
             expired_rows = await db.fetch_many(
-                """SELECT l.id, l.title, u.discord_id
-                   FROM marketplace_listings l
-                   JOIN users u ON l.seller_id = u.id
-                   WHERE l.status = 'active'
-                   AND l.is_expired = FALSE
-                   AND l.created_at < NOW() - INTERVAL '30 days'"""
+                f"""UPDATE marketplace_listings l SET is_expired = TRUE
+                   FROM users u
+                   WHERE l.seller_id = u.id AND l.status = 'active' AND l.is_expired = FALSE
+                     AND {_LISTING_AGE_SQL} < NOW() - INTERVAL '{LISTING_EXPIRY_DAYS} days'
+                   RETURNING l.id, l.title, u.discord_id"""
             )
 
             if expired_rows:
-                await db.execute(
-                    """UPDATE marketplace_listings
-                       SET is_expired = TRUE
-                       WHERE status = 'active'
-                       AND is_expired = FALSE
-                       AND created_at < NOW() - INTERVAL '30 days'"""
-                )
-
                 for row in expired_rows:
                     seller = self.bot.get_user(int(row['discord_id']))
                     if seller:
@@ -616,7 +615,7 @@ class MarketplaceEnhanced(commands.Cog):
                             )
                             embed.add_field(
                                 name='Action',
-                                value=f'Use `/market bump {row["id"]}` to refresh it, or re-list with `/marketplace post`.',
+                                value=f'Use `/marketplace bump {row["id"]}` to refresh it, or re-list with `/marketplace post`.',
                                 inline=False,
                             )
                             await seller.send(embed=embed)
@@ -630,6 +629,11 @@ class MarketplaceEnhanced(commands.Cog):
 
     @check_price_drops.before_loop
     async def before_price_drops(self):
+        await self.bot.wait_until_ready()
+
+    @check_expiring_listings.before_loop
+    async def before_expiring_listings(self):
+        # Previously missing: the first run fired at import time, before the DB connected.
         await self.bot.wait_until_ready()
 
 

@@ -72,7 +72,7 @@ class Help(commands.Cog):
             '`/profile setup` - Create your profile\n'
             '`/profile edit` - Edit your profile\n'
             '`/profile view [member]` - View a profile\n'
-            '`/connect request @member [msg]` - Send connection request\n'
+            '`/connect request [msg]` - Pick a member and send a connection request\n'
             '`/connect accept @member` - Accept connection\n'
             '`/connect decline @member` - Decline connection\n'
             '`/connect list` - View your connections'
@@ -260,7 +260,7 @@ class Help(commands.Cog):
             'ping': '`/ping` - Check bot latency',
             'help': '`/help` - Show overview\n`/help ping` - Show ping usage',
             'profile': '`/profile setup` - Create profile\n`/profile view` - View profile',
-            'connect': '`/connect request @user` - Send request',
+            'connect': '`/connect request [message]` - Pick a member and send a request',
             'marketplace': '`/marketplace post` - Create listing\n`/marketplace browse` - Browse',
             'review': '`/review 123 5 Great seller` - Leave review',
         }

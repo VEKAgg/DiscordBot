@@ -1,5 +1,6 @@
 import datetime
 import logging
+import secrets
 from datetime import UTC, timedelta
 
 import nextcord
@@ -115,7 +116,8 @@ class Marketplace(commands.Cog):
 
         category_id = category_record['id']
 
-        listing_id = f'MP{int(datetime.datetime.now(UTC).timestamp())}'
+        # Random suffix: two listings posted in the same second used to collide on the primary key (M-09).
+        listing_id = f'MP{int(datetime.datetime.now(UTC).timestamp())}{secrets.token_hex(2).upper()}'
 
         # Ensure user exists in db
         await db.execute('INSERT INTO users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING', str(interaction.user.id))
@@ -247,7 +249,7 @@ class Marketplace(commands.Cog):
             FROM marketplace_listings l
             JOIN users u ON l.seller_id = u.id
             JOIN marketplace_categories c ON l.category_id = c.id
-            WHERE l.status = 'active'
+            WHERE l.status = 'active' AND l.is_expired = FALSE
         """
         args = []
         if category:
@@ -595,7 +597,7 @@ class Marketplace(commands.Cog):
                 return
 
         await db.execute(
-            'UPDATE marketplace_listings SET last_bumped_at = NOW() WHERE id = $1',
+            'UPDATE marketplace_listings SET last_bumped_at = NOW(), is_expired = FALSE WHERE id = $1',
             listing_id,
         )
 
@@ -750,10 +752,11 @@ class Marketplace(commands.Cog):
             return
         await cog.search_slash(interaction, query)
 
+    @mp_search.on_autocomplete('query')
     async def mp_search_autocomplete(self, interaction: nextcord.Interaction, query: str):
         """Autocomplete for marketplace search — suggests active listing titles and tags."""
         if not query or len(query) < 2:
-            await interaction.response.autocomplete([])
+            await interaction.response.send_autocomplete([])
             return
         try:
             rows = await db.fetch_many(
@@ -764,22 +767,18 @@ class Marketplace(commands.Cog):
                    ORDER BY last_bumped_at DESC LIMIT 25""",
                 query,
             )
-            suggestions = []
-            seen = set()
+            suggestions: dict[str, str] = {}  # display name -> value
             for row in rows:
-                title = row['title']
-                if title not in seen:
-                    suggestions.append((title[:100], title[:100]))
-                    seen.add(title)
+                title = row['title'][:100]
+                suggestions.setdefault(title, title)
                 for tag in row['tags'] or []:
-                    if tag not in seen and query.lower() in tag.lower():
-                        suggestions.append((f'tag: {tag}', tag))
-                        seen.add(tag)
+                    if query.lower() in tag.lower():
+                        suggestions.setdefault(f'tag: {tag}'[:100], tag[:100])
                 if len(suggestions) >= 25:
                     break
-            await interaction.response.autocomplete(suggestions)
+            await interaction.response.send_autocomplete(dict(list(suggestions.items())[:25]))
         except Exception:
-            await interaction.response.autocomplete([])
+            await interaction.response.send_autocomplete([])
 
     @marketplace.subcommand(name='watch', description='Add a listing to your watchlist')
     @safe_slash_command(requires_db=True)

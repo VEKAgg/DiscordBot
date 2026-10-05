@@ -10,6 +10,7 @@ are configured.
 
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -49,22 +50,50 @@ def _is_hosted(url: str | None) -> bool:
     return bool(url) and url.startswith(f'{DIRECTUS_URL}/assets/')
 
 
+_ALLOWED_IMAGE_HOSTS = {'cdn.discordapp.com', 'media.discordapp.net'}
+_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+_IMAGE_MAGIC: dict[str, tuple[bytes, ...]] = {
+    'image/png': (b'\x89PNG\r\n\x1a\n',),
+    'image/jpeg': (b'\xff\xd8\xff',),
+    'image/gif': (b'GIF87a', b'GIF89a'),
+    'image/webp': (b'RIFF',),
+}
+
+
 async def _rehost_image(session: aiohttp.ClientSession, url: str) -> str | None:
     """Download an image (e.g. an ephemeral Discord CDN URL) and re-upload it to
     Directus files so it stays available after the source link expires. Returns a
     persistent asset URL, or None if the source can't be fetched (dead link)."""
+    # Only Discord attachment images are re-hosted, as real images (audit M-19): an HTML/SVG upload would
+    # otherwise become a public Directus asset served from the website's origin (stored XSS risk).
+    parts = urlsplit(url)
+    host = (parts.hostname or '').lower()
+    if parts.scheme != 'https' or parts.username or parts.password or host not in _ALLOWED_IMAGE_HOSTS:
+        logger.warning('Refusing to re-host image from non-Discord host: %s', host)
+        return None
     try:
-        async with session.head(url) as head_resp:
-            content_length = head_resp.headers.get('Content-Length')
-            if content_length and int(content_length) > 8 * 1024 * 1024:  # 8 MB limit
-                logger.warning('Image too large (%s bytes), skipping re-host: %s', content_length, url)
-                return None
-
-        async with session.get(url) as resp:
+        # Never follow a redirect outside the allowlisted origin.
+        async with session.get(url, allow_redirects=False) as resp:
             if resp.status != 200:
                 return None
-            content_type = resp.headers.get('Content-Type', 'image/png')
-            data = await resp.read()
+            content_type = resp.headers.get('Content-Type', '').split(';')[0].strip().lower()
+            if content_type not in _IMAGE_MAGIC:
+                logger.warning('Refusing to re-host non-image attachment (%s): %s', content_type, url)
+                return None
+            chunks = []
+            size = 0
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                size += len(chunk)
+                if size > _MAX_IMAGE_BYTES:
+                    logger.warning('Image too large, skipping re-host: %s', url)
+                    return None
+                chunks.append(chunk)
+        data = b''.join(chunks)
+        if content_type == 'image/webp' and data[8:12] != b'WEBP':
+            return None
+        if not any(data.startswith(magic) for magic in _IMAGE_MAGIC[content_type]):
+            logger.warning('Attachment bytes do not match %s, skipping re-host: %s', content_type, url)
+            return None
         form = aiohttp.FormData()
         form.add_field('file', data, filename='listing', content_type=content_type)
         # Multipart: let aiohttp set Content-Type (with boundary), only pass auth.

@@ -199,18 +199,18 @@ class MarketplaceReviews(commands.Cog):
                 embed.add_field(name='📝 Recent Reviews', value=reviews_text, inline=False)
 
             active = await db.fetch_many(
-                """SELECT id, title, price, emoji
+                """SELECT l.id, l.title, l.price, c.emoji
                    FROM marketplace_listings l
-                   JOIN marketplace_categories c ON l.category_id = c.id
-                   WHERE seller_id = $1 AND status = 'active'
-                   ORDER BY created_at DESC
+                   LEFT JOIN marketplace_categories c ON l.category_id = c.id
+                   WHERE l.seller_id = $1 AND l.status = 'active'
+                   ORDER BY l.created_at DESC
                    LIMIT 3""",
                 user['id'],
             )
 
             if active:
                 listings_text = '\n'.join(
-                    [f'{item["emoji"]} {item["title"][:30]} - ${item["price"]}' for item in active]
+                    [f'{item["emoji"] or "📦"} {item["title"][:30]} - ${item["price"]}' for item in active]
                 )
                 embed.add_field(name='📦 Active Listings', value=listings_text, inline=False)
 
@@ -276,12 +276,14 @@ class MarketplaceReviews(commands.Cog):
 
     async def helpful_slash(self, interaction: nextcord.Interaction, review_id: int):
         try:
+            # marketplace_review_votes.user_id references users.id (internal PK), not the snowflake.
+            voter = await get_user(str(interaction.user.id))
             await db.execute(
                 """INSERT INTO marketplace_review_votes (review_id, user_id, is_helpful)
                    VALUES ($1, $2, TRUE)
                    ON CONFLICT DO NOTHING""",
                 review_id,
-                interaction.user.id,
+                voter['id'],
             )
 
             await db.execute(
@@ -314,7 +316,7 @@ class MarketplaceReviews(commands.Cog):
             user = await get_user(str(interaction.user.id))
 
             listing = await db.fetch_one(
-                "SELECT seller_id, title, bumped_at FROM marketplace_listings WHERE id = $1 AND status = 'active'",
+                "SELECT seller_id, title, last_bumped_at FROM marketplace_listings WHERE id = $1 AND status = 'active'",
                 listing_id,
             )
 
@@ -338,8 +340,11 @@ class MarketplaceReviews(commands.Cog):
             from datetime import UTC, datetime, timedelta
 
             now = datetime.now(UTC)
-            if listing['bumped_at'] and listing['bumped_at'] > now - timedelta(hours=24):
-                time_left = listing['bumped_at'] + timedelta(hours=24) - now
+            last_bumped = listing['last_bumped_at']
+            if last_bumped and last_bumped.tzinfo is None:
+                last_bumped = last_bumped.replace(tzinfo=UTC)
+            if last_bumped and last_bumped > now - timedelta(hours=24):
+                time_left = last_bumped + timedelta(hours=24) - now
                 hours = int(time_left.total_seconds() // 3600)
                 embed = await error_embed(
                     'Too Soon',
@@ -350,7 +355,9 @@ class MarketplaceReviews(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            await db.execute('UPDATE marketplace_listings SET bumped_at = NOW() WHERE id = $1', listing_id)
+            await db.execute(
+                'UPDATE marketplace_listings SET last_bumped_at = NOW(), is_expired = FALSE WHERE id = $1', listing_id
+            )
 
             embed = await success_embed(
                 title='Listing Bumped',

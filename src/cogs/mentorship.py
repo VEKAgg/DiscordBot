@@ -16,7 +16,10 @@ class Mentorship(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.mentorship_service = MentorshipService(bot)
-        self.check_in_loop.start()
+
+    async def cog_ready(self):
+        if not self.check_in_loop.is_running():
+            self.check_in_loop.start()
 
     def cog_unload(self):
         self.check_in_loop.cancel()
@@ -235,7 +238,7 @@ class Mentorship(commands.Cog):
         try:
             mentorships = await self.mentorship_service.get_user_mentorships(str(interaction.user.id))
             pending_mentorship = next(
-                (m for m in mentorships if m['mentee_id'] == str(mentee.id) and m['status'] == 'pending'), None
+                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'pending'), None
             )
 
             if not pending_mentorship:
@@ -291,7 +294,7 @@ class Mentorship(commands.Cog):
         try:
             mentorships = await self.mentorship_service.get_user_mentorships(str(interaction.user.id))
             active_mentorship = next(
-                (m for m in mentorships if m['mentee_id'] == str(mentee.id) and m['status'] == 'active'), None
+                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'active'), None
             )
 
             if not active_mentorship:
@@ -418,7 +421,7 @@ class Mentorship(commands.Cog):
             resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
             await db.execute(
                 """INSERT INTO mentorship_matches (guild_id, mentor_id, mentee_id, category, status)
-                   VALUES ($1, $2, $2, 'registered', 'active')
+                   VALUES ($1, $2, $2, 'registered', 'registered')
                    ON CONFLICT DO NOTHING""",
                 interaction.guild.id if interaction.guild else 0,
                 resolved_id,
@@ -487,11 +490,26 @@ class Mentorship(commands.Cog):
         try:
             resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
 
+            # Claim completion and award both participants in one atomic statement. A second
+            # concurrent invocation cannot claim the active row or award its XP again.
             match = await db.fetch_one(
-                """SELECT * FROM mentorship_matches
-                   WHERE id = $1 AND (mentor_id = $2 OR mentee_id = $2) AND status = 'active'""",
+                """WITH completed AS (
+                       UPDATE mentorship_matches
+                       SET status = 'completed', ended_at = NOW(), outcome = $3
+                       WHERE id = $1 AND (mentor_id = $2 OR mentee_id = $2)
+                         AND status = 'active' AND mentor_id <> mentee_id
+                       RETURNING mentor_id, mentee_id
+                   ), awarded AS (
+                       UPDATE users SET points = points + $4, total_commands = total_commands + 1
+                       WHERE $3 = 'successful'
+                         AND id IN (SELECT mentor_id FROM completed UNION SELECT mentee_id FROM completed)
+                       RETURNING id
+                   )
+                   SELECT * FROM completed""",
                 match_id,
                 resolved_id,
+                outcome,
+                POINTS_CONFIG['mentor_session'],
             )
 
             if not match:
@@ -504,31 +522,16 @@ class Mentorship(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            await db.execute(
-                """UPDATE mentorship_matches
-                   SET status = 'completed', ended_at = NOW(), outcome = $1
-                   WHERE id = $2""",
-                outcome,
-                match_id,
-            )
-
-            # Award XP to both parties
-            for uid in [match['mentor_id'], match['mentee_id']]:
-                try:
-                    await db.execute(
-                        'UPDATE users SET points = points + $1, total_commands = total_commands + 1 WHERE id = $2',
-                        POINTS_CONFIG['mentor_session'],
-                        uid,
-                    )
-                except Exception:
-                    pass
-
             embed = await success_embed(
                 title='Mentorship Ended',
                 description=(
                     f'Mentorship match `#{match_id}` has been closed.\n'
                     f'**Outcome:** {outcome.title()}\n'
-                    f'Both mentor and mentee received **{POINTS_CONFIG["mentor_session"]} XP**.'
+                    + (
+                        f'Both mentor and mentee received **{POINTS_CONFIG["mentor_session"]} XP**.'
+                        if outcome == 'successful'
+                        else ''
+                    )
                 ),
                 user=interaction.user,
                 contributor_source=__name__,
@@ -555,7 +558,7 @@ class Mentorship(commands.Cog):
             stale = await db.fetch(
                 """SELECT id, mentor_id, mentee_id, category
                    FROM mentorship_matches
-                   WHERE status = 'active'
+                   WHERE status = 'active' AND mentor_id <> mentee_id
                    AND last_checkin_at < NOW() - INTERVAL '7 days'"""
             )
         except DatabaseUnavailableError:
@@ -736,7 +739,7 @@ class Mentorship(commands.Cog):
         try:
             mentorships = await self.mentorship_service.get_user_mentorships(str(ctx.author.id))
             pending_mentorship = next(
-                (m for m in mentorships if m['mentee_id'] == str(mentee.id) and m['status'] == 'pending'), None
+                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'pending'), None
             )
 
             if not pending_mentorship:
@@ -772,7 +775,7 @@ class Mentorship(commands.Cog):
         try:
             mentorships = await self.mentorship_service.get_user_mentorships(str(ctx.author.id))
             active_mentorship = next(
-                (m for m in mentorships if m['mentee_id'] == str(mentee.id) and m['status'] == 'active'), None
+                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'active'), None
             )
 
             if not active_mentorship:

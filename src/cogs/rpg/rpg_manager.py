@@ -9,6 +9,7 @@ import logging
 import math
 import time
 from datetime import UTC, datetime, timedelta, timezone
+from datetime import time as dt_time
 
 import aiohttp
 import nextcord
@@ -20,6 +21,7 @@ from src.config.config import (
     CODING_APPS,
     INACTIVITY_CHECK_HOUR,
     INACTIVITY_CHECK_MINUTE,
+    INACTIVITY_MAX_DMS_PER_RUN,
     INACTIVITY_MONTH_DAYS,
     INACTIVITY_WEEK_DAYS,
     IST_UTC_OFFSET,
@@ -27,17 +29,18 @@ from src.config.config import (
     LEADERBOARD_TOP_N,
     LEADERBOARD_UPDATE_INTERVAL,
     LIVE_ROLE_ID,
-    LOGS_CHANNEL_ID,
     MAIN_GUILD_ID,
     MESSAGE_XP_COOLDOWN,
     RPG_POINTS,
     XP_MULTIPLIERS,
 )
+from src.core.lifecycle import has_running_loop, spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services import inactivity_service
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed
+from src.utils.guild_gate import main_server_only
 from src.utils.safety import admin_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.rpg')
@@ -67,6 +70,10 @@ _LEADERBOARD_CATEGORIES = {
 }
 
 
+PREV_LABEL = '\u25c0 Previous'
+NEXT_LABEL = '\u25b6 Next'
+
+
 class PaginationView(nextcord.ui.View):
     """Interactive leaderboard pagination with Previous/Next buttons."""
 
@@ -76,13 +83,18 @@ class PaginationView(nextcord.ui.View):
         self.title = title
         self.author_id = author_id
         self.current_page = 0
+        self.message: nextcord.Message | None = None
         self._update_buttons()
 
     def _update_buttons(self) -> None:
-        self.prev_button.disabled = self.current_page == 0
-        self.next_button.disabled = self.current_page >= len(self.pages) - 1
+        for child in self.children:
+            if isinstance(child, nextcord.ui.Button):
+                if child.label == PREV_LABEL:
+                    child.disabled = self.current_page == 0
+                elif child.label == NEXT_LABEL:
+                    child.disabled = self.current_page >= len(self.pages) - 1
 
-    @nextcord.ui.button(label='\u25c0 Previous', style=nextcord.ButtonStyle.secondary)
+    @nextcord.ui.button(label=PREV_LABEL, style=nextcord.ButtonStyle.secondary)
     async def prev_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message('This is not your leaderboard.', ephemeral=True)
@@ -92,7 +104,7 @@ class PaginationView(nextcord.ui.View):
         embed = self._build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @nextcord.ui.button(label='\u25b6 Next', style=nextcord.ButtonStyle.secondary)
+    @nextcord.ui.button(label=NEXT_LABEL, style=nextcord.ButtonStyle.secondary)
     async def next_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction) -> None:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message('This is not your leaderboard.', ephemeral=True)
@@ -115,7 +127,8 @@ class PaginationView(nextcord.ui.View):
 
     async def on_timeout(self) -> None:
         for child in self.children:
-            child.disabled = True
+            if isinstance(child, nextcord.ui.Button | nextcord.ui.Select):
+                child.disabled = True
         if self.message:
             try:
                 await self.message.edit(view=self)
@@ -213,27 +226,31 @@ class RPGManager(commands.Cog):
             pass
         return LEADERBOARD_CHANNEL_ID
 
-    async def cog_load(self):
-        """Start background tasks."""
-        self.update_leaderboard.start()
-        self.evaluate_activity_roles.start()
-        self.check_inactivity.start()
-        self.flush_activity_details.start()
-        self.monthly_season_archive.start()
-        # Restore leaderboard message reference if channel is configured
+    def _loops(self):
+        return (
+            self.update_leaderboard,
+            self.evaluate_activity_roles,
+            self.check_inactivity,
+            self.flush_activity_details,
+            self.monthly_season_archive,
+        )
+
+    async def cog_ready(self):
+        """Start background tasks (called from on_ready via run_cog_ready_hooks; nextcord has no cog_load)."""
+        # Restore the leaderboard message reference first so the first update edits instead of reposting.
         channel_id = await self._get_leaderboard_channel_id()
         if channel_id:
             await self._restore_leaderboard_message()
+        for loop in self._loops():
+            if not loop.is_running():
+                loop.start()
 
-    async def cog_unload(self):
-        """Stop background tasks."""
-        self.update_leaderboard.stop()
-        self.evaluate_activity_roles.stop()
-        self.check_inactivity.stop()
-        self.flush_activity_details.stop()
-        self.monthly_season_archive.stop()
-        # Flush any remaining activity durations
-        await self._flush_all_detailed_activities()
+    def cog_unload(self):
+        """Stop background tasks and flush remaining activity durations (called synchronously by nextcord)."""
+        for loop in self._loops():
+            loop.cancel()
+        if has_running_loop():
+            spawn(self._flush_all_detailed_activities(), name='rpg:flush_on_unload')
 
     # ============================================================
     # DB helpers
@@ -600,8 +617,9 @@ class RPGManager(commands.Cog):
         now = time.monotonic()
 
         # Cooldown check
-        last_time = self._message_cooldowns.get(user_id, 0.0)
-        if (now - last_time) < MESSAGE_XP_COOLDOWN:
+        # None = no prior message; a 0.0 default would break while host uptime < cooldown (monotonic clock).
+        last_time = self._message_cooldowns.get(user_id)
+        if last_time is not None and (now - last_time) < MESSAGE_XP_COOLDOWN:
             return
 
         self._message_cooldowns[user_id] = now
@@ -629,15 +647,18 @@ class RPGManager(commands.Cog):
             return
 
         user_id = member.id
+        # nextcord passes VoiceState objects for both sides; join/leave is signalled by .channel being None.
+        before_channel = before.channel if before else None
+        after_channel = after.channel if after else None
 
         # User joined a voice channel
-        if before is None and after is not None:
+        if before_channel is None and after_channel is not None:
             self._voice_join_times[user_id] = time.monotonic()
             # Track streak for voice activity
             await self._update_streak(user_id)
 
         # User left a voice channel
-        elif before is not None and after is None:
+        elif before_channel is not None and after_channel is None:
             join_time = self._voice_join_times.pop(user_id, None)
             if join_time:
                 minutes = int((time.monotonic() - join_time) / 60)
@@ -647,12 +668,12 @@ class RPGManager(commands.Cog):
                         'voice',
                         RPG_POINTS['voice_per_minute'],
                         guild_id=member.guild.id,
-                        channel_id=before.channel.id if before.channel else 0,
+                        channel_id=before_channel.id,
                         quantity=min(minutes, 60),
                     )
 
         # User moved channels — track as if they left and rejoined
-        elif before is not None and after is not None and before.channel != after.channel:
+        elif before_channel is not None and after_channel is not None and before_channel != after_channel:
             join_time = self._voice_join_times.pop(user_id, None)
             if join_time:
                 minutes = int((time.monotonic() - join_time) / 60)
@@ -706,7 +727,7 @@ class RPGManager(commands.Cog):
 
                             svc = NetworkingService()
                             await svc.append_profile_link(str(after.id), stream_url)
-                    elif not was_streaming and live_role in after.roles:
+                    elif not is_streaming and live_role in after.roles:
                         await after.remove_roles(live_role, reason='Stopped streaming')
                         logger.info('Removed live role from %s', after)
                 except Exception as exc:
@@ -966,12 +987,20 @@ class RPGManager(commands.Cog):
             now = datetime.now(UTC)
             inactivity_cutoff = now - timedelta(days=ACTIVITY_ROLE_INACTIVITY_DAYS)
 
+            # Activity roles live in the main guild only (was bot.guilds[0], an arbitrary guild; M-12).
+            main_guild = self.bot.get_guild(MAIN_GUILD_ID)
+            if main_guild is None:
+                logger.warning('Activity role evaluation skipped: main guild %s not available', MAIN_GUILD_ID)
+                return
+
             for row in rows:
+                if not str(row['discord_id']).isdigit():
+                    continue
                 user_id = int(row['discord_id'])
                 points = row.get('points', 0) or 0
                 last_active = row.get('last_active')
 
-                member = self.bot.get_guild(self.bot.guilds[0].id).get_member(user_id) if self.bot.guilds else None
+                member = main_guild.get_member(user_id)
                 if not member:
                     continue
 
@@ -1053,10 +1082,18 @@ class RPGManager(commands.Cog):
         now = datetime.now(timezone(timedelta(hours=IST_UTC_OFFSET)))
         if now.hour != INACTIVITY_CHECK_HOUR or now.minute != INACTIVITY_CHECK_MINUTE:
             return
-        if not runtime_state.db_available or not LOGS_CHANNEL_ID:
+        if not runtime_state.db_available:
             return
 
         try:
+            guild = self.bot.get_guild(MAIN_GUILD_ID)
+            if guild is None:
+                return
+            logs_channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
+            if not isinstance(logs_channel, nextcord.TextChannel):
+                logger.warning('Inactivity check skipped: no log channel configured for main guild')
+                return
+
             inactive_users = await inactivity_service.get_inactive_users(
                 INACTIVITY_WEEK_DAYS,
                 INACTIVITY_MONTH_DAYS,
@@ -1064,16 +1101,13 @@ class RPGManager(commands.Cog):
             if not inactive_users:
                 return
 
-            logs_channel = self.bot.get_channel(LOGS_CHANNEL_ID)
-            if logs_channel is None:
-                logs_channel = await self.bot.fetch_channel(LOGS_CHANNEL_ID)
-
-            guild = self.bot.guilds[0] if self.bot.guilds else None
-
+            dms_sent = 0
             for entry in inactive_users:
+                if not str(entry['discord_id']).isdigit():
+                    continue
                 user_id = int(entry['discord_id'])
-                member = guild.get_member(user_id) if guild else None
-                if member is None:
+                member = guild.get_member(user_id)
+                if member is None or member.bot:
                     continue
 
                 days = entry['days_inactive']
@@ -1081,16 +1115,18 @@ class RPGManager(commands.Cog):
 
                 # 1-week threshold — log to logs channel
                 if entry['notify_week']:
-                    embed = alert_embed(
+                    embed = await alert_embed(
                         '⏰ Inactivity Alert — 1 Week',
                         f'{member.mention} has been inactive for **{days} days**.\n'
                         f'Last active: {last_seen.strftime("%Y-%m-%d %H:%M UTC")}',
                     )
-                    await safe_send(logs_channel, embed=embed)
+                    await logs_channel.send(embed=embed)
                     await inactivity_service.mark_week_notified(entry['discord_id'])
 
-                # 1-month threshold — DM the user + log to logs channel
-                if entry['notify_month']:
+                # 1-month threshold — DM the user + log to logs channel.
+                # Capped per run so the first run after enabling doesn't mass-DM the backlog.
+                if entry['notify_month'] and dms_sent < INACTIVITY_MAX_DMS_PER_RUN:
+                    dms_sent += 1
                     try:
                         dm_embed = await info_embed(
                             '👋 We miss you!',
@@ -1108,7 +1144,7 @@ class RPGManager(commands.Cog):
                     except Exception as exc:
                         logger.warning('Failed to DM inactive user %s: %s', member, exc)
 
-                    embed = alert_embed(
+                    embed = await alert_embed(
                         '⚠️ Inactivity Alert — 1 Month',
                         (
                             f'{member.mention} has been inactive for **{days} days**.\n'
@@ -1116,7 +1152,7 @@ class RPGManager(commands.Cog):
                             'A friendly DM has been sent to the user.'
                         ),
                     )
-                    await safe_send(logs_channel, embed=embed)
+                    await logs_channel.send(embed=embed)
                     await inactivity_service.mark_month_notified(entry['discord_id'])
 
             logger.info('Inactivity check complete — %d users processed', len(inactive_users))
@@ -1156,12 +1192,11 @@ class RPGManager(commands.Cog):
     async def before_flush_activity_details(self):
         await self.bot.wait_until_ready()
 
-    @tasks.loop(hours=1)
+    @tasks.loop(time=dt_time(hour=0, minute=5, tzinfo=UTC))
     async def monthly_season_archive(self):
-        """Archive leaderboard at the start of each month."""
+        """Archive leaderboard at the start of each month (daily tick at 00:05 UTC, acts on the 1st)."""
         now = datetime.now(UTC)
-        # Run only on the 1st of each month at 00:05 UTC
-        if now.day != 1 or now.hour != 0 or now.minute > 5:
+        if now.day != 1:
             return
 
         if not runtime_state.db_available:
@@ -1172,7 +1207,9 @@ class RPGManager(commands.Cog):
             prev_month_date = now.replace(day=1) - timedelta(days=1)
             prev_month = prev_month_date.strftime('%Y-%m')
 
-            guild_ids = [g.id for g in self.bot.guilds]
+            # XP is global, so archive once, for the main guild (iterating every guild posted duplicate
+            # announcements into the main guild's fallback channel).
+            guild_ids = [MAIN_GUILD_ID] if self.bot.get_guild(MAIN_GUILD_ID) else []
             for guild_id in guild_ids:
                 # Check if already archived
                 existing = await db.fetchval(
@@ -1209,10 +1246,13 @@ class RPGManager(commands.Cog):
                         )
 
                 # Send announcement to leaderboard channel
-                settings = await guild_settings_service.get_settings(guild_id)
-                lb_channel_id = settings.get_resolved('leaderboard_channel_id')
-                if lb_channel_id:
-                    channel = self.bot.get_channel(lb_channel_id)
+                lb_guild = self.bot.get_guild(guild_id)
+                channel = (
+                    await guild_settings_service.resolve_channel(lb_guild, 'leaderboard_channel_id')
+                    if lb_guild
+                    else None
+                )
+                if isinstance(channel, nextcord.TextChannel):
                     if channel:
                         # Get top 3 XP
                         top3 = await db.fetch(
@@ -1523,8 +1563,8 @@ class RPGManager(commands.Cog):
 
         view = PaginationView(pages=pages, title=title, author_id=interaction.user.id)
         embed = view._build_embed()
-        msg = await interaction.followup.send(embed=embed, view=view)
-        view.message = msg
+        # wait=True returns the message (without it followup.send returns None and the view never times out cleanly)
+        view.message = await interaction.followup.send(embed=embed, view=view, wait=True)
 
     @leaderboard_group.subcommand(name='season', description='View current and past season standings')
     @safe_slash_command()
@@ -1611,9 +1651,15 @@ class RPGManager(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
-    @nextcord.slash_command(name='setupleaderboard', description='Set the leaderboard channel (admin only)')
-    @safe_slash_command()
+    @nextcord.slash_command(
+        name='setupleaderboard',
+        description='Set the leaderboard channel (admin only)',
+        contexts=[nextcord.InteractionContextType.guild],
+        default_member_permissions=nextcord.Permissions(manage_guild=True),
+    )
+    @main_server_only()
     @admin_only()
+    @safe_slash_command()
     async def setupleaderboard_command(
         self,
         interaction: nextcord.Interaction,
