@@ -1,7 +1,7 @@
 name: CI
 
 # Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL) and audit dependencies.
-# Runs on every push and PR; the deploy workflow only runs after merges to main/production.
+# Runs on every push and PR; the deploy workflow runs only after this workflow succeeds on a merge to main/production.
 
 on:
   push:

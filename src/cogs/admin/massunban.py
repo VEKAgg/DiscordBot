@@ -23,7 +23,7 @@ from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed, veka_embed
-from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.safety import DatabaseUnavailableError, admin_only, safe_command, safe_send, safe_slash_command
 from src.utils.security import audit_log
 
 logger = logging.getLogger('VEKA.admin.massunban')
@@ -259,9 +259,10 @@ class MassUnban(commands.Cog):
         """Wait for bot to be ready, then scan for resumable jobs."""
         await self.bot.wait_until_ready()
         if not runtime_state.db_available:
-            logger.warning('DB unavailable — skipping mass unban resume')
-            return
+            # Raise so run_cog_ready_hooks retries once the DB health check sees the database again.
+            raise DatabaseUnavailableError('DB unavailable — mass unban resume deferred')
         try:
+            failed = False
             # Resume active jobs
             jobs = await db.fetch(
                 """SELECT id, guild_id, requested_by, status
@@ -269,6 +270,8 @@ class MassUnban(commands.Cog):
                    WHERE status IN ('running', 'retry_wait', 'paused')"""
             )
             for job in jobs:
+                if job['id'] in self._active_jobs:
+                    continue  # already resumed by an earlier (partially failed) attempt
                 try:
                     logger.info('Resuming mass unban job %s (was %s)', job['id'], job['status'])
                     await db.execute(
@@ -278,6 +281,7 @@ class MassUnban(commands.Cog):
                     self._active_jobs[job['id']] = False
                     self._spawn_worker(self._execute_job(job['id'], resumed=True), name=f'massunban:{job["id"]}')
                 except Exception:
+                    failed = True
                     logger.error('Failed to resume job %s', job['id'], exc_info=True)
 
             # Cancel orphaned pending/confirming jobs (bot restarted during confirmation)
@@ -306,9 +310,13 @@ class MassUnban(commands.Cog):
                         except Exception:
                             pass
                 except Exception:
+                    failed = True
                     logger.error('Failed to cancel orphaned job %s', job['id'], exc_info=True)
+            if failed:
+                raise RuntimeError('Some mass unban jobs could not be recovered; retry required')
         except Exception:
             logger.error('Failed to scan for resumable mass unban jobs', exc_info=True)
+            raise
 
     # ============================================================
     # Slash Commands

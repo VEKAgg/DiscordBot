@@ -572,6 +572,7 @@ class RadioManager(commands.Cog):
 
     @commands.command(name='radiostation')
     @admin_only()
+    @owner_in_external_only()
     async def prefix_radio_station(self, ctx: commands.Context, name: str):
         """Switch the radio station. Usage: !radiostation <name>"""
         if name not in RADIO_STATIONS:

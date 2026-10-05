@@ -32,6 +32,16 @@ class ConnectionRequestView(nextcord.ui.View):
         self.select = select
         self.add_item(select)
 
+    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        # The prefix variant posts this picker publicly; only the invoker may use it, otherwise
+        # another member could send requests in the invoker's name.
+        if interaction.user is None or str(interaction.user.id) != self.requester_id:
+            await interaction.response.send_message(
+                'Only the member who ran the command can use this picker.', ephemeral=True
+            )
+            return False
+        return True
+
     async def _select_callback(self, interaction: nextcord.Interaction):
         chosen = self.select.values.members or self.select.values.users
         target = chosen[0] if chosen else None

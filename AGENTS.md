@@ -23,7 +23,7 @@ mypy src/ main.py --explicit-package-bases
 pre-commit run --all-files        # whitespace/yaml/toml checks, ruff (--fix --unsafe-fixes), ruff-format, mypy, pytest
 ```
 
-**Tests** — 188 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
+**Tests** — 196 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
 
 ```bash
 uv run --extra dev pytest tests/ -v                                   # all
@@ -41,7 +41,7 @@ Tool config (`pyproject.toml`): ruff `line-length=120`, `quote-style="single"`, 
 ## Architecture
 
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, `setup_logging()`, `build_bot()`, registers events, loads extensions, `bot.run()`.
-- **Startup (`on_ready`, guarded to run once):** set `bot.notifier` → `initialize_database()` (connect, then `db.run_migrations()`) → `StartupChecks.run_all_checks()` (`src/core/checks.py`) → `bot.notifier.send_startup_summary()` → `db_health_check.start()` (30s loop) → `run_cog_ready_hooks(bot)` (each cog's `cog_ready()`) → logs `"<bot> is ready. DB available=<bool> migrations=<ok|degraded>"` (the deploy greps this line) → `bot.sync_all_application_commands()`.
+- **Startup (`on_ready`, guarded to run once):** set `bot.notifier` → `initialize_database()` (connect, then `db.run_migrations()`) → `StartupChecks.run_all_checks()` (`src/core/checks.py`) → `bot.notifier.send_startup_summary()` → `db_health_check.start()` (30s loop; while the DB is up it also calls `recover_after_db_available()` — deferred migrations + retry of failed `cog_ready` hooks) → `run_cog_ready_hooks(bot)` (each cog's `cog_ready()`) → logs `"<bot> is ready. DB available=<bool> migrations=<ok|degraded>"` (the deploy greps this line) → `bot.sync_all_application_commands()`.
 - **Extensions load from an explicit allowlist** — `EXTENSIONS` in `src/core/app.py` (22 entries, dotted `src.cogs.*` paths). A cog not in the list is not loaded; add it there to enable it. Every cog module needs a module-level `setup(bot)`; slash groups use `nextcord.SlashCommandGroup`.
 - **Layers:** `src/cogs/` (thin Discord handlers) → `src/services/` (business logic) → `src/database/` (data access).
 - **Intents:** `message_content`, `members`, `guilds`, `voice_states`, `presences`.
@@ -58,7 +58,7 @@ The bot keeps running when the DB, a cog, or a background task fails:
 ### Database
 
 - Global singleton `from src.database.database import db`. **`$1`/`$2` parameter style.**
-- Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many` (all via `Database._run`). Connection-class failures (incl. `OSError`/timeouts) raise `DatabaseUnavailableError` and flip `runtime_state.db_available = False`; SQL errors raise `DatabaseQueryError` (a subclass, so `except DatabaseUnavailableError` still catches it) and leave the DB marked available. Only argument *types* are logged, never values. Pool has `command_timeout=30s`. Never assume a query succeeded.
+- Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many` (all via `Database._run`). Connection-class failures (incl. `OSError`/timeouts) raise `DatabaseUnavailableError` and flip `runtime_state.db_available = False`; SQL errors raise `DatabaseQueryError` (a subclass, so `except DatabaseUnavailableError` still catches it) and leave the DB marked available. Only argument *types* are logged, never values; PostgreSQL errors are summarized by `_describe_pg_error` (class, SQLSTATE, table/column/constraint; primary message dropped for SQLSTATE classes `22`/`P0`) and never chained, because `str(exc)` includes `DETAIL` with row values. Pool has `command_timeout=30s`. Never assume a query succeeded.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) that PostgreSQL would reject as unknown server settings.
 - **Migrations:** `.sql` files in `migrations/` (001–026; no `002`; `005_` and `005b_` coexist — the duplicate check compares the full prefix incl. letter suffix), applied in filename order on connect, tracked in `schema_migrations` by filename. **Never rename an applied migration**; if you must, add the old name to `LEGACY_MIGRATION_NAMES` in `src/database/migrations.py` (as for `005b`). Add new ones as `migrations/0NN_name.sql` with the next unused number. Make them idempotent (`IF NOT EXISTS`, guarded `DO $$` blocks) and use `TIMESTAMPTZ DEFAULT NOW()`. Discord IDs are `BIGINT`; `users.id` is an internal serial PK — don't mix them.
 
@@ -80,7 +80,7 @@ Channel/role config is per guild in the `guild_settings` table, read via `from s
 - **Logging:** `logging.getLogger('VEKA.<area>')` or `get_logger('VEKA.<area>')` from `src/utils/logger.py`. Rotating file handler (5 MB × 3); level from `LOG_LEVEL`.
 - **Time:** use `datetime.now(UTC)`, never `utcnow()`.
 - **Background work:** use `spawn(coro, name=...)` from `src/core/lifecycle.py` (keeps a reference, logs exceptions) — never bare `asyncio.create_task`/`ensure_future`. Callbacks from other threads (e.g. voice `after=`) must use `asyncio.run_coroutine_threadsafe(coro, bot.loop)`.
-- **Cog lifecycle (nextcord ≠ discord.py):** nextcord never calls `cog_load`, and calls `cog_unload` **synchronously**. Put async startup in `async def cog_ready(self)` (called once per cog instance from `on_ready` after the DB is up, and after `/admin reloadcog`); keep `cog_unload` sync and `spawn` any async cleanup. `tests/test_lifecycle.py` enforces this.
+- **Cog lifecycle (nextcord ≠ discord.py):** nextcord never calls `cog_load`, and calls `cog_unload` **synchronously**. Put async startup in `async def cog_ready(self)` (called from `on_ready` after the DB is up, and after `/admin reloadcog`; a hook that **raises** is retried with backoff by the health check until it succeeds, so raise when the work couldn't be done and keep hooks idempotent); keep `cog_unload` sync and `spawn` any async cleanup. `tests/test_lifecycle.py` enforces this.
 - **Images:** CPU-bound Pillow work (`src/utils/card_generator.py`) runs in `asyncio.to_thread(...)`.
 - **Config:** single `.env`. `DATABASE_URL` or individual `POSTGRES_*` vars. Comma-separated ID lists: `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS`.
 
@@ -97,7 +97,7 @@ Channel/role config is per guild in the `guild_settings` table, read via `from s
 
 `.github/workflows/ci.yml` runs on every push/PR: ruff (lint + format check), mypy, pytest with a PostgreSQL 17 service (`VEKA_TEST_DATABASE_URL`), `pip-audit` on the locked runtime deps (PyNaCl advisories ignored — see `MIGRATION_NOTES.md`), and a Docker build. Keep mypy at zero errors.
 
-`.github/workflows/deploy-discord-bot.yml` deploys on push to `main`/`production` **only when the commit message starts with `Merge pull request`** (merged PRs). Self-hosted runner (`self-hosted, X64, Linux, Veka`); writes `.env` from secrets (`DISCORD_TOKEN`, `DATABASE_URL`) and variables (`ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL`); `docker compose up -d --build`; passes only if `"is ready. DB available=True"` appears in the logs within 60s, and emits a warning annotation if that line says `migrations=degraded`. Development happens on `dev`; PR `dev` → `main` to deploy.
+`.github/workflows/deploy-discord-bot.yml` runs via `workflow_run` **only after CI succeeds** for a push to `main`/`production` whose commit message starts with `Merge pull request` (merged PRs), and checks out that exact `head_sha`. `workflow_run` triggers are read from the default branch. Self-hosted runner (`self-hosted, X64, Linux, Veka`); writes `.env` from secrets (`DISCORD_TOKEN`, `DATABASE_URL`) and variables (`ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL`); `docker compose up -d --build`; passes only if `"is ready. DB available=True"` appears in the logs within 60s, and emits a warning annotation if that line says `migrations=degraded`. Development happens on `dev`; PR `dev` → `main` to deploy.
 
 ## Known issues (open)
 

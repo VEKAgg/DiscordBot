@@ -7,7 +7,7 @@ command must be guarded through ``permission_guard`` (``admin_only``/``staff_onl
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import nextcord
 import pytest
@@ -154,3 +154,33 @@ def test_guard_preserves_signature_for_slash_options():
 
     assert list(inspect.signature(body).parameters) == ['self', 'interaction', 'channel']
     assert isinstance(body, AsyncMock) is False
+
+
+async def test_radiostation_prefix_blocks_admins_of_external_guilds(loaded_bot, mock_context, admin_member):
+    """`!radiostation` changes the single shared radio, so it needs the same guild gate as `/radio station`."""
+    cmd = loaded_bot.get_command('radiostation')
+    external_guild = MagicMock(spec=nextcord.Guild)
+    external_guild.id = 42  # not MAIN_GUILD_ID
+    mock_context.author = admin_member
+    mock_context.guild = external_guild
+
+    with pytest.raises(PermissionDenied):
+        for check in cmd.checks:
+            await check(mock_context)
+
+
+async def test_connect_picker_rejects_other_members(mock_guild, mock_interaction):
+    """The `!connect` picker is posted publicly; nobody but the invoker may send requests through it."""
+    from src.cogs.networking.networking import ConnectionRequestView
+
+    svc = MagicMock()
+    svc.create_request = AsyncMock()
+    view = ConnectionRequestView(mock_guild, requester_id='555', message='', svc=svc)
+
+    mock_interaction.user.id = 123456789  # someone else
+    assert await view.interaction_check(mock_interaction) is False
+    mock_interaction.response.send_message.assert_awaited_once()
+    svc.create_request.assert_not_awaited()
+
+    mock_interaction.user.id = 555
+    assert await view.interaction_check(mock_interaction) is True

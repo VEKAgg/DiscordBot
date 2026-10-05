@@ -617,8 +617,9 @@ class RPGManager(commands.Cog):
         now = time.monotonic()
 
         # Cooldown check
-        last_time = self._message_cooldowns.get(user_id, 0.0)
-        if (now - last_time) < MESSAGE_XP_COOLDOWN:
+        # None = no prior message; a 0.0 default would break while host uptime < cooldown (monotonic clock).
+        last_time = self._message_cooldowns.get(user_id)
+        if last_time is not None and (now - last_time) < MESSAGE_XP_COOLDOWN:
             return
 
         self._message_cooldowns[user_id] = now

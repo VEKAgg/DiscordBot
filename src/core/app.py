@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 import aiohttp
@@ -92,6 +93,34 @@ async def initialize_database() -> None:
         runtime_state.degraded_features.append('migrations')
 
 
+_migration_retry = {'at': 0.0, 'delay': 15.0}  # backoff for re-running migrations after a failure
+
+
+async def recover_after_db_available(bot: commands.Bot) -> None:
+    """Finish startup work that a database outage blocked: pending migrations and failed cog_ready hooks.
+
+    Called by the health check on every tick while the DB is available; both steps are no-ops once done.
+    """
+    if not runtime_state.db_available:
+        return
+    pending = 'database' in runtime_state.degraded_features or 'migrations' in runtime_state.degraded_features
+    if pending and time.monotonic() >= _migration_retry['at']:
+        try:
+            await db.run_migrations()
+        except Exception as exc:
+            _migration_retry['delay'] = min(_migration_retry['delay'] * 2, 1800.0)
+            _migration_retry['at'] = time.monotonic() + _migration_retry['delay']
+            logger.error(
+                'Deferred database migrations failed (next retry in %.0fs): %s', _migration_retry['delay'], exc
+            )
+        else:
+            for feature in ('database', 'migrations'):
+                while feature in runtime_state.degraded_features:
+                    runtime_state.degraded_features.remove(feature)
+            logger.info('Deferred database migrations applied')
+    await run_cog_ready_hooks(bot)
+
+
 def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
     for extension in extensions:
         try:
@@ -114,7 +143,11 @@ def configure_bot_events(bot: commands.Bot) -> None:
         was_available = runtime_state.db_available
         try:
             if db.pool is None:
-                await db.connect()
+                try:
+                    await db.connect()
+                except Exception as exc:
+                    # A raw connect error (refused, bad auth, …) would otherwise escape and stop the loop.
+                    raise DatabaseUnavailableError(f'connect failed: {type(exc).__name__}') from exc
             await db.ping()
 
             # --- Ping succeeded ---
@@ -148,6 +181,9 @@ def configure_bot_events(bot: commands.Bot) -> None:
                 # Already healthy — reset counter
                 runtime_state.alert_state_cache.pop('healthy_count', None)
 
+            # Retry startup work blocked by an outage (migrations, failed cog_ready hooks).
+            await recover_after_db_available(bot)
+
         except DatabaseUnavailableError:
             # --- Ping failed ---
             runtime_state.alert_state_cache.pop('healthy_count', None)
@@ -156,10 +192,14 @@ def configure_bot_events(bot: commands.Bot) -> None:
             try:
                 await db.reconnect()
                 await db.ping()  # retry on fresh pool
+                # ping() marks the runtime unavailable on failure; restore the prior healthy
+                # state after a transient blip, but retain the recovery threshold for an outage.
+                runtime_state.db_available = was_available
+                await recover_after_db_available(bot)
                 logger.info('Database recovered immediately via reconnect.')
                 return  # transient blip, no alert
-            except DatabaseUnavailableError:
-                pass  # still down
+            except Exception:
+                pass  # still down (reconnect can raise raw asyncpg/OS errors)
 
             if was_available:
                 runtime_state.db_available = False
