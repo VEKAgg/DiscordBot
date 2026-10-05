@@ -7,6 +7,27 @@ import io
 
 from PIL import Image, ImageDraw, ImageFont
 
+_Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+
+
+def _font(bold: bool, size: int) -> _Font:
+    candidates = (
+        ['arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf']
+        if bold
+        else ['arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
+    )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default(size=size)  # Pillow >= 10.1 keeps the requested size
+
+
+def _load_fonts(large: int, medium: int, small: int) -> tuple[_Font, _Font, _Font]:
+    """(large bold, medium, small) fonts with system fallbacks."""
+    return _font(True, large), _font(False, medium), _font(False, small)
+
 
 def _generate_rank_card_sync(
     username: str,
@@ -37,7 +58,7 @@ def _generate_rank_card_sync(
         try:
             avatar_stream = io.BytesIO(avatar_bytes)
             avatar = Image.open(avatar_stream).convert('RGBA')
-            avatar = avatar.resize((avatar_size, avatar_size), Image.LANCZOS)
+            avatar = avatar.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
 
             # Create circular mask
             mask = Image.new('L', (avatar_size, avatar_size), 0)
@@ -83,19 +104,7 @@ def _generate_rank_card_sync(
     gray = (0x99, 0x99, 0x99)
 
     # Try to load a nice font, fall back to default
-    try:
-        font_large = ImageFont.truetype('arial.ttf', 32)
-        font_medium = ImageFont.truetype('arial.ttf', 22)
-        font_small = ImageFont.truetype('arial.ttf', 18)
-    except OSError:
-        try:
-            font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 32)
-            font_medium = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 22)
-            font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 18)
-        except OSError:
-            font_large = ImageFont.load_default()
-            font_medium = ImageFont.load_default()
-            font_small = ImageFont.load_default()
+    font_large, font_medium, font_small = _load_fonts(32, 22, 18)
 
     # Username
     display_name = username[:20] + ('...' if len(username) > 20 else '')
@@ -198,7 +207,7 @@ def _generate_welcome_card_sync(
         try:
             icon_stream = io.BytesIO(server_icon_bytes)
             icon = Image.open(icon_stream).convert('RGBA')
-            icon = icon.resize((120, 120), Image.LANCZOS)
+            icon = icon.resize((120, 120), Image.Resampling.LANCZOS)
             icon_mask = Image.new('L', (120, 120), 0)
             icon_mask_draw = ImageDraw.Draw(icon_mask)
             icon_mask_draw.ellipse((0, 0, 119, 119), fill=255)
@@ -217,7 +226,7 @@ def _generate_welcome_card_sync(
         try:
             avatar_stream = io.BytesIO(avatar_bytes)
             avatar = Image.open(avatar_stream).convert('RGBA')
-            avatar = avatar.resize((avatar_size, avatar_size), Image.LANCZOS)
+            avatar = avatar.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
 
             mask = Image.new('L', (avatar_size, avatar_size), 0)
             mask_draw = ImageDraw.Draw(mask)
@@ -255,19 +264,7 @@ def _generate_welcome_card_sync(
     white = (0xFF, 0xFF, 0xFF)
     gray = (0x99, 0x99, 0x99)
 
-    try:
-        font_large = ImageFont.truetype('arial.ttf', 36)
-        font_medium = ImageFont.truetype('arial.ttf', 24)
-        font_small = ImageFont.truetype('arial.ttf', 18)
-    except OSError:
-        try:
-            font_large = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 36)
-            font_medium = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 24)
-            font_small = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 18)
-        except OSError:
-            font_large = ImageFont.load_default()
-            font_medium = ImageFont.load_default()
-            font_small = ImageFont.load_default()
+    font_large, font_medium, font_small = _load_fonts(36, 24, 18)
 
     # Welcome text
     draw.text((text_x, 40), 'Welcome to', fill=gray, font=font_medium)

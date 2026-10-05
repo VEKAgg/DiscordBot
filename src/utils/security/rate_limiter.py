@@ -13,6 +13,8 @@ from src.utils.safety import safe_send
 
 logger = logging.getLogger('VEKA.security.rate_limiter')
 
+CLEANUP_INTERVAL = 300.0  # seconds between inline purges of idle buckets
+
 
 class RateLimiter:
     """
@@ -28,7 +30,7 @@ class RateLimiter:
         # user_id:command -> (tokens, last_update)
         self.buckets: dict[str, tuple[float, float]] = {}
         self.lock = asyncio.Lock()
-        self._cleanup_task: asyncio.Task | None = None
+        self._last_cleanup = time.time()
 
         # Default limits per command type
         self.default_limits = {
@@ -64,71 +66,56 @@ class RateLimiter:
         except Exception:
             return False
 
-    async def check(self, ctx, member=None) -> bool:
-        """
-        Check if user can execute command
-        Returns True if allowed, False if rate limited
-        """
-        user_id = str(ctx.author.id)
-        command = ctx.command.name if ctx.command else 'unknown'
+    def _refill(self, key: str, bucket: str, now: float) -> float:
+        max_requests, window = self._get_limit(bucket)
+        if key not in self.buckets:
+            return float(max_requests)
+        tokens, last_update = self.buckets[key]
+        return min(max_requests, tokens + ((now - last_update) / window) * max_requests)
 
-        # Check for cooldown bypass
-        target = member or ctx.author
-        if self._has_bypass(target):
-            return True
+    async def acquire(self, user_id: str, bucket: str, member=None) -> tuple[bool, float]:
+        """Atomically check and consume one token. Returns (allowed, retry_after_seconds)."""
+        if self._has_bypass(member):
+            return True, 0.0
 
-        key = self._get_key(user_id, command)
-
+        key = self._get_key(user_id, bucket)
         async with self.lock:
-            max_requests, window = self._get_limit(command)
             now = time.time()
-
-            if key in self.buckets:
-                tokens, last_update = self.buckets[key]
-                # Add tokens based on time passed
-                time_passed = now - last_update
-                tokens = min(max_requests, tokens + (time_passed / window) * max_requests)
-            else:
-                tokens = max_requests
-
+            if now - self._last_cleanup > CLEANUP_INTERVAL:
+                self._purge_stale(now)
+            tokens = self._refill(key, bucket, now)
             if tokens >= 1:
-                # Consume token
                 self.buckets[key] = (tokens - 1, now)
-                return True
-            else:
-                # Rate limited
-                retry_after = (1 - tokens) * (window / max_requests)
-                logger.warning(f'Rate limit hit for user {user_id} on command {command}')
-                await ctx.send(f'⏱️ Please wait {retry_after:.0f} seconds before using this command again.')
-                return False
+                return True, 0.0
+            self.buckets[key] = (tokens, now)
+            max_requests, window = self._get_limit(bucket)
+            return False, (1 - tokens) * (window / max_requests)
+
+    async def check(self, ctx, member=None) -> bool:
+        """``commands.check``-style predicate for prefix commands (bucket = command name)."""
+        user = getattr(ctx, 'author', None) or getattr(ctx, 'user', None)
+        if user is None:
+            return True
+        command = ctx.command.name if getattr(ctx, 'command', None) else 'unknown'
+        allowed, retry_after = await self.acquire(str(user.id), command, member=member or user)
+        if not allowed:
+            logger.warning('Rate limit hit for user %s on %s', user.id, command)
+            await safe_send(
+                ctx, f'⏱️ Please wait {retry_after:.0f} seconds before using this command again.', ephemeral=True
+            )
+        return allowed
 
     async def is_rate_limited(self, user_id: str, command: str, member=None) -> tuple[bool, float]:
-        """
-        Check if user is rate limited without consuming token
-        Returns (is_limited, retry_after_seconds)
-        """
-        # Check for cooldown bypass
+        """Check without consuming a token. Returns (is_limited, retry_after_seconds)."""
         if self._has_bypass(member):
             return False, 0
-
         key = self._get_key(user_id, command)
-
         async with self.lock:
-            max_requests, window = self._get_limit(command)
-
-            if key not in self.buckets:
-                return False, 0
-
-            tokens, last_update = self.buckets[key]
-            now = time.time()
-            time_passed = now - last_update
-            tokens = min(max_requests, tokens + (time_passed / window) * max_requests)
-
+            tokens = self._refill(key, command, time.time())
             if tokens >= 1:
                 return False, 0
-            else:
-                retry_after = (1 - tokens) * (window / max_requests)
-                return True, retry_after
+            max_requests, window = self._get_limit(command)
+            return True, (1 - tokens) * (window / max_requests)
 
     def get_remaining(self, user_id: str, command: str) -> int:
         """Get remaining requests for user"""
@@ -156,27 +143,19 @@ class RateLimiter:
                 # Reset all
                 self.buckets.clear()
 
+    def _purge_stale(self, now: float, max_age: float = 600.0) -> None:
+        """Drop buckets idle for longer than max_age. Caller holds the lock."""
+        stale_keys = [key for key, (_, last_update) in self.buckets.items() if now - last_update > max_age]
+        for key in stale_keys:
+            del self.buckets[key]
+        self._last_cleanup = now
+        if stale_keys:
+            logger.debug('Cleaned up %d stale rate-limit buckets', len(stale_keys))
+
     async def cleanup_stale_buckets(self, max_age: float = 600.0):
         """Remove bucket entries older than max_age seconds (default 10 min)."""
         async with self.lock:
-            now = time.time()
-            stale_keys = [key for key, (_, last_update) in self.buckets.items() if now - last_update > max_age]
-            for key in stale_keys:
-                del self.buckets[key]
-            if stale_keys:
-                logger.debug('Cleaned up %d stale rate-limit buckets', len(stale_keys))
-
-    def start_cleanup_loop(self, interval: float = 300.0):
-        """Start a periodic cleanup task (call once at bot startup)."""
-        if self._cleanup_task is not None:
-            return
-
-        async def _loop():
-            while True:
-                await asyncio.sleep(interval)
-                await self.cleanup_stale_buckets()
-
-        self._cleanup_task = asyncio.create_task(_loop())
+            self._purge_stale(time.time(), max_age)
 
 
 # Global rate limiter instance
@@ -199,20 +178,16 @@ def rate_limit(command_type: str = 'default'):
     def decorator(func):
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any):
-            # Get context (first arg is usually self, second is ctx)
-            ctx = args[1] if len(args) > 1 else kwargs.get('ctx')
+            # (self, ctx_or_interaction, ...) — works for prefix Context and slash Interaction.
+            source = args[1] if len(args) > 1 else kwargs.get('ctx') or kwargs.get('interaction')
+            user = getattr(source, 'author', None) or getattr(source, 'user', None)
 
-            if ctx:
-                user_id = str(ctx.author.id)
-                member = ctx.author if hasattr(ctx, 'author') else ctx.user
-                is_limited, retry_after = await rate_limiter.is_rate_limited(user_id, command_type, member=member)
-
-                if is_limited:
-                    await safe_send(ctx, f'⏱️ Rate limited! Try again in {retry_after:.0f} seconds.', ephemeral=True)
-                    return
-
-                # Consume a token now that we've passed the check
-                await rate_limiter.check(ctx, member=member)
+            if user is not None:
+                allowed, retry_after = await rate_limiter.acquire(str(user.id), command_type, member=user)
+                if not allowed:
+                    logger.info('Rate limit hit for user %s on bucket %s', user.id, command_type)
+                    await safe_send(source, f'⏱️ Rate limited! Try again in {retry_after:.0f} seconds.', ephemeral=True)
+                    return None
 
             return await func(*args, **kwargs)
 

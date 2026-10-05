@@ -3,11 +3,14 @@ Safety Utilities for VEKA Bot
 Provides error handling, admin checks, and safe message sending
 """
 
+import inspect
 import logging
 from functools import wraps
 
 import nextcord
-from nextcord.ext import commands
+from nextcord.application_command import BaseApplicationCommand, CallbackWrapper, SlashApplicationSubcommand
+from nextcord.errors import ApplicationCheckFailure
+from nextcord.ext import application_checks, commands
 
 from src.config.config import ADMIN_IDS, OWNER_IDS
 from src.core.runtime_state import runtime_state
@@ -21,6 +24,14 @@ logger = logging.getLogger('VEKA.safety')
 
 class DatabaseUnavailableError(RuntimeError):
     """Raised when a command requires a database but it is unavailable."""
+
+
+class DatabaseQueryError(DatabaseUnavailableError):
+    """A query failed while the database itself is reachable (bad SQL, constraint, type error).
+
+    Subclasses DatabaseUnavailableError so existing ``except DatabaseUnavailableError`` handlers still
+    degrade gracefully, but users are told it's an error rather than "the database is offline" (M-01).
+    """
 
 
 class ValidationError(ValueError):
@@ -57,6 +68,8 @@ def format_context(source) -> str:
 
 def map_exception_to_message(error: Exception) -> str:
     """Map an exception to a user-friendly message string with actionable suggestions."""
+    if isinstance(error, DatabaseQueryError):
+        return '\u274c An unexpected error occurred.\n\U0001f4a1 Try again later. If this persists, contact staff.'
     if isinstance(error, DatabaseUnavailableError):
         return (
             '\u274c The database is currently unavailable.\n'
@@ -124,30 +137,129 @@ def _is_staff_user(user, guild=None) -> bool:
         return False
 
 
+class PermissionDenied(commands.CheckFailure):
+    """Raised (prefix) or reported (slash) when a permission guard rejects the invoker."""
+
+
+class AppPermissionDenied(ApplicationCheckFailure):
+    """Application-command counterpart of ``PermissionDenied`` (message is user-facing)."""
+
+
+_APP_COMMAND_TYPES = (BaseApplicationCommand, SlashApplicationSubcommand, CallbackWrapper)
+
+
+def _source_user_and_guild(source):
+    if isinstance(source, commands.Context):
+        return source.author, source.guild
+    if isinstance(source, nextcord.Interaction):
+        return source.user, source.guild
+    return None, None
+
+
+def permission_guard(predicate, denial_message: str):
+    """Build a decorator that enforces ``predicate(ctx_or_interaction) -> bool`` on prefix *and* slash commands.
+
+    nextcord application commands ignore ``commands.check`` (it only sets ``__commands_checks__``,
+    which prefix ``Command`` reads), so a plain ``commands.check`` silently does nothing on slash
+    commands. This decorator works wherever it is placed:
+
+    - on a prefix ``commands.Command`` → ``commands.check``
+    - on an application command object → ``application_checks.check``
+    - on a plain coroutine (the usual position, under ``@slash_command``/``@subcommand`` or
+      ``@commands.command``) → the callback is wrapped so the predicate runs before the body,
+      and ``commands.check`` is attached as well for prefix help/visibility.
+    """
+
+    async def _allowed(source) -> bool:
+        result = predicate(source)
+        if inspect.isawaitable(result):
+            result = await result
+        return bool(result)
+
+    async def _check(source) -> bool:
+        if await _allowed(source):
+            return True
+        raise PermissionDenied(denial_message)
+
+    async def _app_check(interaction) -> bool:
+        if await _allowed(interaction):
+            return True
+        raise AppPermissionDenied(denial_message)
+
+    def decorator(target):
+        if isinstance(target, commands.Command):
+            return commands.check(_check)(target)
+        if isinstance(target, _APP_COMMAND_TYPES):
+            return application_checks.check(_app_check)(target)  # type: ignore[arg-type]
+
+        @wraps(target)
+        async def wrapper(self, source, *args, **kwargs):
+            if not await _allowed(source):
+                if isinstance(source, nextcord.Interaction):
+                    logger.warning('Permission denied | %s', format_context(source))
+                    embed = nextcord.Embed(
+                        title='Permission denied', description=denial_message, color=nextcord.Color.red()
+                    )
+                    await safe_send(source, embed=embed, ephemeral=True)
+                    return None
+                raise PermissionDenied(denial_message)
+            return await target(self, source, *args, **kwargs)
+
+        guards = [*getattr(target, '__veka_guards__', []), denial_message]
+        wrapper.__veka_guards__ = guards  # type: ignore[attr-defined]
+        return commands.check(_check)(wrapper)
+
+    return decorator
+
+
+def _admin_predicate(source) -> bool:
+    user, guild = _source_user_and_guild(source)
+    return _is_admin_user(user, guild)
+
+
+def _staff_predicate(source) -> bool:
+    user, guild = _source_user_and_guild(source)
+    return _is_staff_user(user, guild)
+
+
 def admin_only():
-    """Decorator: only allow admin/owner users (by ID or Discord permission)."""
-
-    def predicate(ctx_or_interaction):
-        if isinstance(ctx_or_interaction, commands.Context):
-            return _is_admin_user(ctx_or_interaction.author, ctx_or_interaction.guild)
-        if isinstance(ctx_or_interaction, nextcord.Interaction):
-            return _is_admin_user(ctx_or_interaction.user, ctx_or_interaction.guild)
-        return False
-
-    return commands.check(predicate)
+    """Decorator: only allow admin/owner users (by ID or Discord permission). Works for prefix and slash."""
+    return permission_guard(_admin_predicate, 'This command is restricted to server administrators.')
 
 
 def staff_only():
-    """Decorator: only allow staff or higher users (by ID, Discord role, or admin status)."""
+    """Decorator: only allow staff or higher users (by ID, Discord role, or admin status). Works for prefix and slash."""
+    return permission_guard(_staff_predicate, 'This command is restricted to staff.')
 
-    def predicate(ctx_or_interaction):
-        if isinstance(ctx_or_interaction, commands.Context):
-            return _is_staff_user(ctx_or_interaction.author, ctx_or_interaction.guild)
-        if isinstance(ctx_or_interaction, nextcord.Interaction):
-            return _is_staff_user(ctx_or_interaction.user, ctx_or_interaction.guild)
+
+def _manage_guild_predicate(source) -> bool:
+    user, guild = _source_user_and_guild(source)
+    if _is_admin_user(user, guild):
+        return True
+    member = user if isinstance(user, nextcord.Member) else (guild.get_member(user.id) if guild and user else None)
+    return bool(member and guild and member.guild_permissions.manage_guild)
+
+
+def manage_guild_only():
+    """Decorator: admins or members with Manage Server in the current guild. Works for prefix and slash."""
+    return permission_guard(_manage_guild_predicate, 'This command requires the **Manage Server** permission.')
+
+
+def _bot_operator_predicate(source) -> bool:
+    """Bot-wide operations (reloading code, global settings): OWNER_IDS/ADMIN_IDS, or admins of the main guild."""
+    from src.config.config import MAIN_GUILD_ID
+
+    user, guild = _source_user_and_guild(source)
+    if user is None:
         return False
+    if user.id in OWNER_IDS or user.id in ADMIN_IDS:
+        return True
+    return guild is not None and guild.id == MAIN_GUILD_ID and _is_admin_user(user, guild)
 
-    return commands.check(predicate)
+
+def bot_operator_only():
+    """Decorator for actions that affect the bot in every server. Works for prefix and slash."""
+    return permission_guard(_bot_operator_predicate, 'This command is restricted to the bot operators.')
 
 
 # ============================================================

@@ -19,10 +19,11 @@ from datetime import UTC, datetime
 import nextcord
 from nextcord.ext import commands
 
+from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.guild_gate import owner_in_external_only
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import _is_admin_user, admin_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.external.export')
 
@@ -51,6 +52,13 @@ class ChatExport(commands.Cog):
         self._export_running = False
         self._cancel_export = False
         self._export_progress: dict = {}
+        self._export_owner_id: int | None = None
+        self._export_guild_id: int | None = None
+        self._export_task: asyncio.Task | None = None
+
+    def cog_unload(self):
+        if self._export_task is not None:
+            self._export_task.cancel()
 
     # ============================================================
     # Health check
@@ -65,7 +73,7 @@ class ChatExport(commands.Cog):
         try:
             import psutil
 
-            if psutil.cpu_percent(interval=0.1) > CPU_PAUSE_THRESHOLD:
+            if psutil.cpu_percent(interval=None) > CPU_PAUSE_THRESHOLD:
                 logger.warning('Export paused: CPU above %s%%', CPU_PAUSE_THRESHOLD)
                 return False
         except ImportError:
@@ -263,6 +271,22 @@ class ChatExport(commands.Cog):
         channels: list[nextcord.TextChannel],
         limit: int | None,
     ):
+        """Always release export state, including on errors, cancellation, and reload."""
+        try:
+            await self._perform_export(interaction, channels, limit)
+        finally:
+            self._export_running = False
+            self._cancel_export = False
+            self._export_owner_id = None
+            self._export_guild_id = None
+            self._export_task = None
+
+    async def _perform_export(
+        self,
+        interaction: nextcord.Interaction,
+        channels: list[nextcord.TextChannel],
+        limit: int | None,
+    ):
         """Background export task."""
         owner = interaction.user
         if not isinstance(owner, nextcord.Member):
@@ -349,8 +373,7 @@ class ChatExport(commands.Cog):
             # Yield between channels
             await asyncio.sleep(0)
 
-        # Completion summary
-        self._export_running = False
+        # Keep the export slot occupied until the completion summary is sent.
         self._update_progress()
 
         duration = time.monotonic() - start_time
@@ -374,16 +397,18 @@ class ChatExport(commands.Cog):
             duration_text,
         )
 
-        self._cancel_export = False
-
     # ============================================================
     # Commands
     # ============================================================
 
     @nextcord.slash_command(
-        name='exportchat', description='Export chat history to .txt files (owner only in external servers)'
+        name='exportchat',
+        description='Export chat history to .txt files (admins; owner only in external servers)',
+        contexts=[nextcord.InteractionContextType.guild],
+        default_member_permissions=nextcord.Permissions(administrator=True),
     )
     @owner_in_external_only()
+    @admin_only()
     @safe_slash_command()
     async def exportchat(
         self,
@@ -418,22 +443,33 @@ class ChatExport(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        # Determine channels to export
-        if channel:
-            channels = [channel]
-        else:
-            guild = interaction.guild
-            if not guild:
-                embed = await error_embed(
-                    title='Error',
-                    description='This command can only be used in a server.',
-                    contributor_source=__name__,
-                    user=interaction.user,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
+        guild = interaction.guild
+        if not guild:
+            embed = await error_embed(
+                title='Error',
+                description='This command can only be used in a server.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
 
-            channels = [c for c in guild.text_channels if c.permissions_for(guild.me).read_message_history]
+        # Only export channels that BOTH the bot and the invoker can read (audit C-02).
+        invoker = (
+            interaction.user if isinstance(interaction.user, nextcord.Member) else guild.get_member(interaction.user.id)
+        )
+
+        def _readable(c: nextcord.TextChannel) -> bool:
+            if invoker is None:
+                return False
+            mine = c.permissions_for(guild.me)
+            theirs = c.permissions_for(invoker)
+            return (
+                mine.view_channel and mine.read_message_history and theirs.view_channel and theirs.read_message_history
+            )
+
+        candidates = [channel] if channel else list(guild.text_channels)
+        channels = [c for c in candidates if c.guild.id == guild.id and _readable(c)]
 
         if not channels:
             embed = await error_embed(
@@ -465,9 +501,13 @@ class ChatExport(commands.Cog):
         # Start export in background
         self._export_running = True
         self._cancel_export = False
-        asyncio.ensure_future(self._run_export(interaction, channels, limit))
+        self._export_owner_id = interaction.user.id
+        self._export_guild_id = guild.id
+        self._export_task = spawn(self._run_export(interaction, channels, limit), name='exportchat')
 
-    @nextcord.slash_command(name='exportstop', description='Stop the current chat export')
+    @nextcord.slash_command(
+        name='exportstop', description='Stop the current chat export', contexts=[nextcord.InteractionContextType.guild]
+    )
     @safe_slash_command()
     async def exportstop(self, interaction: nextcord.Interaction):
         """Cancel an active export."""
@@ -475,6 +515,22 @@ class ChatExport(commands.Cog):
             embed = await info_embed(
                 title='No Export Running',
                 description='There is no active export to stop.',
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=interaction.guild,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        same_guild_admin = (
+            interaction.guild is not None
+            and interaction.guild.id == self._export_guild_id
+            and _is_admin_user(interaction.user, interaction.guild)
+        )
+        if interaction.user.id != self._export_owner_id and not same_guild_admin:
+            embed = await error_embed(
+                title='Not Your Export',
+                description='Only the user who started the export or an administrator can stop it.',
                 contributor_source=__name__,
                 user=interaction.user,
                 guild=interaction.guild,

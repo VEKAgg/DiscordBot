@@ -1,14 +1,17 @@
 """
 Guild-based access control.
 Gates commands based on which server the bot is running in.
+
+Both decorators go through ``permission_guard`` so they are enforced on slash commands too
+(nextcord ignores ``commands.check`` on application commands).
 """
 
 import logging
 
 import nextcord
-from nextcord.ext import commands
 
 from src.config.config import MAIN_GUILD_ID, OWNER_DISCORD_ID
+from src.utils.safety import _source_user_and_guild, permission_guard
 
 logger = logging.getLogger('VEKA.guild_gate')
 
@@ -18,33 +21,22 @@ def is_main_guild(guild: nextcord.Guild | None) -> bool:
     return guild is not None and guild.id == MAIN_GUILD_ID
 
 
+def _main_server_predicate(source) -> bool:
+    _, guild = _source_user_and_guild(source)
+    return is_main_guild(guild)
+
+
+def _owner_in_external_predicate(source) -> bool:
+    user, guild = _source_user_and_guild(source)
+    if user is None:
+        return False
+    # Main guild — everyone can use; external guild (or DM) — only the owner.
+    return is_main_guild(guild) or user.id == OWNER_DISCORD_ID
+
+
 def main_server_only():
     """Decorator: command only works in the main guild. Others see 'not available'."""
-
-    async def predicate(ctx_or_interaction) -> bool:
-        if isinstance(ctx_or_interaction, commands.Context):
-            guild = ctx_or_interaction.guild
-        elif isinstance(ctx_or_interaction, nextcord.Interaction):
-            guild = ctx_or_interaction.guild
-        else:
-            return False
-
-        if is_main_guild(guild):
-            return True
-
-        # Not in main guild — send denial
-        msg = 'This command is only available in the main VEKA server.'
-        try:
-            if isinstance(ctx_or_interaction, commands.Context):
-                await ctx_or_interaction.send(msg)
-            elif isinstance(ctx_or_interaction, nextcord.Interaction):
-                if not ctx_or_interaction.response.is_done():
-                    await ctx_or_interaction.response.send_message(msg, ephemeral=True)
-        except Exception:
-            pass
-        return False
-
-    return commands.check(predicate)
+    return permission_guard(_main_server_predicate, 'This command is only available in the main VEKA server.')
 
 
 def owner_in_external_only():
@@ -53,39 +45,4 @@ def owner_in_external_only():
     In external guild = only owner (OWNER_DISCORD_ID) can use.
     Others see 'not allowed'.
     """
-
-    async def predicate(ctx_or_interaction) -> bool:
-        guild: nextcord.Guild | None = None
-        user: nextcord.User | nextcord.Member | None = None
-        if isinstance(ctx_or_interaction, commands.Context):
-            guild = ctx_or_interaction.guild
-            user = ctx_or_interaction.author
-        elif isinstance(ctx_or_interaction, nextcord.Interaction):
-            guild = ctx_or_interaction.guild
-            user = ctx_or_interaction.user
-        else:
-            return False
-        if user is None:
-            return False
-
-        # Main guild — everyone can use
-        if is_main_guild(guild):
-            return True
-
-        # External guild — only owner
-        if user.id == OWNER_DISCORD_ID:
-            return True
-
-        # Not owner in external guild — deny
-        msg = 'This command is not available in this server.'
-        try:
-            if isinstance(ctx_or_interaction, commands.Context):
-                await ctx_or_interaction.send(msg)
-            elif isinstance(ctx_or_interaction, nextcord.Interaction):
-                if not ctx_or_interaction.response.is_done():
-                    await ctx_or_interaction.response.send_message(msg, ephemeral=True)
-        except Exception:
-            pass
-        return False
-
-    return commands.check(predicate)
+    return permission_guard(_owner_in_external_predicate, 'This command is not available in this server.')
