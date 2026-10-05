@@ -16,6 +16,7 @@ from src.config.config import (
     NOTIFICATION_SQUAD_ROLE_NAME,
     PUBLIC_BOT_COMMANDS_CHANNEL_ID,
 )
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import safe_send
 from src.utils.security.rbac import require_founder, require_staff
@@ -38,7 +39,16 @@ class Notifications(commands.Cog):
         """Check if it's 6pm IST and send bump reminder"""
         now = datetime.now(timezone(timedelta(hours=IST_UTC_OFFSET)))
         if now.hour == DAILY_BUMP_HOUR and now.minute == DAILY_BUMP_MINUTE:
-            channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
+            # Resolve channel from guild settings, fallback to config
+            channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
+            try:
+                settings = await guild_settings_service.get_settings(
+                    self.bot.main_guild.id if hasattr(self.bot, 'main_guild') else 0
+                )
+                channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
+            except Exception:
+                pass
+            channel = self.bot.get_channel(channel_id)
             if not channel:
                 logger.warning('Public bot commands channel not found: %s', PUBLIC_BOT_COMMANDS_CHANNEL_ID)
                 return
@@ -77,7 +87,13 @@ class Notifications(commands.Cog):
 
     async def ping_squad_slash(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
         """Ping notification squad in public bot commands channel"""
-        channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
+        channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
+        try:
+            settings = await guild_settings_service.get_settings(interaction.guild.id)
+            channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
+        except Exception:
+            pass
+        channel = self.bot.get_channel(channel_id)
         if not channel:
             embed = await error_embed(
                 'Channel Not Found', 'Public bot commands channel not found.', contributor_source=__name__
@@ -112,7 +128,13 @@ class Notifications(commands.Cog):
     @require_staff()
     async def ping_squad_prefix(self, ctx, *, message: str = 'Time to bump the server!'):
         """Ping notification squad (Staff+)"""
-        channel = self.bot.get_channel(PUBLIC_BOT_COMMANDS_CHANNEL_ID)
+        channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
+        try:
+            settings = await guild_settings_service.get_settings(ctx.guild.id)
+            channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
+        except Exception:
+            pass
+        channel = self.bot.get_channel(channel_id)
         if not channel:
             await ctx.send('Public bot commands channel not found.')
             return

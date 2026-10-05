@@ -7,6 +7,9 @@ import asyncio
 import logging
 import time
 from functools import wraps
+from typing import Any
+
+from src.utils.safety import safe_send
 
 logger = logging.getLogger('VEKA.security.rate_limiter')
 
@@ -25,6 +28,7 @@ class RateLimiter:
         # user_id:command -> (tokens, last_update)
         self.buckets: dict[str, tuple[float, float]] = {}
         self.lock = asyncio.Lock()
+        self._cleanup_task: asyncio.Task | None = None
 
         # Default limits per command type
         self.default_limits = {
@@ -130,10 +134,10 @@ class RateLimiter:
         """Get remaining requests for user"""
         key = self._get_key(user_id, command)
 
+        # Best-effort value without the lock (safe for int reads on CPython)
         if key not in self.buckets:
             max_requests, _ = self._get_limit(command)
             return max_requests
-
         tokens, _ = self.buckets[key]
         return max(0, int(tokens))
 
@@ -151,6 +155,28 @@ class RateLimiter:
             else:
                 # Reset all
                 self.buckets.clear()
+
+    async def cleanup_stale_buckets(self, max_age: float = 600.0):
+        """Remove bucket entries older than max_age seconds (default 10 min)."""
+        async with self.lock:
+            now = time.time()
+            stale_keys = [key for key, (_, last_update) in self.buckets.items() if now - last_update > max_age]
+            for key in stale_keys:
+                del self.buckets[key]
+            if stale_keys:
+                logger.debug('Cleaned up %d stale rate-limit buckets', len(stale_keys))
+
+    def start_cleanup_loop(self, interval: float = 300.0):
+        """Start a periodic cleanup task (call once at bot startup)."""
+        if self._cleanup_task is not None:
+            return
+
+        async def _loop():
+            while True:
+                await asyncio.sleep(interval)
+                await self.cleanup_stale_buckets()
+
+        self._cleanup_task = asyncio.create_task(_loop())
 
 
 # Global rate limiter instance
@@ -172,7 +198,7 @@ def rate_limit(command_type: str = 'default'):
 
     def decorator(func):
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any):
             # Get context (first arg is usually self, second is ctx)
             ctx = args[1] if len(args) > 1 else kwargs.get('ctx')
 
@@ -182,8 +208,11 @@ def rate_limit(command_type: str = 'default'):
                 is_limited, retry_after = await rate_limiter.is_rate_limited(user_id, command_type, member=member)
 
                 if is_limited:
-                    await ctx.send(f'⏱️ Rate limited! Try again in {retry_after:.0f} seconds.')
+                    await safe_send(ctx, f'⏱️ Rate limited! Try again in {retry_after:.0f} seconds.', ephemeral=True)
                     return
+
+                # Consume a token now that we've passed the check
+                await rate_limiter.check(ctx, member=member)
 
             return await func(*args, **kwargs)
 

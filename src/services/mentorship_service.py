@@ -166,26 +166,29 @@ class MentorshipService:
 
     async def get_user_stats(self, user_id: str) -> dict:
         resolved_id = await self._resolve_user_id(user_id)
-        mentorships_as_mentor = await self.get_completed_mentorships(user_id, as_mentor=True)
-        mentorships_as_mentee = await self.get_completed_mentorships(user_id, as_mentor=False)
+
+        all_as_mentor = await self.get_user_mentorships(user_id)
+        all_as_mentee_rows = await db.fetch(
+            """
+            SELECT * FROM mentorships WHERE mentee_id = $1
+            """,
+            resolved_id,
+        )
+
+        mentor_active = [m for m in all_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'active']
+        mentor_completed = [m for m in all_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'completed']
+        mentee_active = [m for m in all_as_mentee_rows if m['status'] == 'active']
+        mentee_completed = [m for m in all_as_mentee_rows if m['status'] == 'completed']
 
         return {
             'as_mentor': {
-                'total': len([m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id]),
-                'active': len(
-                    [m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'active']
-                ),
-                'completed': len(
-                    [m for m in mentorships_as_mentor if m['mentor_id'] == resolved_id and m['status'] == 'completed']
-                ),
+                'total': len(mentor_active) + len(mentor_completed),
+                'active': len(mentor_active),
+                'completed': len(mentor_completed),
             },
             'as_mentee': {
-                'total': len([m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id]),
-                'active': len(
-                    [m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'active']
-                ),
-                'completed': len(
-                    [m for m in mentorships_as_mentee if m['mentee_id'] == resolved_id and m['status'] == 'completed']
-                ),
+                'total': len(mentee_active) + len(mentee_completed),
+                'active': len(mentee_active),
+                'completed': len(mentee_completed),
             },
         }

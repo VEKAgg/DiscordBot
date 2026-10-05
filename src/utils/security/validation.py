@@ -3,7 +3,6 @@ Input Validation and Sanitization Utilities
 Prevents injection attacks and malformed data
 """
 
-import html
 import logging
 import re
 from typing import Any
@@ -43,10 +42,7 @@ class InputValidator:
         if not text:
             return ''
 
-        # HTML escape to prevent injection
-        text = html.escape(text)
-
-        # Remove null bytes
+        # Strip null bytes
         text = text.replace('\x00', '')
 
         # Limit length

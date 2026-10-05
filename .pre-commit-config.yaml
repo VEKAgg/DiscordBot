@@ -29,3 +29,12 @@ repos:
           - beautifulsoup4==4.15.0
           - validators==0.35.0
           - python-dotenv==1.2.2
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: uv run pytest tests/ -x -q
+        language: system
+        pass_filenames: false
+        always_run: true
