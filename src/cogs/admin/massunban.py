@@ -17,12 +17,14 @@ from typing import Any
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import LOGS_CHANNEL_ID, MASSUNBAN_LOG_CHANNEL_ID, OWNER_IDS
+from src.config.config import MASSUNBAN_LOG_CHANNEL_ID, OWNER_IDS
+from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed, veka_embed
-from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.safety import DatabaseUnavailableError, admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.security import audit_log
 
 logger = logging.getLogger('VEKA.admin.massunban')
 
@@ -141,33 +143,6 @@ class ConfirmSecondView(nextcord.ui.View):
         self.stop()
 
 
-class CancelJobView(nextcord.ui.View):
-    """Cancel button shown while a job is running."""
-
-    def __init__(self, job_id: int, runner_id: int):
-        super().__init__(timeout=300)
-        self.job_id = job_id
-        self.runner_id = runner_id
-
-    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
-        if interaction.user.id != self.runner_id:
-            await interaction.response.send_message('Only the command runner can cancel.', ephemeral=True)
-            return False
-        return True
-
-    @nextcord.ui.button(label='Cancel Job', style=nextcord.ButtonStyle.danger, emoji='\u23f9\ufe0f')
-    async def cancel_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction):
-        self.stop()
-        await interaction.response.defer()
-        # Signal cancellation through the cog
-        cog = interaction.client.get_cog('MassUnban')
-        if cog:
-            await cog._cancel_job(self.job_id, self.runner_id)
-
-    async def on_timeout(self):
-        self.stop()
-
-
 # ============================================================
 # DM Apology Template
 # ============================================================
@@ -185,6 +160,42 @@ Thank you for your understanding."""
 # ============================================================
 
 
+def match_bans(
+    bans: list,
+    audit_records: dict[str, dict],
+    start_dt: datetime,
+    end_dt: datetime,
+    banned_by_id: int | None,
+    include_unaudited: bool,
+) -> tuple[list[tuple[Any, dict | None]], int]:
+    """Select the bans a job should lift. Returns (matched [(ban, audit_record)], unaudited_count).
+
+    Discord's ban list has no timestamp or moderator, so only bans the bot recorded in audit_logs
+    can be matched against the date range / moderator. Unaudited bans are EXCLUDED unless
+    ``include_unaudited`` is set explicitly (and never with a moderator filter) — previously they
+    were always included, so a "date-ranged" run unbanned essentially everyone (audit H-02).
+    """
+    matched: list[tuple[Any, dict | None]] = []
+    unaudited = 0
+    for ban in bans:
+        record = audit_records.get(str(ban.user.id))
+        if record is None:
+            unaudited += 1
+            if include_unaudited and banned_by_id is None:
+                matched.append((ban, None))
+            continue
+        ban_time = record.get('created_at')
+        if ban_time is not None:
+            if ban_time.tzinfo is None:
+                ban_time = ban_time.replace(tzinfo=UTC)
+            if ban_time < start_dt or ban_time > end_dt:
+                continue
+        if banned_by_id is not None and record.get('moderator_id') != str(banned_by_id):
+            continue
+        matched.append((ban, record))
+    return matched, unaudited
+
+
 class MassUnban(commands.Cog):
     """Resumable bulk-unban with double confirmation, rate limiting, and per-user audit."""
 
@@ -193,18 +204,65 @@ class MassUnban(commands.Cog):
         self._active_jobs: dict[int, bool] = {}  # job_id -> cancelled flag
         self._rate_limit_count: dict[int, int] = {}  # job_id -> consecutive 429 count
         self._unban_interval: dict[int, float] = {}  # job_id -> current interval
+        self._job_locks: dict[int, asyncio.Lock] = {}  # job_id -> lock (one worker per job, audit H-03)
+        self._workers: set[asyncio.Task] = set()
+        self._unloaded = False
 
-    async def cog_load(self) -> None:
-        """Resume incomplete jobs on startup."""
-        asyncio.create_task(self._resume_incomplete_jobs())
+    def cog_unload(self):
+        self._unloaded = True
+        for task in tuple(self._workers):
+            task.cancel()
+
+    def _spawn_worker(self, coro, *, name: str):
+        task = spawn(coro, name=name)
+        self._workers.add(task)
+        task.add_done_callback(self._workers.discard)
+        return task
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild: nextcord.Guild, user: nextcord.User | nextcord.Member) -> None:
+        """Record every ban in audit_logs so date/moderator filters have data to match (audit H-02)."""
+        if not runtime_state.db_available:
+            return
+        moderator_id: int | None = None
+        reason: str | None = None
+        me = guild.me
+        if me is not None and me.guild_permissions.view_audit_log:
+            try:
+                async for entry in guild.audit_logs(limit=5, action=nextcord.AuditLogAction.ban):
+                    if entry.target is not None and entry.target.id == user.id:
+                        moderator_id = entry.user.id if entry.user else None
+                        reason = entry.reason
+                        break
+            except (nextcord.Forbidden, nextcord.HTTPException):
+                pass
+        try:
+            await audit_log.record(
+                user_id=str(moderator_id or 0),
+                action='ban_executed',
+                details={
+                    'target_user_id': str(user.id),
+                    'moderator_id': str(moderator_id) if moderator_id else None,
+                    'reason': (reason or '')[:200],
+                },
+                guild_id=str(guild.id),
+                severity='warning',
+            )
+        except Exception:
+            logger.warning('Failed to record ban of %s in %s', user.id, guild.id, exc_info=True)
+
+    async def cog_ready(self) -> None:
+        """Resume incomplete jobs on startup (called from on_ready via run_cog_ready_hooks)."""
+        await self._resume_incomplete_jobs()
 
     async def _resume_incomplete_jobs(self) -> None:
         """Wait for bot to be ready, then scan for resumable jobs."""
         await self.bot.wait_until_ready()
         if not runtime_state.db_available:
-            logger.warning('DB unavailable — skipping mass unban resume')
-            return
+            # Raise so run_cog_ready_hooks retries once the DB health check sees the database again.
+            raise DatabaseUnavailableError('DB unavailable — mass unban resume deferred')
         try:
+            failed = False
             # Resume active jobs
             jobs = await db.fetch(
                 """SELECT id, guild_id, requested_by, status
@@ -212,6 +270,8 @@ class MassUnban(commands.Cog):
                    WHERE status IN ('running', 'retry_wait', 'paused')"""
             )
             for job in jobs:
+                if job['id'] in self._active_jobs:
+                    continue  # already resumed by an earlier (partially failed) attempt
                 try:
                     logger.info('Resuming mass unban job %s (was %s)', job['id'], job['status'])
                     await db.execute(
@@ -219,8 +279,9 @@ class MassUnban(commands.Cog):
                         job['id'],
                     )
                     self._active_jobs[job['id']] = False
-                    asyncio.create_task(self._execute_job(job['id'], resumed=True))
+                    self._spawn_worker(self._execute_job(job['id'], resumed=True), name=f'massunban:{job["id"]}')
                 except Exception:
+                    failed = True
                     logger.error('Failed to resume job %s', job['id'], exc_info=True)
 
             # Cancel orphaned pending/confirming jobs (bot restarted during confirmation)
@@ -249,9 +310,13 @@ class MassUnban(commands.Cog):
                         except Exception:
                             pass
                 except Exception:
+                    failed = True
                     logger.error('Failed to cancel orphaned job %s', job['id'], exc_info=True)
+            if failed:
+                raise RuntimeError('Some mass unban jobs could not be recovered; retry required')
         except Exception:
             logger.error('Failed to scan for resumable mass unban jobs', exc_info=True)
+            raise
 
     # ============================================================
     # Slash Commands
@@ -260,6 +325,8 @@ class MassUnban(commands.Cog):
     @nextcord.slash_command(
         name='massunban',
         description='Bulk unban users with date-range filters',
+        contexts=[nextcord.InteractionContextType.guild],
+        default_member_permissions=nextcord.Permissions(ban_members=True),
     )
     async def massunban_group(self, interaction: nextcord.Interaction) -> None:
         embed = await info_embed(
@@ -304,8 +371,13 @@ class MassUnban(commands.Cog):
             required=False,
             default='',
         ),
+        include_unaudited: bool = nextcord.SlashOption(
+            description='Also unban bans with no recorded date/moderator (ignores the date range for them)',
+            required=False,
+            default=False,
+        ),
     ) -> None:
-        await self._start_massunban(interaction, start_datetime, end_datetime, banned_by, reason)
+        await self._start_massunban(interaction, start_datetime, end_datetime, banned_by, reason, include_unaudited)
 
     @massunban_group.subcommand(name='status', description='Check status of a mass unban job')
     @admin_only()
@@ -354,8 +426,13 @@ class MassUnban(commands.Cog):
             description='Only count bans placed by this moderator (limited audit history)',
             required=False,
         ),
+        include_unaudited: bool = nextcord.SlashOption(
+            description='Also count bans with no recorded date/moderator',
+            required=False,
+            default=False,
+        ),
     ) -> None:
-        await self._preview_massunban(interaction, start_datetime, end_datetime, banned_by)
+        await self._preview_massunban(interaction, start_datetime, end_datetime, banned_by, include_unaudited)
 
     # ============================================================
     # Prefix Commands
@@ -437,6 +514,7 @@ class MassUnban(commands.Cog):
         end_str: str,
         banned_by: nextcord.Member | None,
         reason: str,
+        include_unaudited: bool = False,
     ) -> None:
         guild = getattr(target, 'guild', None)
         if not guild:
@@ -521,37 +599,11 @@ class MassUnban(commands.Cog):
             await safe_send(target, embed=embed, ephemeral=True)
             return
 
-        # Try to match bans against bot's audit log for date/moderator filtering
-        matched_bans = []
-        no_audit_count = 0
-        audit_matched = 0
-
-        # Fetch bot audit logs for ban actions in this guild
+        # Match bans against the bot's audit log (date / moderator filters)
         audit_records = await self._fetch_audit_records(guild.id)
-
-        for ban in bans:
-            user_id = str(ban.user.id)
-            # Check if we have audit data for this ban
-            audit_record = audit_records.get(user_id)
-
-            if audit_record:
-                # Apply date range filter
-                ban_time = audit_record.get('created_at')
-                if ban_time:
-                    if ban_time < start_dt or ban_time > end_dt:
-                        continue
-                # Apply banned_by filter
-                if banned_by and audit_record.get('moderator_id') != str(banned_by.id):
-                    continue
-                audit_matched += 1
-            else:
-                # No audit data — include only if no filters are active
-                no_audit_count += 1
-                # If banned_by filter is set and we have no audit data, skip
-                if banned_by:
-                    continue
-
-            matched_bans.append((ban, audit_record))
+        matched_bans, no_audit_count = match_bans(
+            bans, audit_records, start_dt, end_dt, banned_by.id if banned_by else None, include_unaudited
+        )
 
         if not matched_bans:
             embed = await info_embed(
@@ -559,10 +611,13 @@ class MassUnban(commands.Cog):
                 'No bans match your filters.',
                 contributor_source=__name__,
             )
-            if no_audit_count > 0 and banned_by:
+            if no_audit_count > 0:
                 embed.add_field(
                     name='Note',
-                    value=f'{no_audit_count} ban(s) have no audit history and were excluded because a moderator filter was set.',
+                    value=(
+                        f'{no_audit_count} ban(s) have no audit history (no recorded date/moderator) and were '
+                        'excluded. Use `include_unaudited:true` to include them (not possible with a moderator filter).'
+                    ),
                     inline=False,
                 )
             await safe_send(target, embed=embed, ephemeral=True)
@@ -616,7 +671,7 @@ class MassUnban(commands.Cog):
 
         # Build preview embed
         embed = await self._build_preview_embed(
-            job_id, len(matched_bans), start_dt, end_dt, banned_by, reason, no_audit_count
+            job_id, len(matched_bans), start_dt, end_dt, banned_by, reason, no_audit_count, include_unaudited
         )
 
         # First confirmation
@@ -728,6 +783,7 @@ class MassUnban(commands.Cog):
         start_str: str,
         end_str: str,
         banned_by: nextcord.Member | None,
+        include_unaudited: bool = False,
     ) -> None:
         """Preview how many bans match filters without executing any unbans."""
         guild = getattr(target, 'guild', None)
@@ -791,26 +847,10 @@ class MassUnban(commands.Cog):
 
         # Match bans against audit logs
         audit_records = await self._fetch_audit_records(guild.id)
-
-        matched_count = 0
-        no_audit_count = 0
-        for ban in bans:
-            user_id = str(ban.user.id)
-            audit_record = audit_records.get(user_id)
-
-            if audit_record:
-                ban_time = audit_record.get('created_at')
-                if ban_time:
-                    if ban_time < start_dt or ban_time > end_dt:
-                        continue
-                if banned_by and audit_record.get('moderator_id') != str(banned_by.id):
-                    continue
-                matched_count += 1
-            else:
-                no_audit_count += 1
-                if banned_by:
-                    continue
-                matched_count += 1
+        matched, no_audit_count = match_bans(
+            bans, audit_records, start_dt, end_dt, banned_by.id if banned_by else None, include_unaudited
+        )
+        matched_count = len(matched)
 
         estimated_seconds = matched_count * 1.5
         estimated_minutes = estimated_seconds / 60
@@ -836,7 +876,7 @@ class MassUnban(commands.Cog):
                 name='Audit Limitation',
                 value=(
                     f'{no_audit_count} ban(s) have no audit history and will be '
-                    f'{"skipped (moderator filter active)" if banned_by else "included"}.'
+                    f'{"included" if include_unaudited and not banned_by else "excluded"}.'
                 ),
                 inline=False,
             )
@@ -857,7 +897,25 @@ class MassUnban(commands.Cog):
     # ============================================================
 
     async def _execute_job(self, job_id: int, *, resumed: bool = False) -> None:
-        """Sequential unban worker with rate limiting."""
+        """Sequential unban worker with rate limiting. At most one worker runs per job."""
+        if self._unloaded:
+            return
+        lock = self._job_locks.setdefault(job_id, asyncio.Lock())
+        if lock.locked():
+            logger.info('Job %s already has a running worker; not starting another', job_id)
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._workers.add(task)
+        try:
+            async with lock:
+                await self._run_job(job_id, resumed=resumed)
+        finally:
+            if task is not None:
+                self._workers.discard(task)
+            self._job_locks.pop(job_id, None)
+
+    async def _run_job(self, job_id: int, *, resumed: bool) -> None:
         try:
             job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1', job_id)
             if not job:
@@ -919,16 +977,25 @@ class MassUnban(commands.Cog):
 
                 result = await self._process_unban_item(guild, item, job)
 
+                if result.get('rate_limit'):
+                    # Leave this item pending, stop this worker, and let one scheduled resume pick it up.
+                    await self._handle_rate_limit_pause(job_id, result)
+                    return
+
                 # Update job progress
                 await self._update_job_progress(job_id, item, result)
 
-                # Per-user audit log
-                try:
-                    await self._log_per_user(guild, job_id, result)
-                except Exception:
-                    logger.warning(
-                        'Failed to log per-user result for job %s user %s', job_id, result.get('user_id'), exc_info=True
-                    )
+                # Per-user log only for problems; successes are summarised when the job completes.
+                if result['status'] != 'success':
+                    try:
+                        await self._log_per_user(guild, job_id, result)
+                    except Exception:
+                        logger.warning(
+                            'Failed to log per-user result for job %s user %s',
+                            job_id,
+                            result.get('user_id'),
+                            exc_info=True,
+                        )
 
                 # Throttle
                 await asyncio.sleep(interval)
@@ -1003,7 +1070,7 @@ class MassUnban(commands.Cog):
                             retry_after = float(ra_header)
                         except ValueError:
                             pass
-                result['status'] = 'failed'
+                result['status'] = 'pending'
                 result['failure_reason'] = f'Rate limited (retry_after={retry_after}s)'
                 result['retry_after'] = retry_after
                 result['rate_limit'] = True
@@ -1077,10 +1144,6 @@ class MassUnban(commands.Cog):
             except Exception:
                 logger.warning('Failed to update counters for job %s', job_id, exc_info=True)
 
-        # 3. Handle rate limit pause (separate block — includes scheduling)
-        if result.get('rate_limit'):
-            await self._handle_rate_limit_pause(job_id, result)
-
     async def _handle_rate_limit_pause(self, job_id: int, result: dict) -> None:
         """Handle rate limit: persist pause state, notify, and schedule resume."""
         retry_after_secs = max(1.0, float(result.get('retry_after', RATE_LIMIT_COOLDOWN)))
@@ -1129,8 +1192,8 @@ class MassUnban(commands.Cog):
         except Exception:
             logger.warning('Failed to send rate limit notification for job %s', job_id, exc_info=True)
 
-        # Schedule resume using asyncio task (not call_later)
-        asyncio.create_task(self._scheduled_resume(job_id, retry_after_secs))
+        # Schedule resume (the current worker has stopped; exactly one worker resumes later)
+        self._spawn_worker(self._scheduled_resume(job_id, retry_after_secs), name=f'massunban:resume:{job_id}')
 
     async def _scheduled_resume(self, job_id: int, delay: float) -> None:
         """Wait then resume a rate-limited job, checking for cancellation first."""
@@ -1221,6 +1284,7 @@ class MassUnban(commands.Cog):
         banned_by: nextcord.Member | None,
         reason: str,
         no_audit_count: int,
+        include_unaudited: bool = False,
     ) -> nextcord.Embed:
         embed = await veka_embed(
             title='Mass Unban — Confirm',
@@ -1240,7 +1304,14 @@ class MassUnban(commands.Cog):
         if no_audit_count > 0:
             embed.add_field(
                 name='Note',
-                value=f'{no_audit_count} ban(s) have no audit history and will be included.',
+                value=(
+                    f'{no_audit_count} ban(s) have no audit history and will be '
+                    + (
+                        '**included regardless of the date range** (include_unaudited).'
+                        if include_unaudited and not banned_by
+                        else 'excluded.'
+                    )
+                ),
                 inline=False,
             )
         embed.add_field(
@@ -1277,7 +1348,8 @@ class MassUnban(commands.Cog):
         job_id: int,
     ) -> None:
         """Cancel a job via command."""
-        job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1', job_id)
+        guild_id = target.guild.id if target.guild else 0
+        job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1 AND guild_id = $2', job_id, guild_id)
         if not job:
             embed = await error_embed('Not Found', f'Job #{job_id} not found.', contributor_source=__name__)
             await safe_send(target, embed=embed, ephemeral=True)
@@ -1317,7 +1389,8 @@ class MassUnban(commands.Cog):
     # ============================================================
 
     async def _show_status(self, target: commands.Context | nextcord.Interaction, job_id: int) -> None:
-        job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1', job_id)
+        guild_id = target.guild.id if target.guild else 0
+        job = await db.fetch_one('SELECT * FROM massunban_jobs WHERE id = $1 AND guild_id = $2', job_id, guild_id)
         if not job:
             embed = await error_embed('Not Found', f'Job #{job_id} not found.', contributor_source=__name__)
             await safe_send(target, embed=embed, ephemeral=True)
@@ -1442,15 +1515,21 @@ class MassUnban(commands.Cog):
     # Logging Helpers
     # ============================================================
 
+    async def _log_channel(self, guild: nextcord.Guild) -> nextcord.TextChannel | None:
+        """Log channel for this guild only — never another server's channel (cross-guild fallback removed)."""
+        channel: nextcord.abc.GuildChannel | None = (
+            guild.get_channel(MASSUNBAN_LOG_CHANNEL_ID) if MASSUNBAN_LOG_CHANNEL_ID else None
+        )
+        if channel is None:
+            try:
+                channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
+            except Exception:
+                channel = None
+        return channel if isinstance(channel, nextcord.TextChannel) else None
+
     async def _log_job_event(self, guild: nextcord.Guild, title: str, description: str, detail: str) -> None:
         """Send a job event notice to the log channel."""
-        log_channel_id = LOGS_CHANNEL_ID
-        try:
-            settings = await guild_settings_service.get_settings(guild.id)
-            log_channel_id = settings.log_channel_id or LOGS_CHANNEL_ID
-        except Exception:
-            pass
-        log_channel = self.bot.get_channel(log_channel_id)
+        log_channel = await self._log_channel(guild)
         if not log_channel:
             return
         try:
@@ -1465,13 +1544,7 @@ class MassUnban(commands.Cog):
 
     async def _log_per_user(self, guild: nextcord.Guild, job_id: int, result: dict) -> None:
         """Send per-user unban result to the log channel."""
-        log_channel_id = MASSUNBAN_LOG_CHANNEL_ID or LOGS_CHANNEL_ID
-        try:
-            settings = await guild_settings_service.get_settings(guild.id)
-            log_channel_id = MASSUNBAN_LOG_CHANNEL_ID or settings.log_channel_id or LOGS_CHANNEL_ID
-        except Exception:
-            pass
-        log_channel = self.bot.get_channel(log_channel_id)
+        log_channel = await self._log_channel(guild)
         if not log_channel:
             return
 

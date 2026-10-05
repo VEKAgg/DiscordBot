@@ -47,6 +47,7 @@ INACTIVITY_CHECK_HOUR = 9  # IST hour (24h)
 INACTIVITY_CHECK_MINUTE = 0
 INACTIVITY_WEEK_DAYS = 7
 INACTIVITY_MONTH_DAYS = 30
+INACTIVITY_MAX_DMS_PER_RUN = 25  # cap "we miss you" DMs per daily run (backlog drains over days)
 
 # PostgreSQL Configuration
 POSTGRES_HOST = os.getenv('POSTGRES_HOST', 'localhost')
@@ -124,7 +125,8 @@ ACTIVITY_ROLES: dict[str, int] = {
 ACTIVITY_ROLE_INACTIVITY_DAYS = 14
 
 # --- Main Server Configuration ---
-MAIN_GUILD_ID = 1088553066334273537
+_main_guild = os.getenv('MAIN_GUILD_ID', '')
+MAIN_GUILD_ID = int(_main_guild) if _main_guild.strip().isdigit() else 1088553066334273537
 MAIN_SERVER_INVITE_URL = os.getenv('MAIN_SERVER_INVITE_URL', 'https://discord.gg/veka')
 
 # --- Live/Streaming Role ---

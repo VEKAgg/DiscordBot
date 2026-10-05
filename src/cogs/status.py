@@ -38,7 +38,7 @@ STATUSES: list[dict] = [
     {'type': 'playing', 'text': 'Season {season}'},
 ]
 
-ROTATION_INTERVAL = 10  # seconds between status changes
+ROTATION_INTERVAL = 60  # seconds between status changes (presence updates are rate limited)
 
 
 def _format_uptime(start_time: datetime | None) -> str:
@@ -83,13 +83,14 @@ class StatusRotator(commands.Cog):
         self.bot = bot
         self._status_index = 0
 
-    async def cog_load(self):
-        """Start the rotation loop."""
-        self.rotate_status.start()
+    async def cog_ready(self):
+        """Start the rotation loop (called from on_ready via run_cog_ready_hooks)."""
+        if not self.rotate_status.is_running():
+            self.rotate_status.start()
 
-    async def cog_unload(self):
+    def cog_unload(self):
         """Stop the rotation loop."""
-        self.rotate_status.stop()
+        self.rotate_status.cancel()
 
     async def _build_activity(self, status_def: dict) -> nextcord.Activity | nextcord.Streaming | nextcord.Game:
         """Build a nextcord activity from a status definition."""
