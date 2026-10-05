@@ -50,3 +50,23 @@ async def test_connection_error_marks_db_unavailable():
 
 def test_query_error_message_is_not_an_outage_message():
     assert 'unavailable' not in map_exception_to_message(DatabaseQueryError('x')).lower()
+
+
+async def test_query_error_detail_and_data_message_are_not_logged(caplog):
+    unique = asyncpg.UniqueViolationError('duplicate key value violates unique constraint "users_discord_id_key"')
+    unique.detail = 'Key (discord_id)=(123456789012345678) already exists.'
+    unique.constraint_name = 'users_discord_id_key'
+    bad_input = asyncpg.InvalidTextRepresentationError('invalid input syntax for type integer: "private-note"')
+
+    for exc in (unique, bad_input):
+        database = _db_raising(exc)
+        with caplog.at_level(logging.ERROR), pytest.raises(DatabaseQueryError) as info:
+            await database.fetchval('INSERT INTO users (discord_id) VALUES ($1)', 'x')
+        assert info.value.__cause__ is None  # no chained asyncpg error to leak through later tracebacks
+        assert '123456789012345678' not in str(info.value)
+
+    assert '123456789012345678' not in caplog.text
+    assert 'private-note' not in caplog.text
+    assert 'private-note' not in (runtime_state.last_db_error or '')
+    assert 'constraint=users_discord_id_key' in caplog.text
+    assert 'sqlstate=22P02' in caplog.text

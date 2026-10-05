@@ -40,6 +40,30 @@ def _arg_types(args: tuple) -> str:
     return ','.join(type(a).__name__ for a in args)
 
 
+# SQLSTATE classes whose primary message can embed submitted values (22 = data exception, e.g.
+# 'invalid input syntax for type integer: "<value>"'; P0 = PL/pgSQL RAISE with arbitrary text).
+_VALUE_BEARING_SQLSTATE_CLASSES = ('22', 'P0')
+
+
+def _describe_pg_error(exc: asyncpg.PostgresError) -> str:
+    """Summarize a PostgreSQL error without parameter values (audit M-02).
+
+    ``str(exc)`` appends DETAIL/HINT, and DETAIL carries row values (``Key (discord_id)=(123) already
+    exists.``), so only the class, SQLSTATE, schema object names and — for classes that never embed
+    data — the primary message are kept.
+    """
+    sqlstate = getattr(exc, 'sqlstate', None) or '?'
+    parts = [f'sqlstate={sqlstate}']
+    for field in ('table_name', 'column_name', 'constraint_name'):
+        value = getattr(exc, field, None)
+        if value:
+            parts.append(f'{field.removesuffix("_name")}={value}')
+    message = exc.args[0] if exc.args else ''
+    if message and not str(sqlstate).startswith(_VALUE_BEARING_SQLSTATE_CLASSES):
+        parts.append(f'message={str(message)[:200]!r}')
+    return f'{type(exc).__name__}({", ".join(parts)})'
+
+
 class Database:
     """PostgreSQL database connection manager using asyncpg."""
 
@@ -97,8 +121,8 @@ class Database:
             return True
         except asyncpg.PostgresError as exc:
             runtime_state.db_available = False
-            logger.error('Database ping failed: %s', exc, exc_info=True)
-            raise DatabaseUnavailableError('PostgreSQL unavailable') from exc
+            logger.error('Database ping failed: %s', _describe_pg_error(exc))
+            raise DatabaseUnavailableError('PostgreSQL unavailable') from None
         except Exception as exc:
             runtime_state.db_available = False
             logger.error('Database ping failed: %s', exc, exc_info=True)
@@ -124,15 +148,17 @@ class Database:
             )
             raise DatabaseUnavailableError('Database unavailable') from exc
         except asyncpg.PostgresError as exc:
-            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
+            # Never format ``exc`` itself (DETAIL holds row values) and don't chain it: anything that
+            # later logs the DatabaseQueryError traceback would print the cause's DETAIL.
+            summary = _describe_pg_error(exc)
+            runtime_state.last_db_error = summary
             logger.error(
                 'Database query error: %s | query=%s | arg_types=%s',
-                exc,
+                summary,
                 _short(query),
                 _arg_types(args),
-                exc_info=True,
             )
-            raise DatabaseQueryError('Database query failed') from exc
+            raise DatabaseQueryError(f'Database query failed: {summary}') from None
 
     async def fetch_one(self, query: str, *args: Any) -> asyncpg.Record | None:
         return await self._run('fetchrow', query, *args)
@@ -191,14 +217,18 @@ class Database:
                     continue
 
                 sql = migration_path.read_text()
-                async with connection.transaction():
-                    logger.info('Applying migration: %s', migration_name)
-                    await connection.execute(sql)
-                    await connection.execute(
-                        f'INSERT INTO {MIGRATIONS_TABLE} (filename) VALUES ($1)',
-                        migration_name,
-                    )
-                    logger.info('Applied migration: %s', migration_name)
+                try:
+                    async with connection.transaction():
+                        logger.info('Applying migration: %s', migration_name)
+                        await connection.execute(sql)
+                        await connection.execute(
+                            f'INSERT INTO {MIGRATIONS_TABLE} (filename) VALUES ($1)',
+                            migration_name,
+                        )
+                except asyncpg.PostgresError as exc:
+                    # DETAIL can quote existing rows (e.g. a unique index over duplicated IDs).
+                    raise RuntimeError(f'Migration {migration_name} failed: {_describe_pg_error(exc)}') from None
+                logger.info('Applied migration: %s', migration_name)
 
 
 # Global database instance

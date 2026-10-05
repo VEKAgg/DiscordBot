@@ -43,6 +43,30 @@ async def test_rehost_rejects_non_https_or_untrusted_host(url):
     session.get.assert_not_called()
 
 
+async def test_honeypot_first_trigger_fires_on_fresh_host(monkeypatch, mock_bot, mock_guild, mock_user, mock_db):
+    """monotonic() counts from boot; a fresh CI VM has uptime below the cooldown (the original CI failure)."""
+    monkeypatch.setattr('src.cogs.admin.honeypot.time.monotonic', lambda: 5.0)
+    monkeypatch.setattr('src.cogs.admin.honeypot.db', mock_db)
+    monkeypatch.setattr('src.cogs.admin.honeypot._is_exempt', lambda *_: False)
+    cog = Honeypot(mock_bot)
+    monkeypatch.setattr(cog, '_load_cache', AsyncMock())
+    cog._honeypot_cache[3] = {'id': 1, 'enabled': True, 'action_type': 'ban', 'delete_message_days': 1}
+    execute_ban = AsyncMock(return_value='success')
+    monkeypatch.setattr(cog, '_execute_ban', execute_ban)
+    monkeypatch.setattr(cog, '_send_alert', AsyncMock())
+    mock_guild.get_member.return_value = mock_user
+    message = MagicMock(spec=nextcord.Message)
+    message.author = mock_user
+    message.webhook_id = None
+    message.guild = mock_guild
+    message.channel = SimpleNamespace(id=3)
+    message.id = 4
+    message.content = 'test'
+    await cog.on_message(message)
+    await cog.on_message(message)  # second hit inside the cooldown is still suppressed
+    execute_ban.assert_awaited_once_with(mock_guild, mock_user, 1)
+
+
 async def test_rehost_does_not_follow_redirects():
     session = MagicMock()
     session.get.return_value.__aenter__ = AsyncMock(return_value=SimpleNamespace(status=302))

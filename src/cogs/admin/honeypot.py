@@ -388,8 +388,10 @@ class Honeypot(commands.Cog):
                 pass
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
-        last = self._trigger_cooldowns.get(key, 0.0)
-        if (now - last) < cooldown:
+        # No entry means "never triggered": monotonic() counts from host boot, so a 0.0 default would
+        # suppress the first trigger whenever uptime is below the cooldown (fresh VM/container host).
+        last = self._trigger_cooldowns.get(key)
+        if last is not None and (now - last) < cooldown:
             return
         self._trigger_cooldowns[key] = now
 
