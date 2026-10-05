@@ -4,7 +4,7 @@ Daily bump reminder and broadcast commands
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import time, timedelta, timezone
 
 import nextcord
 from nextcord.ext import commands, tasks
@@ -13,8 +13,8 @@ from src.config.config import (
     DAILY_BUMP_HOUR,
     DAILY_BUMP_MINUTE,
     IST_UTC_OFFSET,
+    MAIN_GUILD_ID,
     NOTIFICATION_SQUAD_ROLE_NAME,
-    PUBLIC_BOT_COMMANDS_CHANNEL_ID,
 )
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed
@@ -23,61 +23,73 @@ from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.notifications')
 
+_BUMP_TIME = time(
+    hour=DAILY_BUMP_HOUR,
+    minute=DAILY_BUMP_MINUTE,
+    tzinfo=timezone(timedelta(hours=IST_UTC_OFFSET)),
+)
+
+
+async def _public_channel(guild: nextcord.Guild | None) -> nextcord.TextChannel | None:
+    """Resolve the public bot-commands channel *inside this guild only* (no cross-guild fallback, audit H-07)."""
+    if guild is None:
+        return None
+    try:
+        channel = await guild_settings_service.resolve_channel(guild, 'public_commands_channel_id')
+    except Exception:
+        logger.debug('Could not resolve public commands channel for guild %s', guild.id, exc_info=True)
+        return None
+    return channel if isinstance(channel, nextcord.TextChannel) else None
+
+
+def _squad_ping(guild: nextcord.Guild) -> tuple[str, nextcord.AllowedMentions]:
+    """Role mention must be in message content (not an embed) to notify; only that role may be pinged."""
+    role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
+    if role is None:
+        return f'@{NOTIFICATION_SQUAD_ROLE_NAME}', nextcord.AllowedMentions.none()
+    return role.mention, nextcord.AllowedMentions(everyone=False, users=False, roles=[role])
+
 
 class Notifications(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.daily_bump.start()
+
+    async def cog_ready(self):
+        if not self.daily_bump.is_running():
+            self.daily_bump.start()
 
     def cog_unload(self):
         self.daily_bump.cancel()
 
     # ==================== DAILY BUMP REMINDER ====================
 
-    @tasks.loop(minutes=1)
+    @tasks.loop(time=_BUMP_TIME)
     async def daily_bump(self):
-        """Check if it's 6pm IST and send bump reminder"""
-        now = datetime.now(timezone(timedelta(hours=IST_UTC_OFFSET)))
-        if now.hour == DAILY_BUMP_HOUR and now.minute == DAILY_BUMP_MINUTE:
-            # Resolve channel from guild settings, fallback to config
-            channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
-            try:
-                settings = await guild_settings_service.get_settings(
-                    self.bot.main_guild.id if hasattr(self.bot, 'main_guild') else 0
-                )
-                channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
-            except Exception:
-                pass
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                logger.warning('Public bot commands channel not found: %s', PUBLIC_BOT_COMMANDS_CHANNEL_ID)
-                return
+        """Send the bump reminder in the main guild at DAILY_BUMP_HOUR:MINUTE IST."""
+        channel = await _public_channel(self.bot.get_guild(MAIN_GUILD_ID))
+        if not channel:
+            logger.warning('Daily bump: public bot commands channel not configured for main guild %s', MAIN_GUILD_ID)
+            return
 
-            # Find the notification squad role
-            guild = channel.guild
-            squad_role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
+        mention, allowed = _squad_ping(channel.guild)
+        embed = await info_embed(
+            title='Daily Bump Reminder',
+            description=(
+                "It's time to bump the server!\n\n"
+                'Use `/bump` with these bots to keep our community growing:\n'
+                '\u2022 <@302050872383242240> — Discord Bump Bot\n'
+                '\u2022 <@1222548162741538938> — Discadia Bot\n\n'
+                'Every bump helps new members discover us. Thank you for your support!'
+            ),
+            contributor_source=__name__,
+        )
+        embed.set_footer(text=f'Daily reminder at {DAILY_BUMP_HOUR}:{DAILY_BUMP_MINUTE:02d} IST')
 
-            role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
-
-            embed = await info_embed(
-                title='Daily Bump Reminder',
-                description=(
-                    f'{role_mention}\n\n'
-                    "It's time to bump the server!\n\n"
-                    'Use `/bump` with these bots to keep our community growing:\n'
-                    f'\u2022 <@302050872383242240> — Discord Bump Bot\n'
-                    f'\u2022 <@1222548162741538938> — Discadia Bot\n\n'
-                    'Every bump helps new members discover us. Thank you for your support!'
-                ),
-                contributor_source=__name__,
-            )
-            embed.set_footer(text=f'Daily reminder at {DAILY_BUMP_HOUR}:00 IST')
-
-            try:
-                await channel.send(embed=embed)
-                logger.info('Daily bump reminder sent')
-            except Exception as e:
-                logger.error('Failed to send daily bump reminder: %s', e)
+        try:
+            await channel.send(content=mention, embed=embed, allowed_mentions=allowed)
+            logger.info('Daily bump reminder sent')
+        except Exception as e:
+            logger.error('Failed to send daily bump reminder: %s', e)
 
     @daily_bump.before_loop
     async def before_daily_bump(self):
@@ -86,33 +98,22 @@ class Notifications(commands.Cog):
     # ==================== STAFF COMMANDS (delegated via /admin group) ====================
 
     async def ping_squad_slash(self, interaction: nextcord.Interaction, message: str = 'Time to bump the server!'):
-        """Ping notification squad in public bot commands channel"""
-        channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
-        try:
-            settings = await guild_settings_service.get_settings(interaction.guild.id)
-            channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
-        except Exception:
-            pass
-        channel = self.bot.get_channel(channel_id)
+        """Ping notification squad in this server's public bot commands channel"""
+        channel = await _public_channel(interaction.guild)
         if not channel:
             embed = await error_embed(
-                'Channel Not Found', 'Public bot commands channel not found.', contributor_source=__name__
+                'Channel Not Configured',
+                'No public bot commands channel is configured for this server. Use `/setup set` first.',
+                contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        guild = interaction.guild
-        squad_role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
-        role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
-
-        embed = await info_embed(
-            title='Squad Ping',
-            description=f'{role_mention}\n\n{message}',
-            contributor_source=__name__,
-        )
+        mention, allowed = _squad_ping(channel.guild)
+        embed = await info_embed(title='Squad Ping', description=message[:4000], contributor_source=__name__)
 
         try:
-            await channel.send(embed=embed)
+            await channel.send(content=mention, embed=embed, allowed_mentions=allowed)
             embed = await success_embed(
                 title='Sent',
                 description=f'Notification squad pinged in {channel.mention}.',
@@ -125,32 +126,20 @@ class Notifications(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @commands.command(name='pingsquad')
+    @commands.guild_only()
     @require_staff()
     async def ping_squad_prefix(self, ctx, *, message: str = 'Time to bump the server!'):
         """Ping notification squad (Staff+)"""
-        channel_id = PUBLIC_BOT_COMMANDS_CHANNEL_ID
-        try:
-            settings = await guild_settings_service.get_settings(ctx.guild.id)
-            channel_id = settings.public_commands_channel_id or PUBLIC_BOT_COMMANDS_CHANNEL_ID
-        except Exception:
-            pass
-        channel = self.bot.get_channel(channel_id)
+        channel = await _public_channel(ctx.guild)
         if not channel:
-            await ctx.send('Public bot commands channel not found.')
+            await ctx.send('No public bot commands channel is configured for this server. Use `!setup` first.')
             return
 
-        guild = ctx.guild
-        squad_role = nextcord.utils.get(guild.roles, name=NOTIFICATION_SQUAD_ROLE_NAME)
-        role_mention = squad_role.mention if squad_role else f'@{NOTIFICATION_SQUAD_ROLE_NAME}'
-
-        embed = await info_embed(
-            title='Squad Ping',
-            description=f'{role_mention}\n\n{message}',
-            contributor_source=__name__,
-        )
+        mention, allowed = _squad_ping(channel.guild)
+        embed = await info_embed(title='Squad Ping', description=message[:4000], contributor_source=__name__)
 
         try:
-            await channel.send(embed=embed)
+            await channel.send(content=mention, embed=embed, allowed_mentions=allowed)
             await ctx.send(f'Notification squad pinged in {channel.mention}.')
         except Exception as e:
             logger.error('Failed to ping squad: %s', e)

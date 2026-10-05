@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 from src.config.config import RSS_FEEDS
 from src.database.database import db
-from src.utils.http import get_session
+from src.utils.http import UnsafeURLError, fetch_public_url
 from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
@@ -23,11 +23,10 @@ class RSSService:
     async def fetch_feed(self, url: str) -> dict | None:
         try:
             headers = {'User-Agent': 'VEKA-DiscordBot/1.0'}
-            session = get_session()
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    raise ExternalRequestError(f'HTTP Status: {response.status}')
-                content = await response.text()
+            # User-supplied URL: SSRF-guarded, size-capped fetch (audit H-04).
+            status, content = await fetch_public_url(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10))
+            if status != 200:
+                raise ExternalRequestError(f'HTTP Status: {status}')
 
             feed = feedparser.parse(content)
             processed_entries = []
@@ -76,6 +75,9 @@ class RSSService:
 
             return feed_data
 
+        except UnsafeURLError as exc:
+            logger.warning('Rejected RSS feed URL %r: %s', url[:200], exc)
+            return None
         except Exception as exc:
             logger.error('Error fetching RSS feed %s: %s', url, exc, exc_info=True)
             from src.core.runtime_state import runtime_state
@@ -98,36 +100,61 @@ class RSSService:
                 task.add_done_callback(_background_tasks.discard)
             return None
 
-    async def process_and_dedupe(self, url: str, entries: list[dict]) -> list[dict]:
+    async def process_and_dedupe(
+        self, url: str, entries: list[dict], subscription_id: int | None = None, *, mark_seen: bool = True
+    ) -> list[dict]:
+        """Return entries not seen before.
+
+        With ``subscription_id`` (the feed poller), dedupe is per subscription so every guild
+        subscribed to the same URL gets its own copy (audit H-12). Without it, the legacy
+        URL-wide ``rss_cache`` is used. The poller uses ``mark_seen=False`` to preview
+        unseen subscription entries, then records each one only after successful delivery.
+        """
+        if not mark_seen and subscription_id is None:
+            raise ValueError('Preview dedupe requires a subscription ID')
         new_entries = []
         for entry in entries:
             try:
-                exists = await db.fetch_one(
-                    'SELECT 1 FROM rss_cache WHERE feed_url = $1 AND entry_id = $2', url, entry['entry_id']
-                )
-            except DatabaseUnavailableError:
-                logger.warning('Database unavailable during feed dedup check, stopping feed processing')
-                break
-            except Exception as exc:
-                logger.error('Failed to check RSS entry in db: %s', exc)
-                continue
-            if not exists:
-                try:
-                    await db.execute(
-                        """INSERT INTO rss_cache
-                           (feed_url, entry_id, title, link, summary, author)
-                           VALUES ($1, $2, $3, $4, $5, $6)
-                           ON CONFLICT DO NOTHING""",
+                if subscription_id is not None and not mark_seen:
+                    exists = await db.fetchval(
+                        'SELECT 1 FROM feed_seen_items WHERE subscription_id = $1 AND item_guid = $2',
+                        subscription_id,
+                        entry['entry_id'][:1000],
+                    )
+                    if exists is None:
+                        new_entries.append(entry)
+                    continue
+                if subscription_id is not None:
+                    inserted = await db.fetchval(
+                        """INSERT INTO feed_seen_items (feed_url, item_guid, subscription_id)
+                           VALUES ($1, $2, $3)
+                           ON CONFLICT DO NOTHING
+                           RETURNING id""",
                         url,
-                        entry['entry_id'],
+                        entry['entry_id'][:1000],
+                        subscription_id,
+                    )
+                else:
+                    inserted = await db.fetchval(
+                        """INSERT INTO rss_cache (feed_url, entry_id, title, link, summary, author)
+                           VALUES ($1, $2, $3, $4, $5, $6)
+                           ON CONFLICT DO NOTHING
+                           RETURNING id""",
+                        url[:500],
+                        entry['entry_id'][:500],
                         entry['title'][:500],
                         entry['link'][:500],
                         entry['description'],
                         entry['author'][:255],
                     )
-                    new_entries.append(entry)
-                except Exception as exc:
-                    logger.error('Failed to insert RSS entry into db: %s', exc)
+            except DatabaseUnavailableError:
+                logger.warning('Database unavailable during feed dedup, stopping feed processing')
+                break
+            except Exception as exc:
+                logger.error('Failed to record RSS entry: %s', exc)
+                continue
+            if inserted is not None:
+                new_entries.append(entry)
         return new_entries
 
     async def get_latest_new_entries(self, category: str, limit: int = 5) -> list[dict]:

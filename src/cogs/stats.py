@@ -42,7 +42,10 @@ class Stats(commands.Cog):
         self.bot = bot
         self._daily_joins: dict[int, int] = {}  # guild_id → join count today
         self._daily_leaves: dict[int, int] = {}  # guild_id → leave count today
-        self.daily_stats_collector.start()
+
+    async def cog_ready(self):
+        if not self.daily_stats_collector.is_running():
+            self.daily_stats_collector.start()
 
     def cog_unload(self):
         self.daily_stats_collector.cancel()
@@ -843,19 +846,20 @@ class Stats(commands.Cog):
             boost_level = interaction.guild.premium_tier or 0
             boost_count = interaction.guild.premium_subscription_count or 0
 
-            # Most active channel (from user_activity_daily)
-            active_channel_row = await db.fetch_one(
-                """SELECT channel_id, SUM(messages) as total_msgs
+            # Most active member over the last 7 days (no per-channel data is stored; audit M-04)
+            active_member_row = await db.fetch_one(
+                """SELECT user_id, SUM(messages) AS total_msgs
                    FROM user_activity_daily
                    WHERE guild_id = $1 AND activity_date >= CURRENT_DATE - INTERVAL '7 days'
-                   GROUP BY channel_id
+                   GROUP BY user_id
                    ORDER BY total_msgs DESC LIMIT 1""",
                 interaction.guild.id,
             )
-            active_channel_text = 'N/A'
-            if active_channel_row and active_channel_row['channel_id']:
-                ch = interaction.guild.get_channel(active_channel_row['channel_id'])
-                active_channel_text = ch.mention if ch else f'Channel {active_channel_row["channel_id"]}'
+            active_member_text = 'N/A'
+            if active_member_row and active_member_row['user_id'] and active_member_row['total_msgs']:
+                active_member_text = (
+                    f'<@{active_member_row["user_id"]}> ({int(active_member_row["total_msgs"]):,} messages)'
+                )
 
             description = (
                 f'\U0001f465 **Members**: {total_members:,} total \u2022 {online_count} online\n\n'
@@ -864,7 +868,7 @@ class Stats(commands.Cog):
                 f'`{growth_sparkline}` (member count trend)\n'
                 f'`{join_sparkline}` (daily joins)\n\n'
                 f'\U0001f451 **Boosts**: Level {boost_level} \u2022 {boost_count} boosts\n'
-                f'\U0001f4ac **Most Active Channel**: {active_channel_text}'
+                f'\U0001f4ac **Most Active Member (7d)**: {active_member_text}'
             )
 
         except Exception as exc:
