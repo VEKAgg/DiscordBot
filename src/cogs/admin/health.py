@@ -5,9 +5,10 @@ import nextcord
 from nextcord.ext import commands
 
 from src.config.config import CODING_APPS, ENVIRONMENT
+from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_command, safe_send, safe_slash_command, staff_only
+from src.utils.safety import _is_staff_user, bot_operator_only, safe_command, safe_send, safe_slash_command, staff_only
 from src.utils.security.rbac import require_founder, require_staff
 
 logger = logging.getLogger('VEKA.admin.health')
@@ -39,6 +40,7 @@ class Health(commands.Cog):
     @nextcord.slash_command(
         name='admin',
         description='Staff and admin commands for server management',
+        contexts=[nextcord.InteractionContextType.guild],
     )
     @safe_slash_command()
     async def admin(self, interaction: nextcord.Interaction):
@@ -76,14 +78,15 @@ class Health(commands.Cog):
         return 'Disabled'
 
     def _resolve_extension(self, name: str) -> str | None:
-        candidates = set(runtime_state.loaded_cogs) | set(runtime_state.failed_cogs)
-        if name in candidates:
+        """Resolve to an entry of the EXTENSIONS allowlist only (never an arbitrary module path)."""
+        from src.core.app import EXTENSIONS
+
+        name = name.strip()
+        if name in EXTENSIONS:
             return name
-        for ext in candidates:
-            if ext.endswith(name) or ext.split('.')[-1] == name:
+        for ext in EXTENSIONS:
+            if ext.split('.')[-1] == name:
                 return ext
-        if name.startswith('src.cogs.'):
-            return name
         return None
 
     async def send_health_status(self, target):
@@ -116,8 +119,12 @@ class Health(commands.Cog):
         degraded = ', '.join(runtime_state.degraded_features) or 'None'
         embed.add_field(name='Degraded Features', value=degraded, inline=False)
 
-        # Error history
-        last_error = runtime_state.last_db_error or 'None recorded'
+        # Error history — raw error text (hosts, SQL) only for staff (audit M-20)
+        user_obj = getattr(target, 'author', None) or getattr(target, 'user', None)
+        if _is_staff_user(user_obj, getattr(target, 'guild', None)):
+            last_error = (runtime_state.last_db_error or 'None recorded')[:1000]
+        else:
+            last_error = 'Recorded' if runtime_state.last_db_error else 'None recorded'
         embed.add_field(name='Last DB Error', value=last_error, inline=False)
 
         if runtime_state.last_recovery_time:
@@ -228,8 +235,8 @@ class Health(commands.Cog):
 
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @admin.subcommand(name='reloadcog', description='Reload a bot cog extension')
-    @staff_only()
+    @admin.subcommand(name='reloadcog', description='Reload a bot cog extension (bot operators only)')
+    @bot_operator_only()
     @safe_slash_command()
     async def reloadcog(self, interaction: nextcord.Interaction, cog_name: str):
         extension = self._resolve_extension(cog_name)
@@ -237,7 +244,7 @@ class Health(commands.Cog):
             embed = await error_embed(
                 title='Reload Failed',
                 description=(
-                    'Could not resolve the cog name. Use a full extension path '
+                    'Could not resolve the cog name. Use an extension from the allowlist (full path) '
                     'or a short cog name like `health`, `basic`, `networking`, `marketplace`, or `feeds`.'
                 ),
                 contributor_source=__name__,
@@ -251,6 +258,8 @@ class Health(commands.Cog):
                 self.bot.reload_extension(extension)
             else:
                 self.bot.load_extension(extension)
+            # Start async setup of the new cog instance (nextcord never calls cog_load).
+            await run_cog_ready_hooks(self.bot)
 
             if extension in runtime_state.failed_cogs:
                 runtime_state.failed_cogs.remove(extension)

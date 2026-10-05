@@ -1,19 +1,25 @@
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 import aiohttp
 import nextcord
 from dotenv import load_dotenv
+from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import commands
 
 from src.config.config import BOT_PREFIX, DISCORD_TOKEN
+from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.utils.logger import get_logger, setup_logging
 from src.utils.safety import (
+    AppPermissionDenied,
+    DatabaseQueryError,
     DatabaseUnavailableError,
     ExternalRequestError,
+    PermissionDenied,
     ValidationError,
     format_context,
     safe_send,
@@ -58,7 +64,11 @@ def get_intents() -> nextcord.Intents:
 
 
 def build_bot() -> commands.Bot:
-    bot = commands.Bot(command_prefix=BOT_PREFIX, intents=get_intents(), help_command=None)
+    # Never ping @everyone/@here or roles unless a send explicitly opts in (defence in depth, audit L-16).
+    allowed_mentions = nextcord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
+    bot = commands.Bot(
+        command_prefix=BOT_PREFIX, intents=get_intents(), help_command=None, allowed_mentions=allowed_mentions
+    )
     bot.runtime_state = runtime_state  # type: ignore[attr-defined]
     bot.notifier = None  # type: ignore[attr-defined]
     return bot
@@ -83,6 +93,34 @@ async def initialize_database() -> None:
         runtime_state.degraded_features.append('migrations')
 
 
+_migration_retry = {'at': 0.0, 'delay': 15.0}  # backoff for re-running migrations after a failure
+
+
+async def recover_after_db_available(bot: commands.Bot) -> None:
+    """Finish startup work that a database outage blocked: pending migrations and failed cog_ready hooks.
+
+    Called by the health check on every tick while the DB is available; both steps are no-ops once done.
+    """
+    if not runtime_state.db_available:
+        return
+    pending = 'database' in runtime_state.degraded_features or 'migrations' in runtime_state.degraded_features
+    if pending and time.monotonic() >= _migration_retry['at']:
+        try:
+            await db.run_migrations()
+        except Exception as exc:
+            _migration_retry['delay'] = min(_migration_retry['delay'] * 2, 1800.0)
+            _migration_retry['at'] = time.monotonic() + _migration_retry['delay']
+            logger.error(
+                'Deferred database migrations failed (next retry in %.0fs): %s', _migration_retry['delay'], exc
+            )
+        else:
+            for feature in ('database', 'migrations'):
+                while feature in runtime_state.degraded_features:
+                    runtime_state.degraded_features.remove(feature)
+            logger.info('Deferred database migrations applied')
+    await run_cog_ready_hooks(bot)
+
+
 def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
     for extension in extensions:
         try:
@@ -105,7 +143,11 @@ def configure_bot_events(bot: commands.Bot) -> None:
         was_available = runtime_state.db_available
         try:
             if db.pool is None:
-                await db.connect()
+                try:
+                    await db.connect()
+                except Exception as exc:
+                    # A raw connect error (refused, bad auth, …) would otherwise escape and stop the loop.
+                    raise DatabaseUnavailableError(f'connect failed: {type(exc).__name__}') from exc
             await db.ping()
 
             # --- Ping succeeded ---
@@ -139,6 +181,9 @@ def configure_bot_events(bot: commands.Bot) -> None:
                 # Already healthy — reset counter
                 runtime_state.alert_state_cache.pop('healthy_count', None)
 
+            # Retry startup work blocked by an outage (migrations, failed cog_ready hooks).
+            await recover_after_db_available(bot)
+
         except DatabaseUnavailableError:
             # --- Ping failed ---
             runtime_state.alert_state_cache.pop('healthy_count', None)
@@ -147,10 +192,14 @@ def configure_bot_events(bot: commands.Bot) -> None:
             try:
                 await db.reconnect()
                 await db.ping()  # retry on fresh pool
+                # ping() marks the runtime unavailable on failure; restore the prior healthy
+                # state after a transient blip, but retain the recovery threshold for an outage.
+                runtime_state.db_available = was_available
+                await recover_after_db_available(bot)
                 logger.info('Database recovered immediately via reconnect.')
                 return  # transient blip, no alert
-            except DatabaseUnavailableError:
-                pass  # still down
+            except Exception:
+                pass  # still down (reconnect can raise raw asyncpg/OS errors)
 
             if was_available:
                 runtime_state.db_available = False
@@ -169,6 +218,7 @@ def configure_bot_events(bot: commands.Bot) -> None:
         if getattr(bot, '_veka_ready', False):
             return
         bot._veka_ready = True  # type: ignore[attr-defined]
+        runtime_state.startup_time = datetime.now(UTC)  # uptime counts from ready, not import (L-01)
 
         from src.services.admin_notifier import AdminNotifier
 
@@ -184,7 +234,11 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
         db_health_check.start()
 
-        logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available}')
+        # nextcord never calls Cog.cog_load; start each cog's async setup now that the DB is up (H-01).
+        await run_cog_ready_hooks(bot)
+
+        migrations_state = 'degraded' if 'migrations' in runtime_state.degraded_features else 'ok'
+        logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available} migrations={migrations_state}')
 
         try:
             await bot.sync_all_application_commands()
@@ -199,10 +253,14 @@ def configure_bot_events(bot: commands.Bot) -> None:
         """Shared error classification for both prefix and slash commands. Returns user message or None."""
         if isinstance(original_error, commands.CommandNotFound):
             return 'Command not found. Use /help or !help to see available commands.'
-        if isinstance(original_error, commands.MissingPermissions | commands.MissingRole | commands.NotOwner):
+        if isinstance(original_error, PermissionDenied | AppPermissionDenied):
+            return str(original_error)
+        if isinstance(original_error, commands.CheckFailure | ApplicationCheckFailure):
             return 'You do not have permission to use this command.'
         if isinstance(original_error, commands.CommandOnCooldown):
             return f'This command is on cooldown. Try again in {original_error.retry_after:.1f}s.'
+        if isinstance(original_error, DatabaseQueryError):
+            return None  # a bug, not an outage: fall through to the generic internal-error reply
         if isinstance(original_error, DatabaseUnavailableError):
             return (
                 'This feature is temporarily unavailable due to database connectivity issues. Please try again later.'
@@ -259,6 +317,10 @@ def configure_bot_events(bot: commands.Bot) -> None:
             await http.aclose()
         except Exception as exc:
             logger.warning('Error closing shared HTTP session: %s', exc)
+        try:
+            await db.close()  # release PostgreSQL connections on real shutdown (audit L-14)
+        except Exception as exc:
+            logger.warning('Error closing database pool: %s', exc)
         await _default_close()
 
     bot.close = _close_with_cleanup  # type: ignore[method-assign]

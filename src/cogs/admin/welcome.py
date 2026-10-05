@@ -8,9 +8,19 @@ from nextcord.ext import commands
 
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import info_embed, success_embed
+from src.utils.http import get_session
 from src.utils.safety import safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.welcome')
+
+
+def render_welcome(template: str, user_mention: str, guild: nextcord.Guild) -> str:
+    """Substitute {user}/{server}/{member_count}. Plain replacement: str.format raised KeyError on unknown
+    fields and allows attribute lookups in staff-written templates (audit L-10)."""
+    values = {'user': user_mention, 'server': guild.name, 'member_count': guild.member_count}
+    for key, value in values.items():
+        template = template.replace('{' + key + '}', str(value))
+    return template
 
 
 class Welcome(commands.Cog):
@@ -34,11 +44,7 @@ class Welcome(commands.Cog):
 
             # Render welcome template
             template = settings.welcome_message_template or 'Welcome {user} to {server}!'
-            welcome_text = template.format(
-                user=member.mention,
-                server=member.guild.name,
-                member_count=member.guild.member_count,
-            )
+            welcome_text = render_welcome(template, member.mention, member.guild)
 
             # Build embed
             embed = await info_embed(
@@ -65,7 +71,7 @@ class Welcome(commands.Cog):
                     username=member.display_name,
                     avatar_bytes=avatar_bytes,
                     server_name=member.guild.name,
-                    member_count=member.guild.member_count,
+                    member_count=member.guild.member_count or 0,
                     server_icon_bytes=icon_bytes,
                 )
                 file = nextcord.File(fp=buffer, filename='welcome_card.png')
@@ -80,10 +86,9 @@ class Welcome(commands.Cog):
     async def _download_asset(self, url: str) -> bytes | None:
         """Download a Discord asset (avatar/icon) as bytes."""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status == 200:
-                        return await resp.read()
+            async with get_session().get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    return await resp.read()
         except Exception:
             pass
         return None
@@ -119,11 +124,7 @@ class Welcome(commands.Cog):
         settings = await guild_settings_service.get_settings(interaction.guild.id)
 
         template = settings.welcome_message_template or 'Welcome {user} to {server}!'
-        welcome_text = template.format(
-            user=interaction.user.mention,
-            server=interaction.guild.name,
-            member_count=interaction.guild.member_count,
-        )
+        welcome_text = render_welcome(template, interaction.user.mention, interaction.guild)
 
         embed = await success_embed(
             title=f'Welcome to {interaction.guild.name}!',
@@ -149,7 +150,7 @@ class Welcome(commands.Cog):
             username=interaction.user.display_name,
             avatar_bytes=avatar_bytes,
             server_name=interaction.guild.name,
-            member_count=interaction.guild.member_count,
+            member_count=interaction.guild.member_count or 0,
             server_icon_bytes=icon_bytes,
         )
         file = nextcord.File(fp=buffer, filename='welcome_card.png')

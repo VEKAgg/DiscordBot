@@ -15,6 +15,7 @@ from src.config.config import (
     DONATOR_IDS,
     FOUNDER_IDS,
     INTERN_IDS,
+    MAIN_GUILD_ID,
     OWNER_IDS,
     STAFF_IDS,
 )
@@ -132,7 +133,7 @@ class RBAC:
 
         Priority:
         1. .env ID lists (FOUNDER_IDS, OWNER_IDS, etc.)
-        2. Guild owner -> FOUNDER
+        2. Guild owner -> FOUNDER (main guild) / ADMIN (other guilds)
         3. Administrator permission -> ADMIN
         4. Discord role name mapping -> highest matching role
         5. Default -> USER
@@ -150,9 +151,10 @@ class RBAC:
         if id_role:
             return id_role
 
-        # 2. Check if guild owner
+        # 2. Guild owner: FOUNDER only in the main guild. Owners of any other server that adds the
+        #    bot get ADMIN in their own server, not bot-wide founder powers (audit H-07).
         if ctx.guild.owner_id == member.id:
-            return Role.FOUNDER
+            return Role.FOUNDER if ctx.guild.id == MAIN_GUILD_ID else Role.ADMIN
 
         # 3. Check administrator permission
         if member.guild_permissions.administrator:

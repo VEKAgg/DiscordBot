@@ -12,7 +12,6 @@ import logging
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import STAFF_CHANNEL_ID
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
@@ -23,11 +22,48 @@ from src.utils.security.rbac import require_founder
 
 logger = logging.getLogger('VEKA.admin.moderation')
 
+MAX_REASON_LENGTH = 500
+
+
+def _hierarchy_refusal(guild: nextcord.Guild, moderator, target: nextcord.Member) -> str | None:
+    """Return why ``moderator`` may not act on ``target`` (audit H-06), or None if allowed."""
+    if target.id == moderator.id:
+        return 'You cannot warn yourself.'
+    if target.bot:
+        return 'Bots cannot be warned.'
+    if target.id == guild.owner_id:
+        return 'The server owner cannot be warned.'
+    if moderator.id == guild.owner_id:
+        return None
+    if target.guild_permissions.administrator:
+        return 'Administrators can only be warned by the server owner.'
+    mod_member = moderator if isinstance(moderator, nextcord.Member) else guild.get_member(moderator.id)
+    if mod_member is None or mod_member.top_role <= target.top_role:
+        return 'You can only warn members whose top role is below yours.'
+    return None
+
+
+async def _record_audit(guild: nextcord.Guild, moderator, target, action: str, reason: str = '') -> None:
+    """Write an audit_logs row for a moderation action (feeds /modstats and massunban filters)."""
+    try:
+        from src.utils.security import audit_log
+
+        await audit_log.record(
+            user_id=str(moderator.id),
+            action=action,
+            details={'target_user_id': str(target.id), 'moderator_id': str(moderator.id), 'reason': reason[:200]},
+            guild_id=str(guild.id),
+            severity='warning',
+        )
+    except Exception:
+        logger.warning('Failed to record audit row %s for %s', action, target.id, exc_info=True)
+
 
 class Moderation(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.lockdown_active = False
+        # Guild IDs with the lockdown alert currently active (in-memory; alert only, see audit M-16).
+        self.lockdown_guilds: set[int] = set()
 
     # ============================================================
     # Panic / Lockdown (Founder only)
@@ -54,30 +90,50 @@ class Moderation(commands.Cog):
         await self._toggle_lockdown(ctx)
 
     async def _toggle_lockdown(self, target: commands.Context | nextcord.Interaction) -> None:
-        self.lockdown_active = not self.lockdown_active
-        status = 'ACTIVATED' if self.lockdown_active else 'DEACTIVATED'
+        guild = target.guild
+        if guild is None:
+            await safe_send(target, content='This command can only be used in a server.', ephemeral=True)
+            return
 
-        staff_channel = self.bot.get_channel(STAFF_CHANNEL_ID)
-        if staff_channel:
+        active = guild.id not in self.lockdown_guilds
+        if active:
+            self.lockdown_guilds.add(guild.id)
+        else:
+            self.lockdown_guilds.discard(guild.id)
+        status = 'ACTIVATED' if active else 'DEACTIVATED'
+
+        # Only this guild's configured staff channel — never another server's (audit H-07).
+        try:
+            staff_channel = await guild_settings_service.resolve_channel(guild, 'staff_channel_id')
+        except Exception:
+            staff_channel = None
+        if isinstance(staff_channel, nextcord.TextChannel):
             embed = await alert_embed(
                 title=f'LOCKDOWN {status}',
                 description=(
                     f'Server lockdown has been **{status.lower()}** by a Founder.\n\n'
-                    f'**All non-essential operations are suspended.**'
-                    if self.lockdown_active
-                    else f'Server lockdown has been **{status.lower()}**.\n\nNormal operations have resumed.'
+                    '**Alert only:** channel permissions and bot operations are unchanged.'
+                    if active
+                    else f'Server lockdown alert has been **{status.lower()}**. Channel permissions are unchanged.'
                 ),
-                severity='CRITICAL' if self.lockdown_active else 'INFO',
+                severity='CRITICAL' if active else 'INFO',
             )
             try:
-                await staff_channel.send(content='@everyone', embed=embed)
+                await staff_channel.send(
+                    content='@everyone', embed=embed, allowed_mentions=nextcord.AllowedMentions(everyone=True)
+                )
             except Exception as e:
                 logger.error('Failed to send lockdown alert: %s', e)
+        else:
+            logger.warning('Lockdown toggled in guild %s but no staff channel is configured', guild.id)
 
         embed = await alert_embed(
             title=f'Lockdown {status}',
-            description=f'Server lockdown has been **{status.lower()}**.',
-            severity='CRITICAL' if self.lockdown_active else 'INFO',
+            description=(
+                f'Server lockdown alert has been **{status.lower()}**.\n'
+                'This is an alert only; channel permissions and bot operations are unchanged.'
+            ),
+            severity='CRITICAL' if active else 'INFO',
         )
         await safe_send(target, embed=embed, ephemeral=True)
 
@@ -115,6 +171,14 @@ class Moderation(commands.Cog):
             return
 
         moderator = target.user if isinstance(target, nextcord.Interaction) else target.author
+
+        refusal = _hierarchy_refusal(guild, moderator, user)
+        if refusal:
+            embed = await error_embed('Cannot Warn', refusal, contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        reason = reason.strip()[:MAX_REASON_LENGTH] or 'No reason given'
 
         # Insert warning
         if runtime_state.db_available:
@@ -170,11 +234,15 @@ class Moderation(commands.Cog):
         ban_threshold = settings.warn_ban_threshold or 5
 
         escalation_msg = ''
-        if active_count >= ban_threshold:
+        bot_outranks = guild.me is not None and guild.me.top_role > user.top_role
+        if active_count >= mute_threshold and not bot_outranks:
+            escalation_msg = "\n\n:warning: Escalation skipped — the member's top role is not below the bot's."
+        elif active_count >= ban_threshold:
             try:
                 await guild.ban(user, reason=f'Auto-ban: reached {active_count} warnings')
                 escalation_msg = f'\n\n:rotating_light: **Auto-ban triggered** — {active_count} active warnings reached the ban threshold ({ban_threshold}).'
                 logger.info('Auto-banned %s in %s after %d warnings', user.id, guild.id, active_count)
+                await _record_audit(guild, moderator, user, 'moderation_ban', reason=f'{active_count} warnings')
             except nextcord.Forbidden:
                 escalation_msg = '\n\n:warning: Auto-ban could not be applied — missing permissions.'
             except Exception:
@@ -188,6 +256,9 @@ class Moderation(commands.Cog):
                         await user.add_roles(muted_role, reason=f'Auto-mute: reached {active_count} warnings')
                         escalation_msg = f'\n\n:mute: **Auto-mute triggered** — {active_count} active warnings reached the mute threshold ({mute_threshold}).'
                         logger.info('Auto-muted %s in %s after %d warnings', user.id, guild.id, active_count)
+                        await _record_audit(
+                            guild, moderator, user, 'moderation_mute', reason=f'{active_count} warnings'
+                        )
                     except nextcord.Forbidden:
                         escalation_msg = '\n\n:warning: Auto-mute could not be applied — missing permissions.'
                     except Exception:
@@ -266,13 +337,23 @@ class Moderation(commands.Cog):
             status = '**Active**' if row['active'] else '~~Cleared~~'
             ts = f'<t:{int(row["created_at"].timestamp())}:R>' if row['created_at'] else 'Unknown'
             moderator = f'<@{row["moderator_id"]}>' if row['moderator_id'] else 'Unknown'
-            lines.append(f'`#{row["id"]}` — {status} — {ts}\n  Reason: {row["reason"]}\n  Moderator: {moderator}')
+            reason_text = str(row['reason'] or '')
+            if len(reason_text) > 150:
+                reason_text = reason_text[:147] + '...'
+            lines.append(f'`#{row["id"]}` — {status} — {ts}\n  Reason: {reason_text}\n  Moderator: {moderator}')
 
-        description = f'**{user.mention}** — {active_count} active / {len(rows)} total warnings\n\n'
-        description += '\n\n'.join(lines)
+        header = f'**{user.mention}** — {active_count} active / {len(rows)} total warnings\n\n'
+        # Embed descriptions are capped at 4096 chars (audit M-08): add entries while they fit.
+        description = header
+        shown = 0
+        for line in lines:
+            if len(description) + len(line) + 60 > 4096:
+                break
+            description += ('\n\n' if shown else '') + line
+            shown += 1
 
-        if len(rows) > 25:
-            description += f'\n\n*...and {len(rows) - 25} more warnings.*'
+        if len(rows) > shown:
+            description += f'\n\n*...and {len(rows) - shown} more warnings.*'
 
         embed = await veka_embed(
             title=f'Warnings — {user}',
@@ -370,11 +451,14 @@ class Moderation(commands.Cog):
 
         try:
             # Audit log actions
+            # audit_logs.user_id is the actor; bans seen via on_member_ban carry the moderator in details.
             audit_rows = await db.fetch(
-                """SELECT moderator_id, action_type, COUNT(*) as cnt
-                   FROM audit_logs WHERE guild_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
-                   GROUP BY moderator_id, action_type""",
-                guild.id,
+                """SELECT COALESCE(details->>'moderator_id', user_id) AS moderator_id, action, COUNT(*) AS cnt
+                   FROM audit_logs
+                   WHERE guild_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
+                     AND action IN ('ban_executed', 'moderation_kick', 'moderation_mute', 'honeypot_timeout')
+                   GROUP BY 1, 2""",
+                str(guild.id),
             )
 
             # Warning counts
@@ -393,19 +477,26 @@ class Moderation(commands.Cog):
         # Aggregate by moderator
         stats: dict[int, dict[str, int]] = {}
         for row in audit_rows:
-            mid = row['moderator_id']
+            raw_mid = str(row['moderator_id'] or '')
+            if not raw_mid.isdigit() or int(raw_mid) == 0:
+                continue  # moderator unknown (e.g. ban seen without audit-log access)
+            mid = int(raw_mid)
             if mid not in stats:
                 stats[mid] = {'bans': 0, 'kicks': 0, 'mutes': 0, 'warns': 0}
-            action = row['action_type']
-            if action in ('ban', 'softban'):
+            action = row['action']
+            # on_member_ban is the canonical ban event. Counting moderation_ban as well
+            # would count every auto-ban twice (once by the command, once by the listener).
+            if action == 'ban_executed':
                 stats[mid]['bans'] += row['cnt']
-            elif action == 'kick':
+            elif action == 'moderation_kick':
                 stats[mid]['kicks'] += row['cnt']
-            elif action in ('timeout', 'mute'):
+            elif action in ('moderation_mute', 'honeypot_timeout'):
                 stats[mid]['mutes'] += row['cnt']
 
         for row in warn_rows:
             mid = row['moderator_id']
+            if mid is None:
+                continue
             if mid not in stats:
                 stats[mid] = {'bans': 0, 'kicks': 0, 'mutes': 0, 'warns': 0}
             stats[mid]['warns'] += row['cnt']

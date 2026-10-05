@@ -86,10 +86,12 @@ class MentorshipService:
         return mentorship
 
     async def get_mentorship(self, mentorship_id: int) -> dict | None:
-        return await db.fetch_one(
+        # dict() so callers can update fields (asyncpg Records are immutable).
+        row = await db.fetch_one(
             'SELECT * FROM mentorships WHERE id = $1',
             mentorship_id,
         )
+        return dict(row) if row else None
 
     async def get_active_mentorship(self, mentor_id: str, mentee_id: str) -> dict | None:
         mentor_user_id = await self._resolve_user_id(mentor_id)
@@ -107,18 +109,22 @@ class MentorshipService:
 
     async def get_user_mentorships(self, user_id: str, status: str | None = None) -> list[dict]:
         resolved_id = await self._resolve_user_id(user_id)
+        # mentor_id / mentee_id are users.id (internal PKs); expose the Discord IDs for callers that
+        # compare against members (comparing the PK to a snowflake never matched — audit H-10).
         query = """
-            SELECT *
-            FROM mentorships
-            WHERE (mentor_id = $1 OR mentee_id = $1)
+            SELECT m.*, mentor.discord_id AS mentor_discord_id, mentee.discord_id AS mentee_discord_id
+            FROM mentorships m
+            JOIN users mentor ON mentor.id = m.mentor_id
+            JOIN users mentee ON mentee.id = m.mentee_id
+            WHERE (m.mentor_id = $1 OR m.mentee_id = $1)
         """
         params: list[int | str] = [resolved_id]
 
         if status:
-            query += ' AND status = $2'
+            query += ' AND m.status = $2'
             params.append(status)
 
-        return await db.fetch(query, *params)
+        return [dict(row) for row in await db.fetch(query, *params)]
 
     async def find_mentors(self, category: str) -> list[dict]:
         return await db.fetch(

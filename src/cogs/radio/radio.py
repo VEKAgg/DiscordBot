@@ -17,6 +17,7 @@ from src.config.config import (
     RADIO_STABILITY_INTERVAL,
     RADIO_VOICE_CHANNEL_ID,
 )
+from src.core.lifecycle import has_running_loop, spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
@@ -28,7 +29,9 @@ logger = logging.getLogger('VEKA.radio')
 
 FFMPEG_OPTIONS = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-    'options': '-vn -ar 48000 -ac 2 -f opus',
+    # FFmpegPCMAudio already adds '-f s16le -ar 48000 -ac 2'; adding '-f opus' here overrode it and produced
+    # an Ogg container that was played as raw PCM (noise). Only drop video (audit H-09).
+    'options': '-vn',
 }
 
 RADIO_STATIONS: dict[str, dict[str, str]] = {
@@ -106,20 +109,23 @@ class RadioManager(commands.Cog):
             pass
         return RADIO_VOICE_CHANNEL_ID
 
-    async def cog_load(self):
-        """Auto-join on bot startup if channel is configured."""
+    async def cog_ready(self):
+        """Auto-join on bot startup if channel is configured (called from on_ready)."""
         if self._target_channel_id:
-            self.monitor_stability.start()
-            self.track_radio_listeners.start()
+            if not self.monitor_stability.is_running():
+                self.monitor_stability.start()
+            if not self.track_radio_listeners.is_running():
+                self.track_radio_listeners.start()
             await asyncio.sleep(5)
             if not self._manual_stop:
                 await self._auto_join()
 
-    async def cog_unload(self):
-        """Disconnect and stop tasks when cog is unloaded."""
-        self.monitor_stability.stop()
-        self.track_radio_listeners.stop()
-        await self._disconnect()
+    def cog_unload(self):
+        """Disconnect and stop tasks when cog is unloaded (nextcord calls this synchronously)."""
+        self.monitor_stability.cancel()
+        self.track_radio_listeners.cancel()
+        if has_running_loop():
+            spawn(self._disconnect(), name='radio:disconnect')
 
     # ============================================================
     # Internal helpers
@@ -192,13 +198,17 @@ class RadioManager(commands.Cog):
         self._voice_client.play(source, after=self._on_play_end)
 
     def _on_play_end(self, error):
-        """Callback when FFmpeg stream ends or encounters an error."""
+        """Callback when FFmpeg stream ends or encounters an error.
+
+        nextcord invokes ``after=`` from the audio player thread, so the coroutine must be handed to the
+        bot's event loop thread-safely (``ensure_future`` here had no running loop in that thread).
+        """
         if error:
             logger.error('Radio playback error: %s', error)
         else:
             logger.info('Radio stream ended normally, attempting restart')
             if self._voice_client and self._voice_client.is_connected() and not self._manual_stop:
-                asyncio.ensure_future(self._restart_playback())
+                asyncio.run_coroutine_threadsafe(self._restart_playback(), self.bot.loop)
 
     async def _restart_playback(self):
         """Restart playback after stream ends."""
@@ -328,6 +338,7 @@ class RadioManager(commands.Cog):
     @nextcord.slash_command(
         name='radio',
         description='Control the 24/7 radio stream',
+        contexts=[nextcord.InteractionContextType.guild],
     )
     async def radio_group(self, interaction: nextcord.Interaction):
         station = RADIO_STATIONS[self._active_station]
@@ -561,6 +572,7 @@ class RadioManager(commands.Cog):
 
     @commands.command(name='radiostation')
     @admin_only()
+    @owner_in_external_only()
     async def prefix_radio_station(self, ctx: commands.Context, name: str):
         """Switch the radio station. Usage: !radiostation <name>"""
         if name not in RADIO_STATIONS:
