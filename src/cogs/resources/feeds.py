@@ -10,6 +10,7 @@ from src.services.rss_service import RSSService
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import (
     DatabaseUnavailableError,
+    manage_guild_only,
     safe_background_task,
     safe_send,
     safe_slash_command,
@@ -22,7 +23,10 @@ class Feeds(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.rss_service = RSSService(bot=bot)
-        self.feed_update.start()
+
+    async def cog_ready(self):
+        if not self.feed_update.is_running():
+            self.feed_update.start()
 
     def cog_unload(self):
         self.feed_update.cancel()
@@ -45,6 +49,9 @@ class Feeds(commands.Cog):
             return
 
         for sub in subscriptions:
+            # Seeded subscriptions have channel_id 0 until staff configure them with /feed add.
+            if not sub['channel_id']:
+                continue
             # Respect per-feed polling interval
             if sub['last_polled_at']:
                 from datetime import UTC, datetime, timedelta
@@ -60,17 +67,23 @@ class Feeds(commands.Cog):
                 if not feed_data:
                     continue
 
-                new_entries = await self.rss_service.process_and_dedupe(sub['feed_url'], feed_data['entries'])
+                guild = self.bot.get_guild(sub['guild_id'])
+                channel = guild.get_channel(sub['channel_id']) if guild else None
+                if not isinstance(channel, nextcord.TextChannel):
+                    continue
 
-                if new_entries:
-                    channel = self.bot.get_channel(sub['channel_id'])
-                    if channel and isinstance(channel, nextcord.TextChannel):
-                        for entry in new_entries[:3]:
-                            embed = await self._create_feed_embed(entry, sub['feed_name'])
-                            try:
-                                await channel.send(embed=embed)
-                            except Exception as e:
-                                logger.error('Failed to send feed to channel %s: %s', sub['channel_id'], e)
+                new_entries = await self.rss_service.process_and_dedupe(
+                    sub['feed_url'], feed_data['entries'], subscription_id=sub['id'], mark_seen=False
+                )
+
+                for entry in new_entries[:3]:
+                    embed = await self._create_feed_embed(entry, sub['feed_name'])
+                    try:
+                        await channel.send(embed=embed)
+                    except Exception as e:
+                        logger.error('Failed to send feed to channel %s: %s', sub['channel_id'], e)
+                        break
+                    await self.rss_service.process_and_dedupe(sub['feed_url'], [entry], subscription_id=sub['id'])
 
                 # Update last_polled_at
                 await db.execute(
@@ -89,7 +102,11 @@ class Feeds(commands.Cog):
     # /feed — Management Commands
     # ============================================================
 
-    @nextcord.slash_command(name='feed', description='Manage RSS feed subscriptions')
+    @nextcord.slash_command(
+        name='feed',
+        description='Manage RSS feed subscriptions',
+        contexts=[nextcord.InteractionContextType.guild],
+    )
     @safe_slash_command()
     async def feed_group(self, interaction: nextcord.Interaction):
         embed = await info_embed(
@@ -108,6 +125,7 @@ class Feeds(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @feed_group.subcommand(name='add', description='Subscribe to a new RSS feed')
+    @manage_guild_only()
     @safe_slash_command(requires_db=True)
     async def feed_add(
         self,
@@ -200,6 +218,7 @@ class Feeds(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=False)
 
     @feed_group.subcommand(name='remove', description='Remove a feed subscription')
+    @manage_guild_only()
     @safe_slash_command(requires_db=True)
     async def feed_remove(
         self,
@@ -307,6 +326,7 @@ class Feeds(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=False)
 
     @feed_group.subcommand(name='test', description='Preview the latest entry from a feed URL')
+    @manage_guild_only()
     @safe_slash_command()
     async def feed_test(
         self,

@@ -46,7 +46,7 @@ def _format_role(guild: nextcord.Guild, role_id: int | None) -> str:
     if role_id is None:
         return '`Not set`'
     role = guild.get_role(role_id)
-    return role.mention if role else f'&{role_id} (deleted?)'
+    return role.mention if role else f'<@&{role_id}> (deleted?)'
 
 
 def _build_settings_embed(guild: nextcord.Guild, settings: GuildSettings) -> list[str]:
@@ -72,8 +72,13 @@ class Setup(commands.Cog):
     # Slash commands
     # ============================================================
 
-    @nextcord.slash_command(name='setup', description='Configure server-specific bot settings')
+    @nextcord.slash_command(
+        name='setup',
+        description='Configure server-specific bot settings',
+        contexts=[nextcord.InteractionContextType.guild],
+    )
     async def setup_group(self, interaction: nextcord.Interaction):
+        assert interaction.guild is not None  # /setup is guild-only (contexts=[guild])
         settings = await guild_settings_service.get_settings(interaction.guild.id)
         lines = _build_settings_embed(interaction.guild, settings)
         embed = await veka_embed(
@@ -90,6 +95,7 @@ class Setup(commands.Cog):
     @require_staff()
     async def setup_show(self, interaction: nextcord.Interaction):
         """Display all configured channels and roles."""
+        assert interaction.guild is not None  # /setup is guild-only (contexts=[guild])
         settings = await guild_settings_service.get_settings(interaction.guild.id)
         lines = _build_settings_embed(interaction.guild, settings)
         embed = await veka_embed(
@@ -216,13 +222,13 @@ class Setup(commands.Cog):
     @require_staff()
     async def setup_interactive(self, interaction: nextcord.Interaction):
         """Open an interactive UI to configure channels and roles via dropdowns."""
+        assert interaction.guild is not None and isinstance(interaction.user, nextcord.Member)
         view = SetupView(interaction.guild, interaction.user)
         embed = await veka_embed(
             title='Interactive Server Setup',
             description=(
                 '**Step 1:** Select a setting from the dropdown.\n'
-                '**Step 2:** Mention the channel or role in chat.\n\n'
-                'The bot will detect your mention and apply the setting.'
+                '**Step 2:** Pick the channel or role from the picker that appears (or press Reset).'
             ),
             contributor_source=__name__,
             user=interaction.user,
@@ -235,9 +241,11 @@ class Setup(commands.Cog):
     # ============================================================
 
     @commands.group(name='setup', invoke_without_command=True)
+    @commands.guild_only()
     @require_staff()
     async def setup_prefix(self, ctx: commands.Context):
         """Show current server settings. Use !setup <subcommand> for more options."""
+        assert ctx.guild is not None  # guild_only
         settings = await guild_settings_service.get_settings(ctx.guild.id)
         lines = _build_settings_embed(ctx.guild, settings)
         await safe_send(ctx, '\n'.join(['**Server Settings**\n'] + lines))
@@ -246,6 +254,7 @@ class Setup(commands.Cog):
     @require_staff()
     async def setup_show_prefix(self, ctx: commands.Context):
         """Show all configured channels and roles."""
+        assert ctx.guild is not None  # guild_only
         settings = await guild_settings_service.get_settings(ctx.guild.id)
         lines = _build_settings_embed(ctx.guild, settings)
         await safe_send(ctx, '\n'.join(['**Server Settings**\n'] + lines))
@@ -297,7 +306,10 @@ SETTING_CHOICES = [nextcord.SelectOption(label=v[0], value=k, description=v[2]) 
 
 
 class SetupView(nextcord.ui.View):
-    """Interactive view with a setting-type dropdown. User picks a setting, then mentions the channel/role in chat."""
+    """Interactive setup: pick a setting, then pick the channel/role with a native select (audit M-17).
+
+    The previous flow asked users to mention the channel in chat, but nothing listened for it.
+    """
 
     def __init__(self, guild: nextcord.Guild, user: nextcord.Member):
         super().__init__(timeout=300)
@@ -320,20 +332,79 @@ class SetupView(nextcord.ui.View):
     async def setting_select(self, select: nextcord.ui.Select, interaction: nextcord.Interaction):
         self.selected_setting = select.values[0]
         setting_info = ALL_SETTINGS[self.selected_setting]
-        is_role = self.selected_setting in ROLE_SETTINGS
-        kind = 'role' if is_role else 'channel'
+        kind = 'role' if self.selected_setting in ROLE_SETTINGS else 'channel'
 
         embed = await info_embed(
             title=f'Configure: {setting_info[0]}',
-            description=(
-                f'{setting_info[2]}\n\n'
-                f'**Mention the {kind}** you want to use in chat, or type `reset` to clear this setting.'
-            ),
+            description=f'{setting_info[2]}\n\nPick the {kind} below, or press **Reset** to clear this setting.',
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        view = SetupValueView(self.guild, self.user, self.selected_setting)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class SetupValueView(nextcord.ui.View):
+    """Second step: a ChannelSelect / RoleSelect for one setting, plus a Reset button."""
+
+    def __init__(self, guild: nextcord.Guild, user: nextcord.Member, setting_key: str):
+        super().__init__(timeout=300)
+        self.guild = guild
+        self.user = user
+        self.setting_key = setting_key
+        self.label, self.field_name, _ = ALL_SETTINGS[setting_key]
+
+        picker: nextcord.ui.ChannelSelect | nextcord.ui.RoleSelect
+        if setting_key in ROLE_SETTINGS:
+            picker = nextcord.ui.RoleSelect(placeholder=f'Select the {self.label}...')
+        else:
+            channel_types = (
+                [nextcord.ChannelType.voice, nextcord.ChannelType.stage_voice]
+                if setting_key == 'radio'
+                else [nextcord.ChannelType.text, nextcord.ChannelType.news]
+            )
+            picker = nextcord.ui.ChannelSelect(placeholder=f'Select the {self.label}...', channel_types=channel_types)
+        picker.callback = self._on_pick  # type: ignore[method-assign]
+        self.picker = picker
+        self.add_item(picker)
+
+    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message('This setup panel is not for you.', ephemeral=True)
+            return False
+        return True
+
+    async def _on_pick(self, interaction: nextcord.Interaction):
+        values = self.picker.values
+        chosen = (values.roles if isinstance(self.picker, nextcord.ui.RoleSelect) else values.channels) or []
+        if not chosen:
+            await interaction.response.send_message('Nothing selected.', ephemeral=True)
+            return
+        target = chosen[0]
+        await guild_settings_service.update_settings(self.guild.id, **{self.field_name: target.id})
+        embed = await success_embed(
+            title='Setting Updated',
+            description=f'**{self.label}** set to {target.mention}',
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @nextcord.ui.button(label='Reset', style=nextcord.ButtonStyle.secondary)
+    async def reset_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction):
+        await guild_settings_service.update_settings(self.guild.id, **{self.field_name: None})
+        embed = await success_embed(
+            title='Setting Reset',
+            description=f'**{self.label}** has been cleared. The bot will fall back to the default configuration.',
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
 
 
 def setup(bot: commands.Bot):

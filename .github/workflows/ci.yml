@@ -1,0 +1,78 @@
+name: CI
+
+# Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL) and audit dependencies.
+# Runs on every push and PR; the deploy workflow only runs after merges to main/production.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: veka_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Disposable database: tests/test_schema_postgres.py drops and recreates its public schema.
+      VEKA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/veka_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Ruff (lint)
+        run: uv run --extra dev ruff check .
+
+      - name: Ruff (format)
+        run: uv run --extra dev ruff format --check .
+
+      - name: Mypy
+        run: uv run --extra dev mypy src/ main.py --explicit-package-bases
+
+      - name: Pytest (unit + PostgreSQL schema tests)
+        run: uv run --extra dev pytest tests/ -q
+
+      - name: Dependency audit
+        # PyNaCl 1.5.0 advisories (PYSEC-2026-1448/3002) are accepted until nextcord lifts its PyNaCl<1.6 pin;
+        # the affected libsodium API (ed25519 point validation) is not used by nextcord's voice code.
+        # See MIGRATION_NOTES.md.
+        run: |
+          uv export --locked --no-dev --no-hashes --format requirements-txt > /tmp/requirements.txt
+          uvx pip-audit -r /tmp/requirements.txt --ignore-vuln PYSEC-2026-1448 --ignore-vuln PYSEC-2026-3002
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t veka-discord-bot:ci .

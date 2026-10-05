@@ -14,35 +14,38 @@ logger = logging.getLogger('VEKA.networking')
 
 
 class ConnectionRequestView(nextcord.ui.View):
-    """Dropdown to select a server member for a connection request."""
+    """Searchable member picker for a connection request.
+
+    Uses Discord's native user select, which searches the whole server (the previous static
+    dropdown only ever listed the first 25 members — audit M-11).
+    """
 
     def __init__(self, guild: nextcord.Guild, requester_id: str, message: str, svc: NetworkingService):
         super().__init__(timeout=120)
+        self.guild = guild
         self.requester_id = requester_id
         self.message = message
         self.svc = svc
 
-        options = []
-        for member in guild.members:
-            if str(member.id) == requester_id or member.bot:
-                continue
-            label = member.display_name
-            if len(label) > 100:
-                label = label[:100]
-            desc = str(member.id)
-            options.append(nextcord.SelectOption(label=label, value=str(member.id), description=desc))
-            if len(options) >= 25:
-                break
-
-        select: nextcord.ui.Select = nextcord.ui.Select(
-            placeholder='Choose a member to connect with...', options=options
-        )  # type: ignore[type-arg]
+        select: nextcord.ui.UserSelect = nextcord.ui.UserSelect(placeholder='Search for a member to connect with...')
         select.callback = self._select_callback  # type: ignore[method-assign]
+        self.select = select
         self.add_item(select)
 
     async def _select_callback(self, interaction: nextcord.Interaction):
-        selected_id = interaction.data['values'][0]  # type: ignore[index,typeddict-item]
-        selected_member = interaction.guild.get_member(int(selected_id))
+        chosen = self.select.values.members or self.select.values.users
+        target = chosen[0] if chosen else None
+        selected_member = self.guild.get_member(target.id) if target else None
+        if selected_member is None or selected_member.bot or str(selected_member.id) == self.requester_id:
+            embed = await error_embed(
+                title='Invalid Selection',
+                description='Pick another (non-bot) member of this server.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await interaction.response.edit_message(embed=embed, view=self)
+            return
+        selected_id = str(selected_member.id)
 
         try:
             await self.svc.create_request(self.requester_id, selected_id, self.message)
@@ -88,6 +91,13 @@ class ConnectionRequestView(nextcord.ui.View):
         pass
 
 
+async def _fetch_user(client, user_id: str) -> nextcord.User | None:
+    try:
+        return client.get_user(int(user_id)) or await client.fetch_user(int(user_id))
+    except (nextcord.NotFound, nextcord.HTTPException, ValueError):
+        return None
+
+
 class ConnectionResponseView(nextcord.ui.View):
     """Accept/Decline buttons sent via DM for a connection request."""
 
@@ -126,7 +136,8 @@ class ConnectionResponseView(nextcord.ui.View):
             )
             await interaction.edit_original_message(embed=embed, view=None)
 
-            requester = interaction.guild.get_member(int(self.requester_id)) if interaction.guild else None
+            # Buttons are clicked in DMs, where interaction.guild is None — look the requester up globally.
+            requester = await _fetch_user(interaction.client, self.requester_id)
             if requester:
                 try:
                     notify = await success_embed(
@@ -160,7 +171,8 @@ class ConnectionResponseView(nextcord.ui.View):
             )
             await interaction.edit_original_message(embed=embed, view=None)
 
-            requester = interaction.guild.get_member(int(self.requester_id)) if interaction.guild else None
+            # Buttons are clicked in DMs, where interaction.guild is None — look the requester up globally.
+            requester = await _fetch_user(interaction.client, self.requester_id)
             if requester:
                 try:
                     notify = await error_embed(

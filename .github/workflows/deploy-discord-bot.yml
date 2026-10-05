@@ -61,6 +61,10 @@ jobs:
             if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
               echo "Health check passed - Bot is ready"
               SUCCESS=1
+              # Migrations failing doesn't stop the bot (degraded mode), so surface it loudly.
+              if docker logs veka-discord-bot 2>&1 | grep -q "is ready.*migrations=degraded"; then
+                echo "::warning title=Migrations degraded::Database migrations failed on startup - check 'docker logs veka-discord-bot'"
+              fi
               break
             fi
             echo "Waiting for bot to become ready... ($ELAPSED seconds elapsed)"
