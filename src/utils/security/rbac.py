@@ -7,6 +7,8 @@ import logging
 from enum import Enum
 from functools import wraps
 
+import nextcord
+
 from src.config.config import (
     ACTIVE_PRO_IDS,
     ADMIN_IDS,
@@ -200,7 +202,14 @@ class RBAC:
                     user_role = self.get_user_role(ctx)
 
                     if ROLE_HIERARCHY.index(user_role) < ROLE_HIERARCHY.index(min_role):
-                        await ctx.send(f'❌ You need {min_role.value} role or higher to use this command.')
+                        msg = f'❌ You need {min_role.value} role or higher to use this command.'
+                        if isinstance(ctx, nextcord.Interaction):
+                            if ctx.response.is_done():
+                                await ctx.followup.send(msg, ephemeral=True)
+                            else:
+                                await ctx.response.send_message(msg, ephemeral=True)
+                        else:
+                            await ctx.send(msg)
                         return
 
                 return await func(*args, **kwargs)
@@ -229,7 +238,14 @@ class RBAC:
                     user_role = self.get_user_role(ctx)
 
                     if not self.has_permission(user_role, permission):
-                        await ctx.send("❌ You don't have permission to use this command.")
+                        msg = "❌ You don't have permission to use this command."
+                        if isinstance(ctx, nextcord.Interaction):
+                            if ctx.response.is_done():
+                                await ctx.followup.send(msg, ephemeral=True)
+                            else:
+                                await ctx.response.send_message(msg, ephemeral=True)
+                        else:
+                            await ctx.send(msg)
                         return
 
                 return await func(*args, **kwargs)

@@ -5,15 +5,17 @@ from datetime import timedelta
 import nextcord
 from nextcord.ext import commands
 
+from src.core.runtime_state import runtime_state
 from src.database.database import db
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import require_admin
 
 logger = logging.getLogger('VEKA.admin.honeypot')
 
-# Dedup cooldown: ignore repeat triggers from same user in same channel within N seconds
-_TRIGGER_COOLDOWN_SECONDS = 5
+# Default dedup cooldown — overridden per-guild via guild_settings.honeypot_cooldown_seconds
+_DEFAULT_TRIGGER_COOLDOWN_SECONDS = 60
 
 
 class Honeypot(commands.Cog):
@@ -48,9 +50,36 @@ class Honeypot(commands.Cog):
     # /honeypot slash command group
     # ------------------------------------------------------------------
 
-    @nextcord.slash_command(name='honeypot', description='Honeypot anti-spam trap management')
+    @nextcord.slash_command(
+        name='honeypot',
+        description='Honeypot anti-spam trap management',
+    )
     async def honeypot_group(self, interaction: nextcord.Interaction) -> None:
-        pass
+        embed = await info_embed(
+            title='Honeypot Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/honeypot create` \u2014 Create a trap channel\n'
+                '\u2022 `/honeypot list` \u2014 List all honeypots\n'
+                '\u2022 `/honeypot view` \u2014 View honeypot details\n'
+                '\u2022 `/honeypot delete` \u2014 Remove a honeypot\n'
+                '\u2022 `/honeypot enable` \u2014 Enable a honeypot\n'
+                '\u2022 `/honeypot disable` \u2014 Disable a honeypot\n'
+                '\u2022 `/honeypot edit` \u2014 Edit honeypot settings\n'
+                '\u2022 `/honeypot status` \u2014 Overview of all honeypots\n'
+                '\u2022 `/honeypot test` \u2014 Test honeypot permissions'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @honeypot_group.subcommand(name='status', description='Overview of all honeypots in this server')
+    @require_admin()
+    @safe_slash_command(requires_db=True)
+    async def honeypot_status_slash(self, interaction: nextcord.Interaction) -> None:
+        await self._status_honeypots(interaction)
 
     @honeypot_group.subcommand(name='create', description='Create a softban honeypot for a channel')
     @require_admin()
@@ -125,6 +154,7 @@ class Honeypot(commands.Cog):
                 'Ban': 'ban',
                 'Timeout': 'timeout',
                 'Role': 'role',
+                'Log Only': 'log',
             },
         ),
         delete_messages_days: int = nextcord.SlashOption(
@@ -151,9 +181,25 @@ class Honeypot(commands.Cog):
     # /logging slash command group
     # ------------------------------------------------------------------
 
-    @nextcord.slash_command(name='logging', description='Honeypot logging configuration')
+    @nextcord.slash_command(
+        name='logging',
+        description='Honeypot logging configuration',
+    )
     async def logging_group(self, interaction: nextcord.Interaction) -> None:
-        pass
+        embed = await info_embed(
+            title='Logging Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/logging setchannel` \u2014 Set alert channel\n'
+                '\u2022 `/logging setrole` \u2014 Set notification role\n'
+                '\u2022 `/logging clearrole` \u2014 Clear notification role\n'
+                '\u2022 `/logging view` \u2014 View current config'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @logging_group.subcommand(name='setchannel', description='Set the logging channel for honeypot alerts')
     @require_admin()
@@ -210,6 +256,7 @@ class Honeypot(commands.Cog):
                 '`!honeypot enable <channel>` - Enable a honeypot\n'
                 '`!honeypot disable <channel>` - Disable a honeypot\n'
                 '`!honeypot edit <channel> <type>` - Edit action type\n'
+                '`!honeypot status` - Overview of all honeypots\n'
                 '`!honeypot test <channel>` - Dry-run test'
             ),
             inline=False,
@@ -247,6 +294,12 @@ class Honeypot(commands.Cog):
     @require_admin()
     async def honeypot_disable_prefix(self, ctx: commands.Context, channel: nextcord.TextChannel) -> None:
         await self._toggle_honeypot(ctx, channel, False)
+
+    @honeypot_prefix.command(name='status')
+    @require_admin()
+    async def honeypot_status_prefix(self, ctx: commands.Context) -> None:
+        """Overview of all honeypots in this server"""
+        await self._status_honeypots(ctx)
 
     @honeypot_prefix.command(name='test')
     @require_admin()
@@ -313,30 +366,61 @@ class Honeypot(commands.Cog):
         if not honeypot or not honeypot.get('enabled'):
             return
 
-        # Dedup cooldown
+        # Dedup cooldown — per-guild configurable via guild_settings
+        cooldown = _DEFAULT_TRIGGER_COOLDOWN_SECONDS
+        if runtime_state.db_available:
+            try:
+                settings = await guild_settings_service.get_settings(message.guild.id)
+                cooldown = settings.honeypot_cooldown_seconds or _DEFAULT_TRIGGER_COOLDOWN_SECONDS
+            except Exception:
+                pass
         key = (message.guild.id, message.author.id)
         now = time.monotonic()
         last = self._trigger_cooldowns.get(key, 0.0)
-        if (now - last) < _TRIGGER_COOLDOWN_SECONDS:
+        if (now - last) < cooldown:
             return
         self._trigger_cooldowns[key] = now
 
         action_type: str = honeypot['action_type']
-        result = 'failed'
+        result = 'skipped'
+        delete_days = honeypot.get('delete_message_days') or 1
 
         try:
             member = message.guild.get_member(message.author.id)
             if member is None:
                 return
 
-            if action_type == 'softban':
-                result = await self._execute_softban(message.guild, member, honeypot.get('delete_message_days') or 1)
-            elif action_type == 'ban':
-                result = await self._execute_ban(message.guild, member, honeypot.get('delete_message_days') or 0)
-            elif action_type == 'timeout':
-                result = await self._execute_timeout(message.guild, member, honeypot.get('timeout_hours') or 24)
-            elif action_type == 'role':
-                result = await self._execute_role(message.guild, member, honeypot.get('role_id'))
+            # 'log' action type — no punitive action, just log and alert
+            if action_type != 'log':
+                # Delete user's messages across ALL channels before taking action
+                try:
+                    cross_deleted = await self._delete_user_messages_across_channels(
+                        message.guild, message.author.id, delete_days
+                    )
+                    if cross_deleted > 0:
+                        logger.info(
+                            'Cross-channel cleanup: deleted %d messages from user %s in guild %s',
+                            cross_deleted,
+                            message.author.id,
+                            message.guild.id,
+                        )
+                except Exception:
+                    logger.warning(
+                        'Cross-channel message deletion failed for user %s',
+                        message.author.id,
+                        exc_info=True,
+                    )
+
+                if action_type == 'softban':
+                    result = await self._execute_softban(message.guild, member, delete_days)
+                elif action_type == 'ban':
+                    result = await self._execute_ban(message.guild, member, delete_days)
+                elif action_type == 'timeout':
+                    result = await self._execute_timeout(message.guild, member, honeypot.get('timeout_hours') or 24)
+                elif action_type == 'role':
+                    result = await self._execute_role(message.guild, member, honeypot.get('role_id'))
+            else:
+                result = 'logged'
         except Exception:
             logger.error('Honeypot trigger failed for %s', message.author.id, exc_info=True)
             result = 'failed'
@@ -367,6 +451,56 @@ class Honeypot(commands.Cog):
     # ------------------------------------------------------------------
     # Moderation action executors
     # ------------------------------------------------------------------
+
+    async def _delete_user_messages_across_channels(self, guild: nextcord.Guild, user_id: int, days: int) -> int:
+        """Delete a user's messages across all accessible text channels.
+
+        Scans every text channel the bot can see, fetches messages from the
+        specified user within the time window, and bulk-deletes them.
+
+        Returns the total number of messages deleted.
+        """
+        if days < 1:
+            return 0
+
+        cutoff = nextcord.utils.utcnow() - timedelta(days=days)
+        total_deleted = 0
+
+        for channel in guild.text_channels:
+            try:
+                # Skip channels where bot lacks permissions
+                perms = channel.permissions_for(guild.me)
+                if not perms.read_message_history or not perms.manage_messages:
+                    continue
+
+                deleted_in_channel = 0
+                # Iterate in batches of 100 (Discord API limit)
+                async for msg in channel.history(limit=None, after=cutoff, oldest_first=False):
+                    if msg.author.id == user_id:
+                        try:
+                            await msg.delete()
+                            deleted_in_channel += 1
+                        except nextcord.NotFound:
+                            pass  # Already deleted
+                        except nextcord.Forbidden:
+                            break  # No permission to delete in this channel
+                        except Exception:
+                            logger.debug('Failed to delete message %s in %s', msg.id, channel.id)
+
+                if deleted_in_channel > 0:
+                    total_deleted += deleted_in_channel
+                    logger.info(
+                        'Deleted %d messages from user %s in #%s',
+                        deleted_in_channel,
+                        user_id,
+                        channel.name,
+                    )
+            except nextcord.Forbidden:
+                continue
+            except Exception:
+                logger.debug('Failed to scan channel %s for user messages', channel.id, exc_info=True)
+
+        return total_deleted
 
     async def _execute_softban(self, guild: nextcord.Guild, member: nextcord.Member, delete_days: int) -> str:
         try:
@@ -440,14 +574,29 @@ class Honeypot(commands.Cog):
         result: str,
     ) -> None:
         try:
+            # Try honeypot-specific logging config first, fall back to guild_settings
             config = await db.fetch_one(
                 'SELECT * FROM honeypot_logging_config WHERE guild_id = $1',
                 message.guild.id,  # type: ignore[union-attr]
             )
-            if not config or not config.get('logging_channel_id'):
+
+            log_channel_id = None
+            notification_role_id = None
+            if config:
+                log_channel_id = config.get('logging_channel_id')
+                notification_role_id = config.get('notification_role_id')
+
+            if not log_channel_id and runtime_state.db_available:
+                try:
+                    settings = await guild_settings_service.get_settings(message.guild.id)  # type: ignore[union-attr]
+                    log_channel_id = settings.log_channel_id
+                except Exception:
+                    pass
+
+            if not log_channel_id:
                 return
 
-            log_channel = message.guild.get_channel(config['logging_channel_id'])  # type: ignore[union-attr]
+            log_channel = message.guild.get_channel(log_channel_id)  # type: ignore[union-attr]
             if not log_channel:
                 return
 
@@ -456,6 +605,7 @@ class Honeypot(commands.Cog):
                 'ban': f'Ban (deleted {honeypot.get("delete_message_days", 0)} day(s) of messages)',
                 'timeout': f'Timeout ({honeypot.get("timeout_hours", 24)}h)',
                 'role': f'Role assigned (<@&{honeypot.get("role_id")}>)',
+                'log': 'Log only (no action taken)',
             }.get(action_type, action_type)
 
             embed = await veka_embed(
@@ -474,8 +624,8 @@ class Honeypot(commands.Cog):
             )
 
             content = None
-            if config.get('notification_role_id'):
-                content = f'<@&{config["notification_role_id"]}>'
+            if notification_role_id:
+                content = f'<@&{notification_role_id}>'
 
             await log_channel.send(content=content, embed=embed)  # type: ignore[union-attr]
         except Exception:
@@ -596,6 +746,62 @@ class Honeypot(commands.Cog):
             contributor_source=__name__,
         )
         await safe_send(target, embed=embed)
+
+    async def _status_honeypots(self, target: commands.Context | nextcord.Interaction) -> None:
+        """Overview of all honeypots in this server with trigger counts."""
+        guild = target.guild
+        if not guild:
+            embed = await error_embed('No Guild', 'This command must be used in a server.', contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        rows = await db.fetch('SELECT * FROM honeypots WHERE guild_id = $1 ORDER BY created_at DESC', guild.id)
+        if not rows:
+            embed = await info_embed(
+                'No Honeypots', 'No honeypots configured for this server.', contributor_source=__name__
+            )
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+
+        lines: list[str] = []
+        total_triggers = 0
+        for row in rows:
+            ch = guild.get_channel(row['channel_id'])
+            ch_name = ch.mention if ch else f'<#{row["channel_id"]}>'
+            badge = ' :green_circle: Active' if row['enabled'] else ' :red_circle: Disabled'
+
+            # Fetch trigger count for this honeypot
+            trigger_count = 0
+            if runtime_state.db_available:
+                try:
+                    trigger_count = await db.fetchval(
+                        'SELECT COUNT(*) FROM honeypot_events WHERE honeypot_id = $1',
+                        row['id'],
+                    )
+                except Exception:
+                    pass
+            total_triggers += trigger_count
+
+            lines.append(f'• {ch_name} — **{row["action_type"]}**{badge}\n  Triggers: {trigger_count}')
+
+        cooldown = _DEFAULT_TRIGGER_COOLDOWN_SECONDS
+        if runtime_state.db_available:
+            try:
+                settings = await guild_settings_service.get_settings(guild.id)
+                cooldown = settings.honeypot_cooldown_seconds or _DEFAULT_TRIGGER_COOLDOWN_SECONDS
+            except Exception:
+                pass
+
+        description = '\n\n'.join(lines)
+        description += f'\n\n**Cooldown:** {cooldown}s | **Total triggers:** {total_triggers}'
+
+        embed = await veka_embed(
+            title='Honeypot Status',
+            description=description,
+            color=nextcord.Color.orange(),
+            contributor_source=__name__,
+        )
+        await safe_send(target, embed=embed, ephemeral=True)
 
     async def _delete_honeypot(
         self, target: commands.Context | nextcord.Interaction, channel: nextcord.TextChannel

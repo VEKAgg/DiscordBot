@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 from collections.abc import MutableMapping
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 
@@ -32,11 +33,15 @@ class VEKALoggerAdapter(logging.LoggerAdapter):
         return msg, kwargs
 
 
-def setup_logging(log_level: str = 'INFO') -> None:
+def setup_logging(log_level: str | None = None) -> None:
     """Sets up global logging configuration. Call this once at startup."""
+    if log_level is None:
+        from src.config.config import LOG_LEVEL
+
+        log_level = LOG_LEVEL or 'INFO'
+
     # Ensure logs directory exists if file logging is still desired
-    if not os.path.exists('logs'):
-        os.makedirs('logs', exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
 
     level = getattr(logging, log_level.upper(), logging.INFO)
 
@@ -56,8 +61,8 @@ def setup_logging(log_level: str = 'INFO') -> None:
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # File handler (fallback for local dev)
-    file_handler = logging.FileHandler('logs/bot.log', encoding='utf-8')
+    # File handler (fallback for local dev) — rotate at 5 MB, keep 3 backups
+    file_handler = RotatingFileHandler('logs/bot.log', encoding='utf-8', maxBytes=5 * 1024 * 1024, backupCount=3)
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 

@@ -1,7 +1,7 @@
 import functools
 import logging
 import subprocess
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,7 +95,7 @@ async def veka_embed(
         if footer_text:
             embed.set_footer(text=footer_text)
     if timestamp:
-        embed.timestamp = datetime.utcnow()
+        embed.timestamp = datetime.now(UTC)
     return embed
 
 
@@ -112,6 +112,7 @@ async def error_embed(
     description: str | None = None,
     **kwargs: Any,
 ) -> nextcord.Embed:
+    kwargs.setdefault('color', nextcord.Color.red())
     return await veka_embed(title=title, description=description, **kwargs)
 
 

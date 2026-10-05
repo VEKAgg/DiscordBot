@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 import nextcord
 import validators
@@ -18,9 +18,26 @@ class PortfolioManager(commands.Cog):
 
     # ==================== SLASH COMMANDS ====================
 
-    @nextcord.slash_command(name='portfolio', description='Showcase your projects and view others work')
+    @nextcord.slash_command(
+        name='portfolio',
+        description='Showcase your projects and view others work',
+    )
     async def portfolio(self, interaction: nextcord.Interaction):
-        pass
+        embed = await info_embed(
+            title='Portfolio Commands',
+            description=(
+                '**Available subcommands:**\n\n'
+                '\u2022 `/portfolio add` \u2014 Add a project\n'
+                '\u2022 `/portfolio list` \u2014 List projects\n'
+                '\u2022 `/portfolio view` \u2014 View project details\n'
+                '\u2022 `/portfolio delete` \u2014 Delete a project\n'
+                '\u2022 `/portfolio search` \u2014 Search projects'
+            ),
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
 
     @portfolio.subcommand(name='add', description='Add a new project to your portfolio')
     @safe_slash_command(requires_db=True)
@@ -48,7 +65,7 @@ class PortfolioManager(commands.Cog):
 
             tag_list = [t.strip() for t in tags.split(',') if t.strip()] if tags else []
 
-            project_id = f'proj-{int(datetime.utcnow().timestamp())}'
+            project_id = f'proj-{int(datetime.now(UTC).timestamp())}'
             user = await get_or_create_user(str(interaction.user.id))
 
             await db.execute(
@@ -269,7 +286,7 @@ class PortfolioManager(commands.Cog):
             tags_raw = (await self.bot.wait_for('message', check=check, timeout=60)).content
             tag_list = [t.strip() for t in tags_raw.split(',') if t.strip()]
 
-            project_id = f'proj-{int(datetime.utcnow().timestamp())}'
+            project_id = f'proj-{int(datetime.now(UTC).timestamp())}'
             user = await get_or_create_user(str(ctx.author.id))
 
             await db.execute(

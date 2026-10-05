@@ -54,6 +54,12 @@ async def _rehost_image(session: aiohttp.ClientSession, url: str) -> str | None:
     Directus files so it stays available after the source link expires. Returns a
     persistent asset URL, or None if the source can't be fetched (dead link)."""
     try:
+        async with session.head(url) as head_resp:
+            content_length = head_resp.headers.get('Content-Length')
+            if content_length and int(content_length) > 8 * 1024 * 1024:  # 8 MB limit
+                logger.warning('Image too large (%s bytes), skipping re-host: %s', content_length, url)
+                return None
+
         async with session.get(url) as resp:
             if resp.status != 200:
                 return None

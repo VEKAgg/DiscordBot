@@ -1,39 +1,66 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import nextcord
 
 from src.config.config import ADMIN_ALERT_CHANNEL_ID
 from src.core.runtime_state import runtime_state
+from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed
 from src.utils.logger import get_logger
 
 logger = get_logger('VEKA.admin_notifier')
 
+_CHANNEL_CACHE_TTL = timedelta(minutes=5)
+
 
 class AdminNotifier:
     def __init__(self, bot: nextcord.Client):
         self.bot = bot
-        self._channel = None
+        self._channel: nextcord.abc.Messageable | None = None
+        self._channel_fetched_at: datetime | None = None
 
-    async def _get_channel(self):
+    async def _get_channel(self, guild_id: int | None = None):
+        # Try guild-specific settings first
+        if guild_id is not None:
+            try:
+                settings = await guild_settings_service.get_settings(guild_id)
+                channel_id = settings.alert_channel_id or settings.log_channel_id
+                if channel_id:
+                    channel = self.bot.get_channel(channel_id)
+                    if channel is not None:
+                        return channel
+            except Exception:
+                pass  # Fall back to global admin alert channel
+
+        # Fallback to global admin alert channel
         if not ADMIN_ALERT_CHANNEL_ID:
             return None
 
-        if self._channel is None:
-            self._channel = self.bot.get_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[assignment]
-            if self._channel is None:
-                try:
-                    self._channel = await self.bot.fetch_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[assignment]
-                except Exception as e:
-                    logger.warning('Failed to fetch admin alert channel: %s', e)
+        now = datetime.now(UTC)
+        if self._channel is not None and self._channel_fetched_at is not None:
+            if now - self._channel_fetched_at < _CHANNEL_CACHE_TTL:
+                return self._channel
+            self._channel = None
 
+        channel = self.bot.get_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+        if channel is None:
+            try:
+                channel = await self.bot.fetch_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+            except Exception as e:
+                logger.warning('Failed to fetch admin alert channel: %s', e)
+                self._channel = None
+                self._channel_fetched_at = now
+                return None
+
+        self._channel = channel  # type: ignore[assignment]
+        self._channel_fetched_at = now
         return self._channel
 
     def _should_alert(self, dedupe_key: str | None, cooldown_minutes: int) -> bool:
         if not dedupe_key:
             return True
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         cache = runtime_state.alert_state_cache
         last_alert_time = cache.get(dedupe_key)
 
@@ -48,9 +75,16 @@ class AdminNotifier:
         runtime_state.alert_state_cache.pop(dedupe_key, None)
 
     async def send_alert(
-        self, title: str, description: str, severity: str = 'INFO', dedupe_key: str = None, cooldown_minutes: int = 60
+        self,
+        title: str,
+        description: str,
+        severity: str = 'INFO',
+        dedupe_key: str = None,
+        cooldown_minutes: int = 60,
+        guild_id: int | None = None,
     ):
-        if not await self._get_channel():
+        channel = await self._get_channel(guild_id)
+        if not channel:
             logger.info('Admin alert skipped (no channel): [%s] %s - %s', severity, title, description)
             return
 
@@ -58,9 +92,8 @@ class AdminNotifier:
             return
 
         embed = await alert_embed(title=title, description=description, severity=severity, contributor_source=__name__)
-        assert self._channel is not None  # guaranteed by _get_channel check above
         try:
-            await self._channel.send(embed=embed)
+            await channel.send(embed=embed)
             logger.info('Sent admin alert: [%s] %s', severity, title)
         except Exception as e:
             logger.error('Failed to send admin alert: %s', e)
@@ -69,7 +102,6 @@ class AdminNotifier:
         if not await self._get_channel():
             return
 
-        # Compile startup check results
         checks_text = ''
         for check in runtime_state.startup_check_results:
             icon = '✅' if check['status'] == 'PASS' else '⚠️' if check['status'] == 'WARN' else '❌'
@@ -94,5 +126,5 @@ class AdminNotifier:
             title='Bot Deployment / Startup Summary',
             description=description,
             severity=severity,
-            dedupe_key='startup_summary',  # Prevents spam on rapid crash loops
+            dedupe_key='startup_summary',
         )
