@@ -21,7 +21,7 @@ class TestExtensionList:
         assert len(EXTENSIONS) > 0
 
     def test_extensions_count(self):
-        assert len(EXTENSIONS) == 22
+        assert len(EXTENSIONS) == 21
 
     def test_all_are_strings(self):
         for ext in EXTENSIONS:
@@ -58,3 +58,11 @@ class TestCogLoading:
             bot.unload_extension(extension)
         except Exception as exc:
             pytest.fail(f'Failed to unload {extension}: {exc}')
+
+
+def test_disabled_radio_cog_still_loads(bot):
+    """The radio is disabled in EXTENSIONS but kept; make sure it doesn't rot."""
+    assert 'src.cogs.radio.radio' not in EXTENSIONS
+    bot.load_extension('src.cogs.radio.radio')
+    assert bot.get_cog('RadioManager') is not None
+    bot.unload_extension('src.cogs.radio.radio')

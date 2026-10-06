@@ -27,10 +27,10 @@ PRIVILEGED_SLASH_COMMANDS = {
     'admin featurestatus',
     'admin startupchecks',
     'admin detailedstatus',
-    'radio station',
-    'radio start',
     'radio stop',
     'radio move',
+    'radio play',
+    'radio podcast',
     'setupleaderboard',
     'exportchat',
     'feed add',
@@ -52,13 +52,17 @@ def _is_guarded(cmd) -> bool:
     return bool(cmd.checks) or bool(getattr(cmd.callback, '__veka_guards__', None))
 
 
+# Cogs that are disabled in EXTENSIONS but kept in the codebase: still check their guards.
+DISABLED_EXTENSIONS = ['src.cogs.radio.radio']
+
+
 @pytest.fixture(scope='module')
 def loaded_bot():
     bot = build_bot()
-    for ext in EXTENSIONS:
+    for ext in [*EXTENSIONS, *DISABLED_EXTENSIONS]:
         bot.load_extension(ext)
     yield bot
-    for ext in EXTENSIONS:
+    for ext in [*EXTENSIONS, *DISABLED_EXTENSIONS]:
         try:
             bot.unload_extension(ext)
         except Exception:
@@ -156,9 +160,10 @@ def test_guard_preserves_signature_for_slash_options():
     assert isinstance(body, AsyncMock) is False
 
 
-async def test_radiostation_prefix_blocks_admins_of_external_guilds(loaded_bot, mock_context, admin_member):
-    """`!radiostation` changes the single shared radio, so it needs the same guild gate as `/radio station`."""
-    cmd = loaded_bot.get_command('radiostation')
+@pytest.mark.parametrize('name', ['radioplay', 'radiopodcast'])
+async def test_radio_prefix_blocks_admins_of_external_guilds(loaded_bot, mock_context, admin_member, name):
+    """`!radioplay`/`!radiopodcast` control the single shared radio, so they need the same guild gate as slash."""
+    cmd = loaded_bot.get_command(name)
     external_guild = MagicMock(spec=nextcord.Guild)
     external_guild.id = 42  # not MAIN_GUILD_ID
     mock_context.author = admin_member
