@@ -1,6 +1,7 @@
 """Feeds Cog — dynamic RSS feed management backed by the database."""
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 import nextcord
 from nextcord.ext import commands, tasks
@@ -41,7 +42,8 @@ class Feeds(commands.Cog):
         """Poll all subscribed feeds and post new entries to configured channels."""
         try:
             subscriptions = await db.fetch_many(
-                """SELECT id, guild_id, channel_id, feed_url, feed_name, poll_interval_minutes, last_polled_at
+                """SELECT id, guild_id, channel_id, feed_url, feed_name, poll_interval_minutes, last_polled_at,
+                          consecutive_failures, next_retry_at
                    FROM feed_subscriptions"""
             )
         except DatabaseUnavailableError:
@@ -52,10 +54,10 @@ class Feeds(commands.Cog):
             # Seeded subscriptions have channel_id 0 until staff configure them with /feed add.
             if not sub['channel_id']:
                 continue
-            # Respect per-feed polling interval
+            if sub['next_retry_at'] and datetime.now(UTC) < sub['next_retry_at']:
+                continue
+            # Respect per-feed polling interval, including unsuccessful attempts.
             if sub['last_polled_at']:
-                from datetime import UTC, datetime, timedelta
-
                 last = sub['last_polled_at']
                 if last.tzinfo is None:
                     last = last.replace(tzinfo=UTC)
@@ -65,8 +67,10 @@ class Feeds(commands.Cog):
             try:
                 feed_data = await self.rss_service.fetch_feed(sub['feed_url'])
                 if not feed_data:
+                    await self._record_poll_result(sub, succeeded=False)
                     continue
 
+                await self._record_poll_result(sub, succeeded=True)
                 guild = self.bot.get_guild(sub['guild_id'])
                 channel = guild.get_channel(sub['channel_id']) if guild else None
                 if not isinstance(channel, nextcord.TextChannel):
@@ -85,14 +89,51 @@ class Feeds(commands.Cog):
                         break
                     await self.rss_service.process_and_dedupe(sub['feed_url'], [entry], subscription_id=sub['id'])
 
-                # Update last_polled_at
-                await db.execute(
-                    'UPDATE feed_subscriptions SET last_polled_at = NOW() WHERE id = $1',
-                    sub['id'],
-                )
-
             except Exception as e:
                 logger.error('Error polling feed %s: %s', sub['feed_url'], e)
+
+    async def _record_poll_result(self, sub, *, succeeded: bool):
+        """Persist before notifying: one warning per outage, including across restarts.
+
+        Backoff doubles from the configured interval, capped at one day (never
+        shorter than the configured interval). Failed feeds remain recoverable.
+        Notification delivery is best-effort, as with other admin alerts.
+        """
+        previous = sub['consecutive_failures']
+        failures = 0 if succeeded else previous + 1
+        interval = max(15, sub['poll_interval_minutes'] or 30)
+        delay = max(interval, min(1440, interval * 2 ** min(failures - 1, 10))) if failures else 0
+        await db.execute(
+            """UPDATE feed_subscriptions
+               SET last_polled_at = NOW(), consecutive_failures = $2,
+                   next_retry_at = $3
+               WHERE id = $1""",
+            sub['id'],
+            failures,
+            datetime.now(UTC) + timedelta(minutes=delay) if failures else None,
+        )
+        notifier = getattr(self.bot, 'notifier', None)
+        if notifier is None:
+            return
+        if failures == 3:
+            await notifier.send_alert(
+                title='RSS Feed Failing',
+                description=(
+                    f'The RSS feed `{sub["feed_url"]}` has failed 3 consecutive polls. '
+                    'Further warnings are suppressed until recovery. Retries use backoff up to once daily '
+                    '(or the configured interval if longer). Check the bot logs for the error; '
+                    'use `/feed remove` to remove an obsolete feed.'
+                ),
+                severity='WARN',
+                guild_id=sub['guild_id'],
+            )
+        elif succeeded and previous >= 3:
+            await notifier.send_alert(
+                title='RSS Feed Recovered',
+                description=f'The RSS feed `{sub["feed_url"]}` is now responding correctly.',
+                severity='INFO',
+                guild_id=sub['guild_id'],
+            )
 
     @feed_update.before_loop
     async def before_feed_update(self):

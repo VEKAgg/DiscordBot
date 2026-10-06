@@ -161,3 +161,38 @@ async def test_concurrent_mentor_completion_awards_xp_once(migrated_db):
     assert sum(row is not None for row in results) == 1
     points = await migrated_db.fetch('SELECT points FROM users WHERE id IN ($1, $2)', mentor, mentee)
     assert [row['points'] for row in points] == [50, 50]
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_feed_outage_survives_cog_restart(migrated_db, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.cogs.resources.feeds import Feeds
+
+    monkeypatch.setattr('src.cogs.resources.feeds.db', migrated_db)
+    sub_id = await migrated_db.fetchval(
+        "INSERT INTO feed_subscriptions (guild_id, channel_id, feed_url, feed_name) VALUES (33, 3, $1, 'outage') RETURNING id",
+        'https://example.com/broken',
+    )
+    notifier = SimpleNamespace(send_alert=AsyncMock())
+    bot = SimpleNamespace(notifier=notifier)
+    for _ in range(6):
+        sub = await migrated_db.fetch_one('SELECT * FROM feed_subscriptions WHERE id = $1', sub_id)
+        await Feeds(bot)._record_poll_result(sub, succeeded=False)
+    assert notifier.send_alert.await_count == 1
+    sub = await migrated_db.fetch_one('SELECT * FROM feed_subscriptions WHERE id = $1', sub_id)
+    assert sub['consecutive_failures'] == 6
+    assert sub['next_retry_at'] > sub['last_polled_at']
+    await Feeds(bot)._record_poll_result(sub, succeeded=True)
+    assert notifier.send_alert.await_count == 2
+    recovered = await migrated_db.fetch_one('SELECT * FROM feed_subscriptions WHERE id = $1', sub_id)
+    assert recovered['consecutive_failures'] == 0
+    assert recovered['next_retry_at'] is None
+    for _ in range(3):
+        sub = await migrated_db.fetch_one('SELECT * FROM feed_subscriptions WHERE id = $1', sub_id)
+        await Feeds(bot)._record_poll_result(sub, succeeded=False)
+    assert notifier.send_alert.await_count == 3
+    # Reapplying the SQL itself (not just the runner) is safe and preserves outage state.
+    await migrated_db.execute(pathlib.Path('migrations/027_feed_failure_backoff.sql').read_text())
+    assert await migrated_db.fetchval('SELECT consecutive_failures FROM feed_subscriptions WHERE id = $1', sub_id) == 3

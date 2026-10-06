@@ -136,6 +136,9 @@ async def test_feed_acknowledges_only_delivered_entries(monkeypatch, mock_db, se
         'feed_url': 'https://example.com',
         'feed_name': 'test',
         'last_polled_at': None,
+        'poll_interval_minutes': 30,
+        'consecutive_failures': 0,
+        'next_retry_at': None,
     }
     mock_db.fetch_many = AsyncMock(return_value=[sub])
     entries = [{'entry_id': str(i)} for i in range(5)]
