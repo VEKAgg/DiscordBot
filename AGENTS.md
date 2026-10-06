@@ -23,7 +23,7 @@ mypy src/ main.py --explicit-package-bases
 pre-commit run --all-files        # whitespace/yaml/toml checks, ruff (--fix --unsafe-fixes), ruff-format, mypy, pytest
 ```
 
-**Tests** — 196 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
+**Tests** — 197 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
 
 ```bash
 uv run --extra dev pytest tests/ -v                                   # all
