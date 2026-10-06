@@ -2,8 +2,9 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+import nextcord
 import pytest
 
 from src.cogs.resources.feeds import Feeds
@@ -99,7 +100,11 @@ async def test_poller_respects_retry_and_interval(monkeypatch, skip):
 async def test_failed_poll_records_attempt(monkeypatch):
     database = SimpleNamespace(fetch_many=AsyncMock(return_value=[subscription()]), execute=AsyncMock())
     monkeypatch.setattr('src.cogs.resources.feeds.db', database)
-    cog = Feeds(SimpleNamespace())
+    channel = MagicMock(spec=nextcord.TextChannel)
+    guild = SimpleNamespace(id=2, me=object(), get_channel=lambda _id: channel)
+    channel.guild = guild
+    channel.permissions_for.return_value = nextcord.Permissions(view_channel=True, send_messages=True, embed_links=True)
+    cog = Feeds(SimpleNamespace(get_guild=lambda _id: guild))
     monkeypatch.setattr(cog.rss_service, 'fetch_feed', AsyncMock(return_value=None))
     await cog.feed_update()
     assert database.execute.call_args.args[2] == 1
