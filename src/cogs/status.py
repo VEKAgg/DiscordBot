@@ -33,7 +33,6 @@ STATUSES: list[dict] = [
     {'type': 'watching', 'text': '{online} members online'},
     {'type': 'playing', 'text': 'with slash commands'},
     {'type': 'watching', 'text': '{boosts} server boosts'},
-    {'type': 'listening', 'text': '{active_radio_station}'},
     {'type': 'watching', 'text': '{open_listings} marketplace listings'},
     {'type': 'playing', 'text': 'Season {season}'},
 ]
@@ -131,21 +130,6 @@ class StatusRotator(commands.Cog):
                 text = text.format(boosts=f'{boosts:,}')
         except Exception:
             text = text.replace('{boosts}', '?')
-
-        try:
-            if '{active_radio_station}' in text:
-                radio_cog = self.bot.get_cog('RadioManager')
-                if radio_cog and hasattr(radio_cog, '_active_station') and radio_cog._active_station:
-                    from src.cogs.radio.radio import RADIO_STATIONS
-
-                    station = RADIO_STATIONS.get(radio_cog._active_station, {})
-                    station_name = station.get('name', radio_cog._active_station)
-                    station_emoji = station.get('emoji', '')
-                    text = text.format(active_radio_station=f'{station_emoji} {station_name}')
-                else:
-                    text = text.replace('{active_radio_station}', 'Radio is offline')
-        except Exception:
-            text = text.replace('{active_radio_station}', 'Radio')
 
         try:
             if '{open_listings}' in text:

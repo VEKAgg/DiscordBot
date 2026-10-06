@@ -23,7 +23,7 @@ mypy src/ main.py --explicit-package-bases
 pre-commit run --all-files        # whitespace/yaml/toml checks, ruff (--fix --unsafe-fixes), ruff-format, mypy, pytest
 ```
 
-**Tests** — 197 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
+**Tests** — 203 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
 
 ```bash
 uv run --extra dev pytest tests/ -v                                   # all
@@ -42,7 +42,7 @@ Tool config (`pyproject.toml`): ruff `line-length=120`, `quote-style="single"`, 
 
 - **Entrypoint:** `main.py` → `src/core/app.py:run_bot()` → loads `.env`, `setup_logging()`, `build_bot()`, registers events, loads extensions, `bot.run()`.
 - **Startup (`on_ready`, guarded to run once):** set `bot.notifier` → `initialize_database()` (connect, then `db.run_migrations()`) → `StartupChecks.run_all_checks()` (`src/core/checks.py`) → `bot.notifier.send_startup_summary()` → `db_health_check.start()` (30s loop; while the DB is up it also calls `recover_after_db_available()` — deferred migrations + retry of failed `cog_ready` hooks) → `run_cog_ready_hooks(bot)` (each cog's `cog_ready()`) → logs `"<bot> is ready. DB available=<bool> migrations=<ok|degraded>"` (the deploy greps this line) → `bot.sync_all_application_commands()`.
-- **Extensions load from an explicit allowlist** — `EXTENSIONS` in `src/core/app.py` (22 entries, dotted `src.cogs.*` paths). A cog not in the list is not loaded; add it there to enable it. Every cog module needs a module-level `setup(bot)`; slash groups use `nextcord.SlashCommandGroup`.
+- **Extensions load from an explicit allowlist** — `EXTENSIONS` in `src/core/app.py` (21 entries, dotted `src.cogs.*` paths; disabled cogs are left in as comments). A cog not in the list is not loaded; add it there to enable it. Every cog module needs a module-level `setup(bot)`; slash groups use `nextcord.SlashCommandGroup`.
 - **Layers:** `src/cogs/` (thin Discord handlers) → `src/services/` (business logic) → `src/database/` (data access).
 - **Intents:** `message_content`, `members`, `guilds`, `voice_states`, `presences`.
 
@@ -84,13 +84,26 @@ Channel/role config is per guild in the `guild_settings` table, read via `from s
 - **Images:** CPU-bound Pillow work (`src/utils/card_generator.py`) runs in `asyncio.to_thread(...)`.
 - **Config:** single `.env`. `DATABASE_URL` or individual `POSTGRES_*` vars. Comma-separated ID lists: `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS`.
 
+## Content policy — flag haram or shady features (all agents)
+
+VEKA is a professional community with members of many faiths, run by a Muslim owner. Keep the bot **halal and religion-neutral**. Before adding, enabling or extending anything below, **stop and flag it to the user** with what it does and why it's flagged, and wait for an explicit go-ahead. Never add it silently, and never "just make it configurable" as a workaround. Also flag existing code in these categories when you come across it.
+
+- **Music and instruments:** music streams/stations, song playback, music bots, music leaderboards or promotion (e.g. top songs/artists).
+- **Gambling and chance-for-value:** betting, casino games, slots, coinflip/roulette for currency, lotteries, raffles you pay into, loot boxes, wagering XP/coins.
+- **Riba (interest) and shady finance:** interest-bearing loans or savings in any economy, crypto/NFT pump schemes, trading "signals", MLM/referral pyramids.
+- **Intoxicants and immoral content:** alcohol, drugs, NSFW/sexual content, dating/flirting features, vulgar humour commands.
+- **Religious promotion:** pushing any religion (including Islam) on the whole server, e.g. auto-playing recitation or forced religious messages. Opt-in, user-requested features are fine. Ask when unsure.
+- **Shady/privacy-invasive behaviour:** tracking or logging members without clear opt-in (presence/activity/listening history, DMs, IPs), scraping personal data, self-bots or Discord ToS evasion, dark patterns, deceptive impersonation, hidden data sharing with third parties.
+
+Flagged but not yet decided (2026-10-06): Spotify listening tracking and the `/most listened` Spotify songs/artists leaderboard (`src/cogs/rpg/rpg_manager.py`, `src/cogs/stats.py`) are music promotion and track members without explicit opt-in. Presence-based game/app tracking (RPG activity) has no opt-in either.
+
 ## Notable subsystems
 
 - **Honeypot** (`src/cogs/admin/honeypot.py`): trap channels that punish non-bot, non-webhook posters (`softban`/`ban`/`timeout`/`role`/`log`). Per-guild cooldown from `guild_settings.honeypot_cooldown_seconds`. Acts first (ban/softban purge server-side via `delete_message_seconds`, 0–7 days); timeout/role actions get a bounded bulk purge in the background. Members with Manage Messages/Administrator, the owner, and anyone at/above the bot's top role are exempt (logged as `exempt`). Channel config is cached in memory and not invalidated on external DB changes.
 - **Mass unban** (`src/cogs/admin/massunban.py`): admin-only, double confirmation, `preview` subcommand, resumable DB-backed jobs (`massunban_jobs`, `massunban_job_items`), sequential unbans with one worker per job (lock) and 429 pause/resume, resumes interrupted jobs in `cog_ready()`. Every ban is recorded in `audit_logs` (`ban_executed`) by the `on_member_ban` listener. **Limitation:** Discord's ban list has no timestamps or moderator, so date/moderator filters only match bans the bot recorded; unaudited bans are **excluded** unless `include_unaudited:true` (slash only, never with a moderator filter). Selection logic: `match_bans()`.
 - **Moderation** (`src/cogs/admin/moderation.py`): `warnings` table (snowflake `BIGINT` columns since 022) with auto-escalation to mute/ban at per-guild thresholds; role-hierarchy checks (`_hierarchy_refusal`); escalations write `audit_logs`; `/modstats` reads `warnings` + `audit_logs`.
 - **RPG/activity** (`src/cogs/rpg/rpg_manager.py`): XP with streak multipliers, daily rollups in `user_activity_daily`, category leaderboards, monthly season snapshots, Pillow rank cards.
-- **Radio** (`src/cogs/radio/radio.py`): streams fixed Icecast/SHOUTcast URLs (`RADIO_STATIONS`) via FFmpeg — no yt-dlp.
+- **Radio** (`src/cogs/radio/radio.py`): **disabled** (commented out of `EXTENSIONS`; `tests/test_cog_loading.py` and `tests/test_permissions.py` still load it so it doesn't rot). It has no built-in stations: music stations were removed (content policy), and religious stations were left out to keep the bot neutral. Admins `/radio podcast <feed> [episode]` (RSS enclosure, newest = 1) or `/radio play <url>` (any public audio URL; prefix `!radiopodcast`/`!radioplay`). The bot joins the radio channel, plays, and leaves when the audio ends or fails. User URLs are pre-checked by `resolve_public_media_url` (http/https, public DNS only), and FFmpeg runs with `-protocol_whitelist http,https,tcp,tls,crypto`. A per-play generation counter keeps an intentional `stop()` from being treated as "finished". No yt-dlp, so YouTube/Spotify links don't play.
 - **Feeds** (`src/cogs/resources/feeds.py`, `src/services/rss_service.py`): DB-backed `feed_subscriptions`; dedupe per subscription in `feed_seen_items(subscription_id, item_guid)`. User-supplied URLs are fetched only through `src/utils/http.fetch_public_url` (http/https only, public IPs only via `PublicOnlyResolver`, redirects re-checked, 2 MB cap). `/feed add|remove|test` need Manage Server.
 
 ## CI/CD

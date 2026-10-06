@@ -132,10 +132,6 @@ class Help(commands.Cog):
         )
         embed.add_field(name='Portfolio', value=portfolio, inline=False)
 
-        # === RADIO ===
-        radio = '`/radio status` - Check radio stream\n`/radio start` - Start radio (Admin)\n`/radio stop` - Stop radio (Admin)\n`/radio move <channel>` - Move radio (Admin)'
-        embed.add_field(name='Radio', value=radio, inline=False)
-
         # === RPG ===
         rpg = '`/level [user]` - Check level & XP\n`/leaderboard` - View leaderboard\n`/activity [user]` - View activity stats'
         embed.add_field(name='Community', value=rpg, inline=False)
@@ -189,8 +185,7 @@ class Help(commands.Cog):
         community = (
             '`/level [user]` - Check level & XP\n'
             '`/leaderboard` - View leaderboard\n'
-            '`/activity [user]` - View activity stats\n'
-            '`/radio status` - Check radio stream'
+            '`/activity [user]` - View activity stats'
         )
         embed.add_field(name='Community', value=community, inline=False)
 
@@ -211,10 +206,7 @@ class Help(commands.Cog):
                 '`/exportchat [channel]` - Export chat history\n'
                 '`/exportstop` - Stop export\n'
                 '`/memberinfo @user` - Member info\n'
-                '`/serverinfo` - Server info\n'
-                '`/radio start` - Start radio\n'
-                '`/radio stop` - Stop radio\n'
-                '`/radio move <channel>` - Move radio'
+                '`/serverinfo` - Server info'
             )
             embed.add_field(name='Owner Only', value=owner_cmds, inline=False)
 
