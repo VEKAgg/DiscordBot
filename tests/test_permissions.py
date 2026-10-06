@@ -35,6 +35,9 @@ PRIVILEGED_SLASH_COMMANDS = {
     'exportchat',
     'feed add',
     'feed remove',
+    'feed edit',
+    'feed pause',
+    'feed resume',
     'feed test',
 }
 

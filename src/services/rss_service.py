@@ -1,11 +1,9 @@
 import logging
-from datetime import datetime
 
 import aiohttp
 import feedparser
 from bs4 import BeautifulSoup
 
-from src.config.config import RSS_FEEDS
 from src.database.database import db
 from src.utils.http import UnsafeURLError, fetch_public_url
 from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
@@ -119,47 +117,3 @@ class RSSService:
             if inserted is not None:
                 new_entries.append(entry)
         return new_entries
-
-    async def get_latest_new_entries(self, category: str, limit: int = 5) -> list[dict]:
-        """Fetch feeds and return ONLY new entries (deduplicated via Postgres)."""
-        feeds_info = RSS_FEEDS.get(category, [])
-        all_new_entries: list[dict] = []
-
-        for url in feeds_info:
-            feed_data = await self.fetch_feed(url)
-            if not feed_data:
-                continue
-
-            new_entries = await self.process_and_dedupe(url, feed_data['entries'])
-            all_new_entries.extend(new_entries)
-
-        try:
-            all_new_entries.sort(
-                key=lambda x: self._parse_entry_date(x['published']),
-                reverse=True,
-            )
-        except Exception:
-            pass
-
-        return all_new_entries[:limit]
-
-    def get_available_categories(self) -> list[str]:
-        return list(RSS_FEEDS.keys())
-
-    @staticmethod
-    def _parse_entry_date(date_str: str) -> datetime:
-        """Parse an RSS entry date string, supporting RFC 2822 and ISO 8601 formats."""
-        from email.utils import parsedate_to_datetime
-
-        # Try RFC 2822 first (most RSS feeds)
-        try:
-            return parsedate_to_datetime(date_str)
-        except Exception:
-            pass
-        # Try ISO 8601
-        try:
-            return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-        except Exception:
-            pass
-        # Fallback: return epoch so sorting still works (oldest first)
-        return datetime.min.replace(tzinfo=None)

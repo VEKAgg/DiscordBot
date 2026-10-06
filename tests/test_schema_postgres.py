@@ -196,3 +196,29 @@ async def test_feed_outage_survives_cog_restart(migrated_db, monkeypatch):
     # Reapplying the SQL itself (not just the runner) is safe and preserves outage state.
     await migrated_db.execute(pathlib.Path('migrations/027_feed_failure_backoff.sql').read_text())
     assert await migrated_db.fetchval('SELECT consecutive_failures FROM feed_subscriptions WHERE id = $1', sub_id) == 3
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_dynamic_feed_migration_preserves_configured_subscriptions(migrated_db):
+    url = 'https://stackoverflow.com/jobs/feed'
+    seeded = await migrated_db.fetchval(
+        "INSERT INTO feed_subscriptions (guild_id, channel_id, feed_url, feed_name) VALUES (1088553066334273537, 0, $1, 'seed') RETURNING id",
+        url,
+    )
+    configured = await migrated_db.fetchval(
+        "INSERT INTO feed_subscriptions (guild_id, channel_id, feed_url, feed_name) VALUES (1088553066334273537, 4, $1, 'configured') RETURNING id",
+        'https://remoteok.io/remote-jobs.rss',
+    )
+    custom = await migrated_db.fetchval(
+        "INSERT INTO feed_subscriptions (guild_id, channel_id, feed_url, feed_name) VALUES (1088553066334273537, 0, $1, 'custom') RETURNING id",
+        'https://example.com/custom',
+    )
+    sql = pathlib.Path('migrations/028_feed_management.sql').read_text()
+    await migrated_db.execute(sql)
+    await migrated_db.execute(sql)
+    assert await migrated_db.fetch_one('SELECT id FROM feed_subscriptions WHERE id = $1', seeded) is None
+    for sub_id in (configured, custom):
+        assert await migrated_db.fetchval('SELECT paused FROM feed_subscriptions WHERE id = $1', sub_id) is False
+    await migrated_db.execute('UPDATE feed_subscriptions SET paused = TRUE WHERE id = $1', configured)
+    await migrated_db.execute(sql)
+    assert await migrated_db.fetchval('SELECT paused FROM feed_subscriptions WHERE id = $1', configured) is True
