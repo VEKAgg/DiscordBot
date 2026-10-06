@@ -158,7 +158,12 @@ class RadioManager(commands.Cog):
 
         try:
             self._stream_url = self._get_station_url()
-            self._voice_client = await channel.connect(self_deaf=True)  # type: ignore[call-arg]
+            # nextcord's connect() has no self_deaf (that's discord.py); deafen via the voice state instead.
+            self._voice_client = await channel.connect()
+            try:
+                await channel.guild.change_voice_state(channel=channel, self_deaf=True)
+            except Exception as exc:
+                logger.warning('Could not self-deafen in %s: %s', channel.name, exc)
             self._play_stream()
             self._started_at = datetime.now(UTC)
             self._auto_started = True
