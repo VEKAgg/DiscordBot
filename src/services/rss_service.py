@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime
 
@@ -12,8 +11,6 @@ from src.utils.http import UnsafeURLError, fetch_public_url
 from src.utils.safety import DatabaseUnavailableError, ExternalRequestError
 
 logger = logging.getLogger('VEKA.rss')
-
-_background_tasks: set[asyncio.Task] = set()
 
 
 class RSSService:
@@ -29,6 +26,8 @@ class RSSService:
                 raise ExternalRequestError(f'HTTP Status: {status}')
 
             feed = feedparser.parse(content)
+            if not feed.get('version'):
+                raise ExternalRequestError('Response is not a recognized RSS or Atom feed')
             processed_entries = []
             for entry in feed.entries[:10]:
                 soup = BeautifulSoup(entry.get('description', ''), 'html.parser')
@@ -55,24 +54,6 @@ class RSSService:
                 'entries': processed_entries,
             }
 
-            # Handle recovery
-            from src.core.runtime_state import runtime_state
-
-            fail_key = f'rss_fail_{url}'
-            if runtime_state.alert_state_cache.get(fail_key, 0) > 0:
-                runtime_state.alert_state_cache[fail_key] = 0
-                if self.bot and hasattr(self.bot, 'notifier'):
-                    self.bot.notifier.clear_cooldown(f'rss_alert_{url}')
-                    task = asyncio.create_task(
-                        self.bot.notifier.send_alert(
-                            title='RSS Feed Recovered',
-                            description=f'The RSS feed `{url}` is now responding correctly.',
-                            severity='INFO',
-                        )
-                    )
-                    _background_tasks.add(task)
-                    task.add_done_callback(_background_tasks.discard)
-
             return feed_data
 
         except UnsafeURLError as exc:
@@ -80,24 +61,6 @@ class RSSService:
             return None
         except Exception as exc:
             logger.error('Error fetching RSS feed %s: %s', url, exc, exc_info=True)
-            from src.core.runtime_state import runtime_state
-
-            fail_key = f'rss_fail_{url}'
-            fails = runtime_state.alert_state_cache.get(fail_key, 0) + 1
-            runtime_state.alert_state_cache[fail_key] = fails
-
-            if fails >= 3 and self.bot and hasattr(self.bot, 'notifier'):
-                task = asyncio.create_task(
-                    self.bot.notifier.send_alert(
-                        title='RSS Feed Failing',
-                        description=f'The RSS feed `{url}` has failed {fails} consecutive times.\n**Error:** {str(exc)[:500]}',
-                        severity='WARN',
-                        dedupe_key=f'rss_alert_{url}',
-                        cooldown_minutes=120,
-                    )
-                )
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
             return None
 
     async def process_and_dedupe(

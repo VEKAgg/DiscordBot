@@ -23,7 +23,7 @@ mypy src/ main.py --explicit-package-bases
 pre-commit run --all-files        # whitespace/yaml/toml checks, ruff (--fix --unsafe-fixes), ruff-format, mypy, pytest
 ```
 
-**Tests** — 203 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
+**Tests** — 225 tests; unit tests need no DB or network (DB, bot, interaction and context are mocked in `tests/conftest.py`). `tests/test_schema_postgres.py` is skipped unless `VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database (its `public` schema is dropped); it applies every migration with the real runner and `prepare()`s every static SQL string in `src/`. CI runs it against a service container:
 
 ```bash
 uv run --extra dev pytest tests/ -v                                   # all
@@ -60,7 +60,7 @@ The bot keeps running when the DB, a cog, or a background task fails:
 - Global singleton `from src.database.database import db`. **`$1`/`$2` parameter style.**
 - Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many` (all via `Database._run`). Connection-class failures (incl. `OSError`/timeouts) raise `DatabaseUnavailableError` and flip `runtime_state.db_available = False`; SQL errors raise `DatabaseQueryError` (a subclass, so `except DatabaseUnavailableError` still catches it) and leave the DB marked available. Only argument *types* are logged, never values; PostgreSQL errors are summarized by `_describe_pg_error` (class, SQLSTATE, table/column/constraint; primary message dropped for SQLSTATE classes `22`/`P0`) and never chained, because `str(exc)` includes `DETAIL` with row values. Pool has `command_timeout=30s`. Never assume a query succeeded.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) that PostgreSQL would reject as unknown server settings.
-- **Migrations:** `.sql` files in `migrations/` (001–026; no `002`; `005_` and `005b_` coexist — the duplicate check compares the full prefix incl. letter suffix), applied in filename order on connect, tracked in `schema_migrations` by filename. **Never rename an applied migration**; if you must, add the old name to `LEGACY_MIGRATION_NAMES` in `src/database/migrations.py` (as for `005b`). Add new ones as `migrations/0NN_name.sql` with the next unused number. Make them idempotent (`IF NOT EXISTS`, guarded `DO $$` blocks) and use `TIMESTAMPTZ DEFAULT NOW()`. Discord IDs are `BIGINT`; `users.id` is an internal serial PK — don't mix them.
+- **Migrations:** `.sql` files in `migrations/` (001–027; no `002`; `005_` and `005b_` coexist — the duplicate check compares the full prefix incl. letter suffix), applied in filename order on connect, tracked in `schema_migrations` by filename. **Never rename an applied migration**; if you must, add the old name to `LEGACY_MIGRATION_NAMES` in `src/database/migrations.py` (as for `005b`). Add new ones as `migrations/0NN_name.sql` with the next unused number. Make them idempotent (`IF NOT EXISTS`, guarded `DO $$` blocks) and use `TIMESTAMPTZ DEFAULT NOW()`. Discord IDs are `BIGINT`; `users.id` is an internal serial PK — don't mix them.
 
 ### Per-guild settings
 
@@ -104,7 +104,7 @@ Flagged but not yet decided (2026-10-06): Spotify listening tracking and the `/m
 - **Moderation** (`src/cogs/admin/moderation.py`): `warnings` table (snowflake `BIGINT` columns since 022) with auto-escalation to mute/ban at per-guild thresholds; role-hierarchy checks (`_hierarchy_refusal`); escalations write `audit_logs`; `/modstats` reads `warnings` + `audit_logs`.
 - **RPG/activity** (`src/cogs/rpg/rpg_manager.py`): XP with streak multipliers, daily rollups in `user_activity_daily`, category leaderboards, monthly season snapshots, Pillow rank cards.
 - **Radio** (`src/cogs/radio/radio.py`): **disabled** (commented out of `EXTENSIONS`; `tests/test_cog_loading.py` and `tests/test_permissions.py` still load it so it doesn't rot). It has no built-in stations: music stations were removed (content policy), and religious stations were left out to keep the bot neutral. Admins `/radio podcast <feed> [episode]` (RSS enclosure, newest = 1) or `/radio play <url>` (any public audio URL; prefix `!radiopodcast`/`!radioplay`). The bot joins the radio channel, plays, and leaves when the audio ends or fails. User URLs are pre-checked by `resolve_public_media_url` (http/https, public DNS only), and FFmpeg runs with `-protocol_whitelist http,https,tcp,tls,crypto`. A per-play generation counter keeps an intentional `stop()` from being treated as "finished". No yt-dlp, so YouTube/Spotify links don't play.
-- **Feeds** (`src/cogs/resources/feeds.py`, `src/services/rss_service.py`): DB-backed `feed_subscriptions`; dedupe per subscription in `feed_seen_items(subscription_id, item_guid)`. User-supplied URLs are fetched only through `src/utils/http.fetch_public_url` (http/https only, public IPs only via `PublicOnlyResolver`, redirects re-checked, 2 MB cap). `/feed add|remove|test` need Manage Server.
+- **Feeds** (`src/cogs/resources/feeds.py`, `src/services/rss_service.py`): DB-backed `feed_subscriptions`; dedupe per subscription in `feed_seen_items(subscription_id, item_guid)`. User-supplied URLs are fetched only through `src/utils/http.fetch_public_url` (http/https only, public IPs only via `PublicOnlyResolver`, redirects re-checked, 2 MB cap). `/feed add|remove|test` need Manage Server. Outage state (`consecutive_failures`, `next_retry_at`, migration 027) is persisted per subscription: one warning at three failed polls, one recovery notice, exponential retry backoff capped at one day (never shorter than the configured interval). Failed attempts also update `last_polled_at`. Manual fetch/test calls do not send admin alerts.
 
 ## CI/CD
 
@@ -117,7 +117,7 @@ Flagged but not yet decided (2026-10-06): Spotify listening tracking and the `/m
 
 See `AUDIT_REPORT.md` (remediation status per finding) and `MIGRATION_NOTES.md`. Still open:
 
-1. `alert_state_cache` is shared by several subsystems with ad-hoc key patterns; per-URL RSS failure keys are unbounded.
+1. `alert_state_cache` is shared by several subsystems with ad-hoc key patterns (RSS outage state is now persisted in PostgreSQL instead).
 2. `_is_staff_user` in `safety.py` fakes a context with `SimpleNamespace` to call RBAC — fragile coupling.
 3. Unique constraint on `profiles.user_id` is duplicated across migrations `005` and `006` (harmless).
 4. Empty leftover dirs `src/cogs/gamification/` and `src/cogs/workshops/`; `src/services/quiz_service.py` has no cog.
