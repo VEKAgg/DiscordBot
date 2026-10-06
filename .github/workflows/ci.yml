@@ -1,19 +1,25 @@
 name: CI
 
-# Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL) and audit dependencies.
-# Runs on every push and PR; the deploy workflow runs only after this workflow succeeds on a merge to main/production.
+# Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL), audit dependencies, then deploy.
+# - pull_request: checks only (one run per PR, superseded runs are cancelled).
+# - push to main/production: checks, then the deploy job when the push is a merged PR.
+# - workflow_dispatch on main/production: checks, then deploy (manual redeploy: `gh workflow run CI --ref main`).
 
 on:
   push:
-    branches: ['**']
+    branches: [main, production]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# PR runs are grouped by PR number, never by ref: a pull_request run queued after a fast merge reports
+# github.ref as the base branch and would otherwise cancel the push run on main (skipping the deploy).
+# Push/dispatch runs on main/production are never cancelled.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -40,9 +46,9 @@ jobs:
       VEKA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/veka_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
@@ -73,6 +79,85 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build image
         run: docker build -t veka-discord-bot:ci .
+
+  deploy:
+    # Only merged PRs (or a manual dispatch) on main/production, and only after every check passed.
+    needs: [checks, docker-build]
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/production') &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'Merge pull request')))
+    runs-on: [self-hosted, X64, Linux, Veka]
+    concurrency:
+      group: deploy-discord-bot
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Create .env file
+        shell: bash
+        run: |
+          {
+            echo "DISCORD_TOKEN=${{ secrets.DISCORD_TOKEN }}"
+            echo "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+            echo "DIRECTUS_URL=${{ secrets.DIRECTUS_URL }}"
+            echo "DIRECTUS_SERVICE_TOKEN=${{ secrets.DIRECTUS_SERVICE_TOKEN }}"
+            echo "ADMIN_IDS=${{ vars.ADMIN_IDS }}"
+            echo "OWNER_IDS=${{ vars.OWNER_IDS }}"
+            echo "FOUNDER_IDS=${{ vars.FOUNDER_IDS }}"
+            echo "STAFF_IDS=${{ vars.STAFF_IDS }}"
+            echo "INTERN_IDS=${{ vars.INTERN_IDS }}"
+            echo "DONATOR_IDS=${{ vars.DONATOR_IDS }}"
+            echo "ACTIVE_PRO_IDS=${{ vars.ACTIVE_PRO_IDS }}"
+            echo "MARKETPLACE_CHANNEL_ID=${{ vars.MARKETPLACE_CHANNEL_ID }}"
+            echo "ADMIN_ALERT_CHANNEL_ID=${{ vars.ADMIN_ALERT_CHANNEL_ID }}"
+            echo "RADIO_VOICE_CHANNEL_ID=${{ vars.RADIO_VOICE_CHANNEL_ID }}"
+            echo "LEADERBOARD_CHANNEL_ID=${{ vars.LEADERBOARD_CHANNEL_ID }}"
+            echo "RADIO_STREAM_URL=${{ vars.RADIO_STREAM_URL || 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }}"
+            echo "MAIN_SERVER_INVITE_URL=${{ vars.MAIN_SERVER_INVITE_URL || 'https://discord.gg/veka' }}"
+            echo "COMMIT_SHA=${{ github.sha }}"
+            echo "BOT_VERSION=${{ github.sha }}"
+            echo "LOG_LEVEL=${{ vars.LOG_LEVEL || 'INFO' }}"
+            echo "GIT_BRANCH=${{ github.ref_name }}"
+            echo "ENVIRONMENT=production"
+          } > .env
+
+      - name: Build and deploy
+        shell: bash
+        run: |
+          mkdir -p logs
+          docker compose down || true
+          docker compose up -d --build
+
+      - name: Health check
+        shell: bash
+        run: |
+          MAX_WAIT=60
+          INTERVAL=5
+          ELAPSED=0
+          SUCCESS=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
+              echo "Health check passed - Bot is ready"
+              SUCCESS=1
+              # Migrations failing doesn't stop the bot (degraded mode), so surface it loudly.
+              if docker logs veka-discord-bot 2>&1 | grep -q "is ready.*migrations=degraded"; then
+                echo "::warning title=Migrations degraded::Database migrations failed on startup - check 'docker logs veka-discord-bot'"
+              fi
+              break
+            fi
+            echo "Waiting for bot to become ready... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+
+          if [ $SUCCESS -ne 1 ]; then
+            echo "Health check failed - Bot did not become ready within $MAX_WAIT seconds"
+            docker logs veka-discord-bot 2>&1 | tail -50 || true
+            exit 1
+          fi
