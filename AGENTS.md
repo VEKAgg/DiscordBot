@@ -95,9 +95,11 @@ Channel/role config is per guild in the `guild_settings` table, read via `from s
 
 ## CI/CD
 
-`.github/workflows/ci.yml` runs on every push/PR: ruff (lint + format check), mypy, pytest with a PostgreSQL 17 service (`VEKA_TEST_DATABASE_URL`), `pip-audit` on the locked runtime deps (PyNaCl advisories ignored — see `MIGRATION_NOTES.md`), and a Docker build. Keep mypy at zero errors.
+`.github/workflows/ci.yml` is the only workflow. It runs on pull requests, on pushes to `main`/`production`, and on `workflow_dispatch`. Jobs: `checks` (ruff lint + format check, mypy, pytest with a PostgreSQL 17 service (`VEKA_TEST_DATABASE_URL`), `pip-audit` on the locked runtime deps (PyNaCl advisories ignored, see `MIGRATION_NOTES.md`)), `docker-build`, and `deploy`. Keep mypy at zero errors. Pushes to `dev` don't run CI on their own; the PR into `main` does.
 
-`.github/workflows/deploy-discord-bot.yml` runs via `workflow_run` **only after CI succeeds** for a push to `main`/`production` whose commit message starts with `Merge pull request` (merged PRs), and checks out that exact `head_sha`. `workflow_run` triggers are read from the default branch. Self-hosted runner (`self-hosted, X64, Linux, Veka`); writes `.env` from secrets (`DISCORD_TOKEN`, `DATABASE_URL`) and variables (`ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL`); `docker compose up -d --build`; passes only if `"is ready. DB available=True"` appears in the logs within 60s, and emits a warning annotation if that line says `migrations=degraded`. Development happens on `dev`; PR `dev` → `main` to deploy.
+Concurrency: PR runs are grouped by PR number and superseded ones are cancelled. Push/dispatch runs on `main`/`production` are **never cancelled**. Don't group by `github.ref`: a `pull_request` run queued after a fast merge reports the base branch as its ref, and it used to cancel the push run on `main`, which skipped the deploy.
+
+`deploy` (`needs: [checks, docker-build]`) runs on the self-hosted runner (`self-hosted, X64, Linux, Veka`) only for a push to `main`/`production` whose commit message starts with `Merge pull request` (merged PRs), or for a manual `gh workflow run CI --ref main`. It writes `.env` from secrets (`DISCORD_TOKEN`, `DATABASE_URL`) and variables (`ADMIN_IDS`, `OWNER_IDS`, `ADMIN_ALERT_CHANNEL_ID`, `LOG_LEVEL`), runs `docker compose up -d --build`, and passes only if `"is ready. DB available=True"` appears in the logs within 60s. It emits a warning annotation if that line says `migrations=degraded`. Development happens on `dev`; open a PR `dev` → `main` to deploy.
 
 ## Known issues (open)
 
