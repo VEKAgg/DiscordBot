@@ -44,7 +44,7 @@ EXTENSIONS = [
     'src.cogs.mentorship',
     'src.cogs.marketplace_enhanced',
     'src.cogs.portfolio.portfolio_manager',
-    'src.cogs.radio.radio',
+    # 'src.cogs.radio.radio',  # disabled until needed — spoken-word only, see AGENTS.md "Content policy"
     'src.cogs.rpg.rpg_manager',
     'src.cogs.stats',
     'src.cogs.external.info',
