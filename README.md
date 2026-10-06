@@ -211,8 +211,21 @@ notes: *Staff* = staff role or `STAFF_IDS`; *Admin* = Administrator/`ADMIN_IDS`;
 |---|---|
 | `/feed add <url> <channel> [name] [interval_minutes]` | (Manage Server) Subscribe a channel to an RSS feed |
 | `/feed remove <feed_url>` / `test <feed_url>` | (Manage Server) Remove or preview a feed |
-| `/feed list` | List this server's subscriptions |
-| `/resource sources`, `/resource latest` | Browse resources |
+| `/feed edit <feed_url> [channel] [name] [interval_minutes]` | (Manage Server) Change settings without losing delivery history |
+| `/feed pause <feed_url>` / `resume <feed_url>` | (Manage Server) Stop or restart automatic posting |
+| `/feed list [page]` | Paginated subscriptions, health, and next retry |
+| `/resource sources`, `/resource latest` | View subscriptions or preview a URL |
+
+Feeds are optional, dynamically added **per server**, and stored in PostgreSQL. No code change or restart is needed to manage them. The `feed_url` option of edit/pause/resume/remove autocompletes from the server's subscriptions. Only members with **Manage Server** (or Administrator/server ownership) can manage subscriptions; a staff role alone does not grant access. Use a public RSS/Atom URL, not an ordinary web page. The destination must be a text channel in the same server where the bot has View Channel, Send Messages, and Embed Links.
+
+The scheduler checks due subscriptions every minute; configured intervals are **10–1440 minutes**. Defaults in `.env` (also available as GitHub deployment variables):
+- `FEED_MAX_SUBSCRIPTIONS=25`: maximum subscriptions per server, including paused feeds. Existing subscriptions above the limit are preserved; updating them is allowed.
+- `FEED_MAX_POSTS_PER_POLL=3`: maximum entries posted per feed per poll (1–10).
+- `FEED_MAX_POSTS_PER_GUILD_PER_CYCLE=15`: maximum total automatic posts per server per one-minute cycle. Remaining due feeds wait for the next cycle.
+
+After three failed polls, one warning is sent. Retries back off up to daily, and a successful fetch sends one recovery notice. State survives restarts. Pausing/resuming and editing retain outage backoff and article delivery history; a resume does not force an immediate retry. New subscriptions can post up to the posting limit from the latest available entries. `/feed add` updates an existing URL's settings but preserves its pause state. Lists show fetch health separately from unavailable-channel status; healthy means the latest fetch succeeded, not a guarantee of delivery.
+
+Migration 028 removes only known historical default seeds that still have no destination channel. Configured subscriptions are not deleted, including obsolete URLs: staff can pause, replace, or remove those. Article previews do not produce outage alerts. Feed quotas are serialized in the single bot process; running multiple polling instances against the same database is not supported.
 
 ### Radio
 

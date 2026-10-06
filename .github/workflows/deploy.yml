@@ -52,6 +52,9 @@ jobs:
           RADIO_STREAM_URL: ${{ vars.RADIO_STREAM_URL || 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }}
           MAIN_SERVER_INVITE_URL: ${{ vars.MAIN_SERVER_INVITE_URL || 'https://discord.gg/veka' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+          FEED_MAX_SUBSCRIPTIONS: ${{ vars.FEED_MAX_SUBSCRIPTIONS || '25' }}
+          FEED_MAX_POSTS_PER_POLL: ${{ vars.FEED_MAX_POSTS_PER_POLL || '3' }}
+          FEED_MAX_POSTS_PER_GUILD_PER_CYCLE: ${{ vars.FEED_MAX_POSTS_PER_GUILD_PER_CYCLE || '15' }}
         shell: bash
         run: |
           umask 077
@@ -59,7 +62,8 @@ jobs:
             for name in DISCORD_TOKEN DATABASE_URL DIRECTUS_URL DIRECTUS_SERVICE_TOKEN \
                         ADMIN_IDS OWNER_IDS FOUNDER_IDS STAFF_IDS INTERN_IDS DONATOR_IDS ACTIVE_PRO_IDS \
                         MARKETPLACE_CHANNEL_ID ADMIN_ALERT_CHANNEL_ID RADIO_VOICE_CHANNEL_ID LEADERBOARD_CHANNEL_ID \
-                        RADIO_STREAM_URL MAIN_SERVER_INVITE_URL LOG_LEVEL; do
+                        RADIO_STREAM_URL MAIN_SERVER_INVITE_URL LOG_LEVEL \
+                        FEED_MAX_SUBSCRIPTIONS FEED_MAX_POSTS_PER_POLL FEED_MAX_POSTS_PER_GUILD_PER_CYCLE; do
               printf '%s=%s\n' "$name" "${!name}"
             done
             printf 'COMMIT_SHA=%s\nBOT_VERSION=%s\nGIT_BRANCH=%s\nENVIRONMENT=production\n' \
