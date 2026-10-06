@@ -1,19 +1,21 @@
 name: CI
 
-# Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL) and audit dependencies.
-# Runs on every push and PR; the deploy workflow runs only after this workflow succeeds on a merge to main/production.
+# Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL), audit dependencies and build the image.
+# Runs on every pull request, and is called by deploy.yml as the gate for every deploy of main.
 
 on:
-  push:
-    branches: ['**']
   pull_request:
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Superseded PR runs are cancelled. Called/dispatched runs are keyed by commit and never cancelled.
+# Never key on github.ref alone: a pull_request run queued after its PR merged reports the base branch.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -40,9 +42,11 @@ jobs:
       VEKA_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/veka_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
 
@@ -66,13 +70,16 @@ jobs:
         # the affected libsodium API (ed25519 point validation) is not used by nextcord's voice code.
         # See MIGRATION_NOTES.md.
         run: |
-          uv export --locked --no-dev --no-hashes --format requirements-txt > /tmp/requirements.txt
-          uvx pip-audit -r /tmp/requirements.txt --ignore-vuln PYSEC-2026-1448 --ignore-vuln PYSEC-2026-3002
+          uv export --locked --no-dev --no-hashes --format requirements-txt > "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit -r "$RUNNER_TEMP/requirements.txt" --ignore-vuln PYSEC-2026-1448 --ignore-vuln PYSEC-2026-3002
 
   docker-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Build image
         run: docker build -t veka-discord-bot:ci .
