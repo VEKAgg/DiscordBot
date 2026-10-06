@@ -144,7 +144,9 @@ async def test_feed_acknowledges_only_delivered_entries(monkeypatch, mock_db, se
     entries = [{'entry_id': str(i)} for i in range(5)]
     channel = MagicMock(spec=nextcord.TextChannel)
     channel.send = AsyncMock(side_effect=RuntimeError('send failed') if send_fails else None)
-    guild = SimpleNamespace(get_channel=lambda _id: channel)
+    guild = SimpleNamespace(id=2, me=object(), get_channel=lambda _id: channel)
+    channel.guild = guild
+    channel.permissions_for.return_value = nextcord.Permissions(view_channel=True, send_messages=True, embed_links=True)
     bot = SimpleNamespace(get_guild=lambda _id: guild)
     cog = Feeds(bot)
     dedupe = AsyncMock(return_value=entries)

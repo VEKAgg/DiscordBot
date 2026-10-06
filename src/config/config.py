@@ -71,20 +71,10 @@ MENTORSHIP_CATEGORIES: list[str] = ['programming', 'design', 'career', 'devops',
 MENTORSHIP_ROLES: dict[str, str] = {'mentor': 'Mentor', 'mentee': 'Mentee'}
 POINTS_CONFIG: dict[str, int] = {'mentor_session': 50, 'mentee_completion': 25, 'first_mentorship': 100}
 
-# RSS Feed Configuration
-RSS_FEEDS = {
-    'tech_news': [
-        'https://feeds.feedburner.com/TechCrunch',
-        'https://www.wired.com/feed/rss',
-        'https://www.theverge.com/rss/index.xml',
-    ],
-    'job_listings': [
-        'https://stackoverflow.com/jobs/feed',
-        'https://remoteok.io/remote-jobs.rss',
-        'https://weworkremotely.com/categories/remote-programming-jobs.rss',
-    ],
-    'dev_blogs': ['https://dev.to/feed', 'https://medium.com/feed/tag/programming', 'https://blog.github.com/all.atom'],
-}
+# RSS subscriptions are managed dynamically with /feed, not hardcoded sources.
+FEED_MAX_SUBSCRIPTIONS = max(1, int(os.getenv('FEED_MAX_SUBSCRIPTIONS', '25')))
+FEED_MAX_POSTS_PER_POLL = max(1, min(10, int(os.getenv('FEED_MAX_POSTS_PER_POLL', '3'))))
+FEED_MAX_POSTS_PER_GUILD_PER_CYCLE = max(1, int(os.getenv('FEED_MAX_POSTS_PER_GUILD_PER_CYCLE', '15')))
 
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
