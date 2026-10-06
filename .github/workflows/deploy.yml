@@ -1,0 +1,103 @@
+name: Deploy
+
+# Every push to main (i.e. every merged PR) runs the full CI as a gate, then deploys that commit to the
+# self-hosted production runner. Manual redeploy: `gh workflow run Deploy --ref main`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, X64, Linux, Veka]
+    timeout-minutes: 20
+    environment: production
+    # One deploy at a time; a newer deploy waits for the running one instead of cancelling it mid-rollout.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Write .env
+        # Values come in through env (not ${{ }} inside the script) so they are never interpolated into shell code.
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DIRECTUS_URL: ${{ secrets.DIRECTUS_URL }}
+          DIRECTUS_SERVICE_TOKEN: ${{ secrets.DIRECTUS_SERVICE_TOKEN }}
+          ADMIN_IDS: ${{ vars.ADMIN_IDS }}
+          OWNER_IDS: ${{ vars.OWNER_IDS }}
+          FOUNDER_IDS: ${{ vars.FOUNDER_IDS }}
+          STAFF_IDS: ${{ vars.STAFF_IDS }}
+          INTERN_IDS: ${{ vars.INTERN_IDS }}
+          DONATOR_IDS: ${{ vars.DONATOR_IDS }}
+          ACTIVE_PRO_IDS: ${{ vars.ACTIVE_PRO_IDS }}
+          MARKETPLACE_CHANNEL_ID: ${{ vars.MARKETPLACE_CHANNEL_ID }}
+          ADMIN_ALERT_CHANNEL_ID: ${{ vars.ADMIN_ALERT_CHANNEL_ID }}
+          RADIO_VOICE_CHANNEL_ID: ${{ vars.RADIO_VOICE_CHANNEL_ID }}
+          LEADERBOARD_CHANNEL_ID: ${{ vars.LEADERBOARD_CHANNEL_ID }}
+          RADIO_STREAM_URL: ${{ vars.RADIO_STREAM_URL || 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }}
+          MAIN_SERVER_INVITE_URL: ${{ vars.MAIN_SERVER_INVITE_URL || 'https://discord.gg/veka' }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+        shell: bash
+        run: |
+          umask 077
+          {
+            for name in DISCORD_TOKEN DATABASE_URL DIRECTUS_URL DIRECTUS_SERVICE_TOKEN \
+                        ADMIN_IDS OWNER_IDS FOUNDER_IDS STAFF_IDS INTERN_IDS DONATOR_IDS ACTIVE_PRO_IDS \
+                        MARKETPLACE_CHANNEL_ID ADMIN_ALERT_CHANNEL_ID RADIO_VOICE_CHANNEL_ID LEADERBOARD_CHANNEL_ID \
+                        RADIO_STREAM_URL MAIN_SERVER_INVITE_URL LOG_LEVEL; do
+              printf '%s=%s\n' "$name" "${!name}"
+            done
+            printf 'COMMIT_SHA=%s\nBOT_VERSION=%s\nGIT_BRANCH=%s\nENVIRONMENT=production\n' \
+              "$GITHUB_SHA" "$GITHUB_SHA" "$GITHUB_REF_NAME"
+          } > .env
+
+      - name: Build image
+        run: docker compose build
+
+      - name: Start container
+        # Build first, then recreate: the old container keeps running until the new image is ready.
+        run: |
+          mkdir -p logs
+          docker compose up -d --force-recreate --remove-orphans
+
+      - name: Health check
+        shell: bash
+        run: |
+          MAX_WAIT=60
+          INTERVAL=5
+          ELAPSED=0
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
+              echo "Health check passed - Bot is ready"
+              # Migrations failing doesn't stop the bot (degraded mode), so surface it loudly.
+              if docker logs veka-discord-bot 2>&1 | grep -q "is ready.*migrations=degraded"; then
+                echo "::warning title=Migrations degraded::Database migrations failed on startup - check 'docker logs veka-discord-bot'"
+              fi
+              exit 0
+            fi
+            echo "Waiting for bot to become ready... ($ELAPSED seconds elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED+INTERVAL))
+          done
+          echo "::error title=Deploy failed::Bot did not become ready within $MAX_WAIT seconds"
+          docker logs veka-discord-bot 2>&1 | tail -50 || true
+          exit 1
+
+      - name: Prune dangling images
+        if: always()
+        run: docker image prune -f
