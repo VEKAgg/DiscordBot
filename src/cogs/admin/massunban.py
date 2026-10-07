@@ -60,6 +60,25 @@ RATE_LIMIT_COOLDOWN = 60  # default seconds on 429 without retry_after
 PAUSE_THRESHOLD = 3  # consecutive 429s before progressive slowdown
 
 
+# Discord JSON error code for "Two factor is required for this operation".
+MFA_REQUIRED_CODE = 60003
+
+
+def _forbidden_result(result: dict[str, Any], exc: nextcord.Forbidden) -> dict[str, Any]:
+    """Mark an unban result as a job-stopping 403; the item itself stays pending."""
+    if exc.code == MFA_REQUIRED_CODE:
+        reason = (
+            "The server requires 2FA for moderator actions, and the bot owner's Discord account "
+            'does not have 2FA enabled (error 60003). Enable 2FA on the account that owns the bot application.'
+        )
+    else:
+        reason = f'Missing permission to unban (Ban Members or role hierarchy): {exc}'
+    result['status'] = 'pending'
+    result['failure_reason'] = reason
+    result['forbidden'] = True
+    return result
+
+
 def _format_dt(dt: datetime | None, style: str = 'f') -> str:
     """Format a datetime as a Discord timestamp."""
     if dt is None:
@@ -982,6 +1001,11 @@ class MassUnban(commands.Cog):
                     await self._handle_rate_limit_pause(job_id, result)
                     return
 
+                if result.get('forbidden'):
+                    # Leave this item pending and stop: retrying the rest would only repeat the 403.
+                    await self._abort_job_forbidden(job_id, guild, job, result['failure_reason'])
+                    return
+
                 # Update job progress
                 await self._update_job_progress(job_id, item, result)
 
@@ -1038,10 +1062,8 @@ class MassUnban(commands.Cog):
             result['status'] = 'skipped'
             result['failure_reason'] = 'Already unbanned'
             return result
-        except nextcord.Forbidden:
-            result['status'] = 'failed'
-            result['failure_reason'] = 'Missing Ban Members permission'
-            return result
+        except nextcord.Forbidden as exc:
+            return _forbidden_result(result, exc)
 
         # Attempt unban
         try:
@@ -1059,6 +1081,9 @@ class MassUnban(commands.Cog):
             )
             result['status'] = 'success'
             result['unbanned_at'] = datetime.now(UTC)
+        except nextcord.Forbidden as exc:
+            # Must precede HTTPException (its parent class). Every remaining unban would fail the same way.
+            return _forbidden_result(result, exc)
         except nextcord.HTTPException as exc:
             if exc.status == 429:
                 # Rate limited — persist and pause
@@ -1077,9 +1102,6 @@ class MassUnban(commands.Cog):
                 return result
             result['status'] = 'failed'
             result['failure_reason'] = f'Discord API error: {exc}'
-        except nextcord.Forbidden:
-            result['status'] = 'failed'
-            result['failure_reason'] = 'Missing Ban Members permission'
         except Exception as exc:
             result['status'] = 'failed'
             result['failure_reason'] = str(exc)
@@ -1143,6 +1165,41 @@ class MassUnban(commands.Cog):
                 )
             except Exception:
                 logger.warning('Failed to update counters for job %s', job_id, exc_info=True)
+
+    async def _abort_job_forbidden(self, job_id: int, guild: nextcord.Guild, job: dict, reason: str) -> None:
+        """Stop a job whose unbans Discord refuses (403). Remaining items stay pending."""
+        logger.warning('Mass unban job %s stopped: %s', job_id, reason)
+        try:
+            await db.execute(
+                """UPDATE massunban_jobs
+                   SET status = 'failed', completed_at = NOW(),
+                       metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('forbidden', $2::text)
+                   WHERE id = $1""",
+                job_id,
+                reason,
+            )
+        except Exception:
+            logger.error('Failed to mark job %s as failed after 403', job_id, exc_info=True)
+        finally:
+            self._active_jobs.pop(job_id, None)
+            self._rate_limit_count.pop(job_id, None)
+            self._unban_interval.pop(job_id, None)
+
+        description = (
+            f'Discord refused the unban, so the job was stopped.\n**Reason:** {reason}\n\n'
+            'Users not yet processed are still banned. Fix the cause, then run a new mass unban '
+            'with the same filters.'
+        )
+        await self._log_job_event(guild, 'Job Stopped', f'Job #{job_id} stopped.', description)
+        runner = self.bot.get_user(job['requested_by'])
+        if runner:
+            embed = await alert_embed(
+                title=f'\u26d4 Mass Unban Stopped — Job #{job_id}', description=description, severity='ERROR'
+            )
+            try:
+                await runner.send(embed=embed)
+            except Exception:
+                pass
 
     async def _handle_rate_limit_pause(self, job_id: int, result: dict) -> None:
         """Handle rate limit: persist pause state, notify, and schedule resume."""
