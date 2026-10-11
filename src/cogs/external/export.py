@@ -13,16 +13,20 @@ import asyncio
 import io
 import logging
 import random
+import tempfile
 import time
 from datetime import UTC, datetime
+from typing import BinaryIO, cast
 
 import nextcord
 from nextcord.ext import commands
 
 from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
+from src.services.export_stream import ExportContent, file_io, utf8_chunks
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.guild_gate import owner_in_external_only
+from src.utils.outbound import outbound
 from src.utils.safety import _is_admin_user, admin_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.external.export')
@@ -42,6 +46,8 @@ MAX_EXPORT_DURATION = 1800  # 30 minutes
 BATCH_SIZE = 100  # messages per fetch batch
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB (safe margin under Discord's 25MB limit)
 CPU_PAUSE_THRESHOLD = 90.0  # pause if CPU above this %
+MAX_CHANNEL_BYTES = 128 * 1024 * 1024  # bounded temp disk use; stop honestly on overflow
+MAX_CHANNEL_DURATION = 300  # one channel may not monopolise the 30-minute run
 
 
 class ChatExport(commands.Cog):
@@ -55,6 +61,17 @@ class ChatExport(commands.Cog):
         self._export_owner_id: int | None = None
         self._export_guild_id: int | None = None
         self._export_task: asyncio.Task | None = None
+        self._status_key = ''
+
+    def _claim_export(self, owner_id: int, guild_id: int) -> bool:
+        # No await between checking and reserving: concurrent commands cannot both win.
+        if self._export_running:
+            return False
+        self._export_running = True
+        self._cancel_export = False
+        self._export_owner_id = owner_id
+        self._export_guild_id = guild_id
+        return True
 
     def cog_unload(self):
         if self._export_task is not None:
@@ -79,6 +96,16 @@ class ChatExport(commands.Cog):
         except ImportError:
             pass
         return True
+
+    @staticmethod
+    def _can_read(channel: nextcord.TextChannel, owner: nextcord.Member) -> bool:
+        guild = channel.guild
+        current = guild.get_member(owner.id)
+        if current is None or guild.me is None:
+            return False
+        mine = channel.permissions_for(guild.me)
+        theirs = channel.permissions_for(current)
+        return mine.view_channel and mine.read_message_history and theirs.view_channel and theirs.read_message_history
 
     def _update_progress(self, **kwargs):
         """Update export progress in runtime_state for /botinfo visibility."""
@@ -143,36 +170,51 @@ class ChatExport(commands.Cog):
     async def _export_channel(
         self,
         channel: nextcord.TextChannel,
-        _owner: nextcord.Member,
+        owner: nextcord.Member,
         limit: int | None = None,
-    ) -> tuple[str | None, int]:
-        """
-        Export a single channel's history to a .txt file.
-        Returns (file_content_or_None, message_count).
-        """
-        messages = []
+    ) -> tuple[ExportContent | None, int]:
+        """Stream history into bounded temporary storage; never retain Discord Message objects."""
+        body = cast(BinaryIO, tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode='w+b'))
+        pending: list[bytes] = []
+        count = size = 0
+        first_date = last_date = ''
+        transferred = False
         delay = BASE_DELAY
-        batch_count = 0
         batches_since_slowdown = 0
         pauses_since_random = 0
 
         try:
             async for msg in channel.history(limit=limit, oldest_first=True):
-                messages.append(msg)
+                if self._cancel_export:
+                    return None, 0
+                formatted = (self._format_message(msg) + '\n').encode('utf-8')
+                size += len(formatted)
+                if size > MAX_CHANNEL_BYTES:
+                    logger.warning('Channel %s exceeds the export storage limit; stopping', channel.id)
+                    self._cancel_export = True
+                    return None, 0
+                pending.append(formatted)
+                count += 1
+                last_date = msg.created_at.strftime('%Y-%m-%d')
+                first_date = first_date or last_date
 
-                # Process in batches
-                if len(messages) >= BATCH_SIZE:
+                # Flush at most one message batch at a time; disk I/O runs off the event loop.
+                if count % BATCH_SIZE == 0:
+                    await file_io(body.write, b''.join(pending))
+                    pending.clear()
+                    if not self._can_read(channel, owner):
+                        self._cancel_export = True
+                        return None, 0
                     # Health check
                     if not self._is_healthy():
-                        logger.info('Export paused for channel %s — waiting for health recovery')
+                        logger.info('Export paused for channel %s — waiting for health recovery', channel.id)
                         while not self._is_healthy():
                             await asyncio.sleep(10)
                             if self._cancel_export:
                                 return None, 0
-                        logger.info('Health recovered — resuming export for channel %s')
+                        logger.info('Health recovered — resuming export for channel %s', channel.id)
 
                     # Rate limiting
-                    batch_count += 1
                     batches_since_slowdown += 1
                     pauses_since_random += 1
 
@@ -189,7 +231,6 @@ class ChatExport(commands.Cog):
                         pauses_since_random = 0
 
                     await asyncio.sleep(delay)
-                    batch_count += 1
 
                     # Yield to main server
                     await asyncio.sleep(0)
@@ -197,73 +238,66 @@ class ChatExport(commands.Cog):
                     if self._cancel_export:
                         return None, 0
 
+            if not count:
+                return None, 0
+            if pending:
+                await file_io(body.write, b''.join(pending))
+            await file_io(body.seek, 0)
+            date_range = f'{first_date} to {last_date}' if first_date != last_date else first_date
+            header = self._build_channel_header(channel, count, date_range).encode('utf-8')
+            transferred = True
+            return ExportContent(body, header, size), count
         except nextcord.Forbidden:
             logger.warning('No access to channel %s', channel.name)
+            self._cancel_export = True
             return None, 0
         except Exception as exc:
-            logger.error('Error exporting channel %s: %s', channel.name, exc)
+            logger.error('Error exporting channel %s: %s', channel.name, type(exc).__name__)
+            self._cancel_export = True
             return None, 0
+        finally:
+            if not transferred:
+                body.close()
 
-        if not messages:
-            return None, 0
-
-        # Build file content
-        first_msg = messages[0]
-        last_msg = messages[-1]
-        first_date = first_msg.created_at.strftime('%Y-%m-%d')
-        last_date = last_msg.created_at.strftime('%Y-%m-%d')
-        date_range = f'{first_date} to {last_date}' if first_date != last_date else first_date
-
-        header = self._build_channel_header(channel, len(messages), date_range)
-        body = '\n'.join(self._format_message(msg) for msg in messages)
-        content = header + body
-
-        return content, len(messages)
-
-    async def _send_file_dm(self, owner: nextcord.Member, filename: str, content: str) -> bool:
-        """Send a file to the owner via DM. Returns True on success."""
+    async def _send_file_dm(
+        self,
+        owner: nextcord.Member,
+        filename: str,
+        content: str | ExportContent,
+        *,
+        channel: nextcord.TextChannel | None = None,
+    ) -> bool:
+        """Read at most one attachment's bytes at a time; abort on permission or delivery failure."""
+        stream = io.BytesIO(content.encode('utf-8')) if isinstance(content, str) else content
+        size = len(stream.getbuffer()) if isinstance(stream, io.BytesIO) else stream.size
+        part_num = 0
         try:
-            # Check file size
-            content_bytes = content.encode('utf-8')
-            if len(content_bytes) > MAX_FILE_SIZE:
-                # Split into parts
-                part_num = 1
-                chunk_size = MAX_FILE_SIZE - 1000  # Leave room for header
-                lines = content.split('\n')
-                current_chunk: list[str] = []
-                current_size = 0
-
-                for line in lines:
-                    line_bytes = len(line.encode('utf-8')) + 1
-                    if current_size + line_bytes > chunk_size and current_chunk:
-                        part_content = '\n'.join(current_chunk)
-                        part_file = nextcord.File(
-                            io.BytesIO(part_content.encode('utf-8')),
-                            filename=f'{filename}_part{part_num}.txt',
-                        )
-                        await owner.send(file=part_file)
-                        part_num += 1
-                        current_chunk = []
-                        current_size = 0
-                        await asyncio.sleep(1)
-                    current_chunk.append(line)
-                    current_size += line_bytes
-
-                if current_chunk:
-                    part_content = '\n'.join(current_chunk)
-                    part_file = nextcord.File(
-                        io.BytesIO(part_content.encode('utf-8')),
-                        filename=f'{filename}_part{part_num}.txt',
+            async for chunk in utf8_chunks(stream, MAX_FILE_SIZE):
+                if self._cancel_export or (channel is not None and not self._can_read(channel, owner)):
+                    return False
+                part_num += 1
+                name = filename if size <= MAX_FILE_SIZE else f'{filename.removesuffix(".txt")}_part{part_num}.txt'
+                file = nextcord.File(io.BytesIO(chunk), filename=name)
+                try:
+                    outcome = await outbound.dm(
+                        owner,
+                        kind='export_file',
+                        file=file,
+                        essential=True,
+                        dedupe_key=f'{self._status_key}:{filename}:{part_num}',
                     )
-                    await owner.send(file=part_file)
-            else:
-                file = nextcord.File(io.BytesIO(content_bytes), filename=filename)
-                await owner.send(file=file)
-
-            return True
+                finally:
+                    file.close()
+                if not outcome.ok:
+                    return False
+                if size > MAX_FILE_SIZE:
+                    await asyncio.sleep(1)
+            return part_num > 0
         except Exception as exc:
-            logger.error('Failed to send file %s via DM: %s', filename, exc)
+            logger.error('Failed to send file %s via DM: %s', filename, type(exc).__name__)
             return False
+        finally:
+            stream.close()
 
     async def _run_export(
         self,
@@ -280,6 +314,10 @@ class ChatExport(commands.Cog):
             self._export_owner_id = None
             self._export_guild_id = None
             self._export_task = None
+            self._update_progress()
+            if self._status_key:
+                outbound.forget_status(self._status_key)
+                self._status_key = ''
 
     async def _perform_export(
         self,
@@ -305,16 +343,16 @@ class ChatExport(commands.Cog):
             started_at=start_time,
         )
 
-        # Send initial DM
-        try:
-            await owner.send(
-                f'Starting export of {total_channels} channel(s). '
-                f'Estimated time: ~{max(1, total_channels * 2)} minutes. '
-                f"I'll DM you the files as they're ready. "
-                f'Use `/exportstop` to cancel.'
-            )
-        except Exception:
-            logger.warning('Could not DM owner about export start')
+        self._status_key = f'export:{owner.id}:{time.monotonic_ns()}'
+        initial = await outbound.upsert_status(
+            self._status_key,
+            owner,
+            kind='export_progress',
+            content=f'Starting export of {total_channels} channel(s). Files arrive here. Use `/exportstop` to cancel.',
+        )
+        if not initial.ok:
+            logger.warning('Export stopped: unable to deliver requested export to owner')
+            return
 
         for channel in channels:
             if self._cancel_export:
@@ -324,22 +362,36 @@ class ChatExport(commands.Cog):
             elapsed = time.monotonic() - start_time
             if elapsed > MAX_EXPORT_DURATION:
                 logger.warning('Export max duration reached (%ds)', MAX_EXPORT_DURATION)
-                try:
-                    await owner.send(
-                        f'Export stopped: max duration (30 minutes) reached. '
-                        f'{completed}/{total_channels} channels exported, {total_messages:,} messages total.'
-                    )
-                except Exception:
-                    pass
+                self._cancel_export = True
                 break
 
+            if not self._can_read(channel, owner):
+                self._cancel_export = True
+                break
             logger.info('Exporting channel: %s (%d/%d)', channel.name, completed + 1, total_channels)
 
-            content, msg_count = await self._export_channel(channel, owner, limit)
+            try:
+                content, msg_count = await asyncio.wait_for(
+                    self._export_channel(channel, owner, limit),
+                    timeout=min(MAX_CHANNEL_DURATION, MAX_EXPORT_DURATION - elapsed),
+                )
+            except TimeoutError:
+                self._cancel_export = True
+                break
 
             if content and msg_count > 0:
                 filename = f'{channel.name}_{channel.id}.txt'
-                success = await self._send_file_dm(owner, filename, content)
+                try:
+                    success = await asyncio.wait_for(
+                        self._send_file_dm(owner, filename, content, channel=channel),
+                        timeout=max(0, MAX_EXPORT_DURATION - (time.monotonic() - start_time)),
+                    )
+                except TimeoutError:
+                    self._cancel_export = True
+                    break
+                finally:
+                    if isinstance(content, ExportContent):
+                        content.close()
 
                 if success:
                     exported_files.append(channel.name)
@@ -352,21 +404,19 @@ class ChatExport(commands.Cog):
                         current_channel=channel.name,
                     )
 
-                    # Progress DM
-                    remaining = total_channels - completed
-                    if remaining > 0:
-                        avg_time_per_channel = (time.monotonic() - start_time) / completed
-                        eta_minutes = int((remaining * avg_time_per_channel) / 60)
-                        try:
-                            await owner.send(
-                                f'Exported #{channel.name} ({msg_count:,} messages) - '
-                                f'{completed}/{total_channels} complete. '
-                                f'~{eta_minutes} min remaining.'
-                            )
-                        except Exception:
-                            pass
+                    progress = await outbound.upsert_status(
+                        self._status_key,
+                        owner,
+                        kind='export_progress',
+                        content=f'{completed}/{total_channels} channels exported; {total_messages:,} messages.',
+                    )
+                    if not progress.ok:
+                        self._cancel_export = True
+                        break
                 else:
-                    logger.warning('Failed to send file for channel %s', channel.name)
+                    logger.warning('Failed to send file for channel %s; stopping export', channel.name)
+                    self._cancel_export = True
+                    break
             else:
                 logger.info('Channel %s had no accessible messages', channel.name)
 
@@ -379,14 +429,14 @@ class ChatExport(commands.Cog):
         duration = time.monotonic() - start_time
         duration_text = f'{int(duration // 60)}m {int(duration % 60)}s'
 
-        try:
-            status = 'cancelled' if self._cancel_export else 'complete'
-            await owner.send(
-                f'Export {status}! {completed}/{total_channels} channels, '
-                f'{total_messages:,} total messages. Duration: {duration_text}.'
-            )
-        except Exception:
-            pass
+        status = 'cancelled' if self._cancel_export else 'complete'
+        await outbound.upsert_status(
+            self._status_key,
+            owner,
+            kind='export_progress',
+            content=f'Export {status}! {completed}/{total_channels} channels, '
+            f'{total_messages:,} messages. Duration: {duration_text}.',
+        )
 
         logger.info(
             'Export %s: %d/%d channels, %d messages, %s',
@@ -482,28 +532,35 @@ class ChatExport(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        # Defer response — export may take a while
-        await interaction.response.defer(ephemeral=True)
-
-        embed = await success_embed(
-            title='Export Starting',
-            description=(
-                f'Exporting {len(channels)} channel(s). '
-                f'Check your DMs for progress updates and files.\n'
-                f'Use `/exportstop` to cancel.'
-            ),
-            contributor_source=__name__,
-            user=interaction.user,
-            guild=interaction.guild,
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-        # Start export in background
-        self._export_running = True
-        self._cancel_export = False
-        self._export_owner_id = interaction.user.id
-        self._export_guild_id = guild.id
-        self._export_task = spawn(self._run_export(interaction, channels, limit), name='exportchat')
+        if limit is not None and limit <= 0:
+            await safe_send(interaction, content='Message limit must be positive.', ephemeral=True)
+            return
+        if not self._claim_export(interaction.user.id, guild.id):
+            await safe_send(interaction, content='Another export has already started.', ephemeral=True)
+            return
+        try:
+            # Reserve before this first await, not after the acknowledgement.
+            await interaction.response.defer(ephemeral=True)
+            embed = await success_embed(
+                title='Export Starting',
+                description=(
+                    f'Exporting {len(channels)} channel(s). '
+                    f'Check your DMs for progress updates and files.\n'
+                    f'Use `/exportstop` to cancel.'
+                ),
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=interaction.guild,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            self._export_task = spawn(self._run_export(interaction, channels, limit), name='exportchat')
+        except BaseException:
+            self._export_running = False
+            self._cancel_export = False
+            self._export_owner_id = None
+            self._export_guild_id = None
+            self._update_progress()
+            raise
 
     @nextcord.slash_command(
         name='exportstop', description='Stop the current chat export', contexts=[nextcord.InteractionContextType.guild]
