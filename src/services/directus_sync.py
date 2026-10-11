@@ -40,7 +40,8 @@ async def _find_listing(session: aiohttp.ClientSession, external_ref: str) -> di
     params = {'filter[external_ref][_eq]': external_ref, 'fields': 'id,image_url', 'limit': '1'}
     async with session.get(f'{DIRECTUS_URL}/items/{_LISTINGS}', params=params, headers=_headers()) as resp:
         if resp.status != 200:
-            return None
+            # A failed lookup is not proof of absence: never create a duplicate on an outage.
+            raise RuntimeError(f'Directus listing lookup failed ({resp.status})')
         rows = (await resp.json()).get('data') or []
         return rows[0] if rows else None
 
@@ -110,14 +111,14 @@ async def _rehost_image(session: aiohttp.ClientSession, url: str) -> str | None:
         return None
 
 
-async def upsert_listing(listing: dict[str, Any]) -> None:
+async def upsert_listing(listing: dict[str, Any]) -> bool:
     """Create or update the Directus mirror of a bot listing, keyed by external_ref.
 
     Expected keys: external_ref, seller_discord_id, title, description, price,
     condition, category, status, image_url, listing_created_at. Never raises.
     """
     if not DIRECTUS_SYNC_ENABLED:
-        return
+        return False
     try:
         session = get_session()
         payload = {k: v for k, v in listing.items() if v is not None}
@@ -142,14 +143,18 @@ async def upsert_listing(listing: dict[str, Any]) -> None:
             url = f'{DIRECTUS_URL}/items/{_LISTINGS}/{existing["id"]}'
             async with session.patch(url, json=payload, headers=_headers()) as resp:
                 if resp.status >= 400:
-                    logger.warning('Directus listing update failed (%s): %s', resp.status, await resp.text())
+                    logger.warning('Directus listing update failed (%s)', resp.status)
+                    return False
         else:
             url = f'{DIRECTUS_URL}/items/{_LISTINGS}'
             async with session.post(url, json=payload, headers=_headers()) as resp:
                 if resp.status >= 400:
-                    logger.warning('Directus listing create failed (%s): %s', resp.status, await resp.text())
+                    logger.warning('Directus listing create failed (%s)', resp.status)
+                    return False
+        return True
     except Exception as exc:
-        logger.warning('Directus marketplace sync failed for %s: %s', listing.get('external_ref'), exc)
+        logger.warning('Directus marketplace sync failed for %s: %s', listing.get('external_ref'), type(exc).__name__)
+        return False
 
 
 async def set_listing_status(external_ref: str, status: str) -> None:

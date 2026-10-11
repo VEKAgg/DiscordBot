@@ -1,16 +1,23 @@
+import asyncio
 import datetime
 import logging
+import re
 import secrets
 from datetime import UTC, timedelta
+from decimal import Decimal, InvalidOperation
 
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import MARKETPLACE_CHANNEL_ID
-from src.database.database import db
+from src.database.database import db, get_or_create_user
 from src.services.directus_sync import set_listing_status, upsert_listing
+from src.services.guild_settings_service import guild_settings_service
+from src.services.marketplace_images import image_store
+from src.services.marketplace_service import bump_listing, validate_listing_text, validate_price
+from src.utils.embed_limits import clip_text
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import admin_only, safe_command, safe_send, safe_slash_command
+from src.utils.outbound import outbound
+from src.utils.safety import bot_operator_only, safe_command, safe_send, safe_slash_command
 from src.utils.security import rate_limit
 
 logger = logging.getLogger('VEKA.marketplace')
@@ -43,6 +50,148 @@ class Marketplace(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self._publication_lock = asyncio.Lock()
+
+    async def cog_ready(self):
+        """Silently backfill cached active member-created forum threads, bounded per boot."""
+        remaining = 100
+        for guild in self.bot.guilds:
+            channel = await guild_settings_service.resolve_channel(guild, 'marketplace_channel_id')
+            if not isinstance(channel, nextcord.ForumChannel):
+                continue
+            for thread in channel.threads:
+                if remaining <= 0:
+                    return
+                if not thread.archived and not thread.locked:
+                    known = await db.fetchval('SELECT 1 FROM marketplace_listings WHERE thread_id = $1', thread.id)
+                    if known:
+                        continue
+                    await self._ingest_forum_thread(thread)
+                    remaining -= 1
+
+    @staticmethod
+    def _forum_price(name: str, content: str) -> Decimal | None:
+        # Explicit dollars/USD only; never mistake a model number for a price.
+        number = r'[0-9]+(?:,[0-9]{3})*(?:\.[0-9]{1,2})?'
+        pattern = rf'(?:\$\s*|USD\s+)({number})(?![0-9.])|(?<![0-9.])({number})\s*(?:\$|USD\b)'
+        match = re.search(pattern, name, re.I) or re.search(pattern, content, re.I)
+        if match is None:
+            return None
+        try:
+            price = Decimal((match.group(1) or match.group(2)).replace(',', ''))
+            return price if Decimal('0') < price <= Decimal('999999.99') else None
+        except InvalidOperation:
+            return None
+
+    async def _ingest_forum_thread(self, thread: nextcord.Thread) -> None:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(thread.guild.id, 'marketplace'):
+            return
+        channel = await guild_settings_service.resolve_channel(thread.guild, 'marketplace_channel_id')
+        if not isinstance(channel, nextcord.ForumChannel) or thread.parent_id != channel.id:
+            return
+        if thread.archived or thread.locked:
+            await db.execute(
+                "UPDATE marketplace_listings SET status = 'archived' WHERE thread_id = $1 AND source = 'forum' "
+                "AND status NOT IN ('withdrawn', 'removed', 'sold')",
+                thread.id,
+            )
+            return
+        # The persisted mapping excludes our /marketplace publications even after a reload.
+        if await db.fetchval('SELECT 1 FROM marketplace_publications WHERE thread_id = $1', thread.id):
+            return
+        try:
+            starter = await thread.fetch_message(thread.id)
+        except (nextcord.NotFound, nextcord.Forbidden):
+            return
+        if starter.author.bot or starter.webhook_id is not None or thread.owner_id is None:
+            return
+        owner = await get_or_create_user(str(thread.owner_id))
+        if owner is None:
+            return
+        tags = [tag.name for tag in thread.applied_tags]
+        category = await db.fetchval(
+            """SELECT id FROM marketplace_categories
+               WHERE LOWER(name) = ANY($1::text[]) ORDER BY id LIMIT 1""",
+            [tag.lower() for tag in tags],
+        )
+        if category is None:
+            category = await db.fetchval("SELECT id FROM marketplace_categories WHERE name = 'Other'")
+        price = self._forum_price(thread.name, starter.content)
+        image_url = next((a.url for a in starter.attachments if (a.content_type or '').startswith('image/')), None)
+        await db.execute(
+            """INSERT INTO marketplace_listings
+                   (id, seller_id, title, description, price, category_id, condition, status,
+                    image_url, tags, source, thread_id, guild_id)
+               VALUES ($1, $2, $3, $4, $5, $6, 'unknown', $7, $8, $9, 'forum', $10, $11)
+               ON CONFLICT (thread_id) DO UPDATE SET
+                   title = EXCLUDED.title, description = EXCLUDED.description,
+                   price = CASE WHEN marketplace_listings.price_override THEN marketplace_listings.price
+                                ELSE EXCLUDED.price END,
+                   category_id = EXCLUDED.category_id, image_url = EXCLUDED.image_url, tags = EXCLUDED.tags,
+                   status = CASE WHEN marketplace_listings.status IN ('withdrawn', 'removed', 'sold')
+                                 THEN marketplace_listings.status
+                                 WHEN NOT marketplace_listings.price_override AND EXCLUDED.price IS NULL
+                                 THEN 'pending_review'
+                                 ELSE COALESCE(marketplace_listings.forum_review_status, EXCLUDED.status) END,
+                   is_expired = FALSE
+               WHERE marketplace_listings.source = 'forum' """,
+            f'FORUM{thread.id}',
+            owner['id'],
+            thread.name[:255],
+            starter.content,
+            price,
+            category,
+            'active' if price is not None else 'pending_review',
+            image_url,
+            tags,
+            thread.id,
+            thread.guild.id,
+        )
+        await image_store.capture_attachments(f'FORUM{thread.id}', starter.attachments, message_id=starter.id)
+
+    async def _withdraw_forum_thread(self, thread_id: int) -> None:
+        await db.execute(
+            "UPDATE marketplace_listings SET status = 'withdrawn' WHERE thread_id = $1 AND source = 'forum' "
+            "AND status NOT IN ('withdrawn', 'removed', 'sold')",
+            thread_id,
+        )
+
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: nextcord.Thread):
+        await self._ingest_forum_thread(thread)
+
+    @commands.Cog.listener()
+    async def on_thread_update(self, before: nextcord.Thread, after: nextcord.Thread):
+        if (before.name, before.applied_tags, before.archived, before.locked) == (
+            after.name,
+            after.applied_tags,
+            after.archived,
+            after.locked,
+        ):
+            return  # Slowmode/member-count changes do not alter a listing.
+        await self._ingest_forum_thread(after)
+
+    @commands.Cog.listener()
+    async def on_thread_delete(self, thread: nextcord.Thread):
+        # nextcord 3.x exposes thread_delete, not a raw_thread_delete event.
+        await self._withdraw_forum_thread(thread.id)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: nextcord.Message):
+        # Gateway thread_create can arrive before its starter is fetchable.
+        if isinstance(message.channel, nextcord.Thread) and message.id == message.channel.id and not message.author.bot:
+            await self._ingest_forum_thread(message.channel)
+
+    @commands.Cog.listener()
+    async def on_raw_message_edit(self, payload: nextcord.RawMessageUpdateEvent):
+        # Forum starters share their ID with their thread. No history scan or reply is needed.
+        if payload.message_id != payload.channel_id:
+            return
+        thread = self.bot.get_channel(payload.channel_id)
+        if isinstance(thread, nextcord.Thread):
+            await self._ingest_forum_thread(thread)
 
     @marketplace.subcommand(name='post', description='Create a new marketplace listing')
     @safe_slash_command(requires_db=True)
@@ -79,23 +228,27 @@ class Marketplace(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        if price < 0:
-            embed = await error_embed(
-                'Invalid Price', 'Price cannot be negative.', user=interaction.user, contributor_source=__name__
-            )
+        try:
+            validated_price = validate_price(price)
+        except ValueError as exc:
+            embed = await error_embed('Invalid Price', str(exc), user=interaction.user, contributor_source=__name__)
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
-        if len(title) < 3 or len(title) > 100:
+        try:
+            title, description = validate_listing_text(title, description)
+        except ValueError as exc:
             embed = await error_embed(
-                'Invalid Title',
-                'Title must be between 3 and 100 characters.',
+                'Invalid Listing',
+                str(exc),
                 user=interaction.user,
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
             return
 
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         image_url = image.url if image else ''
 
         # Fetch category ID based on the provided name
@@ -140,11 +293,14 @@ class Marketplace(commands.Cog):
             user['id'],
             title,
             description,
-            price,
+            validated_price,
             category_id,
             condition,
             image_url or None,
         )
+
+        if image:
+            await image_store.capture_attachments(listing_id, [image])
 
         embed = await success_embed(
             title='Listing Created',
@@ -157,6 +313,7 @@ class Marketplace(commands.Cog):
 
         if interaction.user:
             await self._post_listing_to_channel(
+                guild=interaction.guild,
                 listing_id=listing_id,
                 title=title,
                 price=price,
@@ -185,6 +342,7 @@ class Marketplace(commands.Cog):
 
     async def _post_listing_to_channel(
         self,
+        guild: nextcord.Guild,
         listing_id: str,
         title: str,
         price: float,
@@ -193,16 +351,29 @@ class Marketplace(commands.Cog):
         seller: nextcord.User | nextcord.Member,
         description: str = '',
         image_url: str = '',
-    ) -> None:
-        if not MARKETPLACE_CHANNEL_ID:
-            return
-        channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
-        if not channel:
-            logger.warning('Marketplace channel %s not found', MARKETPLACE_CHANNEL_ID)
-            return
+    ) -> str:
+        """Publish once per guild/listing (delivery/DB crash gap remains at-least-once)."""
+        async with self._publication_lock:
+            existing = await db.fetch_one(
+                'SELECT message_id FROM marketplace_publications WHERE guild_id = $1 AND listing_id = $2',
+                guild.id,
+                listing_id,
+            )
+            if existing:
+                return 'existing'
+            return await self._publish_listing(
+                guild, listing_id, title, price, condition, category, seller, description, image_url
+            )
+
+    async def _publish_listing(
+        self, guild, listing_id, title, price, condition, category, seller, description, image_url
+    ) -> str:
+        channel = await guild_settings_service.resolve_channel(guild, 'marketplace_channel_id')
+        if not isinstance(channel, (nextcord.TextChannel, nextcord.ForumChannel)) or channel.guild.id != guild.id:
+            return 'failed'
         listing_embed = await info_embed(
-            title=f'📦 New Listing: {title}',
-            description=description or 'No description provided.',
+            title=f'📦 New Listing: {clip_text(title, 220)}',
+            description=clip_text(description or 'No description provided.', 3000),
             user=seller,
             contributor_source=__name__,
         )
@@ -212,8 +383,12 @@ class Marketplace(commands.Cog):
         listing_embed.add_field(name='Seller', value=seller.mention, inline=True)
         listing_embed.add_field(name='Listing ID', value=f'`{listing_id}`', inline=True)
         listing_embed.add_field(name='Status', value='Active', inline=True)
-        if image_url:
-            listing_embed.set_image(url=image_url)
+        stored_image = await image_store.get(listing_id)
+        if image_url and stored_image is None:
+            await db.execute('UPDATE marketplace_listings SET image_missing = TRUE WHERE id = $1', listing_id)
+        file = stored_image.file() if stored_image else None
+        if file:
+            listing_embed.set_image(url='attachment://listing.webp')
         listing_embed.set_footer(text='Use /marketplace view <id> for details')
         try:
             if isinstance(channel, nextcord.ForumChannel):
@@ -225,11 +400,42 @@ class Marketplace(commands.Cog):
                 if available_tags:
                     match = next((t for t in available_tags if t.name.lower() == category.lower()), None)
                     applied_tags = [match or available_tags[0]]
-                await channel.create_thread(name=thread_name, embed=listing_embed, applied_tags=applied_tags)
+                outcome = await outbound.create_thread(
+                    channel,
+                    kind='marketplace_publish',
+                    name=thread_name,
+                    embed=listing_embed,
+                    applied_tags=applied_tags,
+                    file=file,
+                    dedupe_key=f'listing:{guild.id}:{listing_id}',
+                )
+                if not outcome.ok or outcome.thread is None:
+                    return 'failed'
+                message_id, thread_id = outcome.thread.id, outcome.thread.id
             else:
-                await channel.send(embed=listing_embed)
+                outcome = await outbound.send(
+                    channel,
+                    kind='marketplace_publish',
+                    embed=listing_embed,
+                    file=file,
+                    dedupe_key=f'listing:{guild.id}:{listing_id}',
+                )
+                if not outcome.ok or outcome.message is None:
+                    return 'failed'
+                message_id, thread_id = outcome.message.id, None
+            await db.execute(
+                """INSERT INTO marketplace_publications (guild_id, listing_id, channel_id, message_id, thread_id)
+                   VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING""",
+                guild.id,
+                listing_id,
+                channel.id,
+                message_id,
+                thread_id,
+            )
+            return 'sent'
         except Exception as exc:
-            logger.warning('Failed to post listing to marketplace channel: %s', exc)
+            logger.warning('Failed to publish marketplace listing: %s', type(exc).__name__)
+            return 'failed'
 
     @marketplace.subcommand(name='browse', description='Browse active marketplace listings')
     @safe_slash_command(requires_db=True)
@@ -256,7 +462,7 @@ class Marketplace(commands.Cog):
             query += ' AND c.name = $1'
             args.append(category)
 
-        query += ' ORDER BY l.created_at DESC LIMIT 10'
+        query += ' ORDER BY COALESCE(GREATEST(l.created_at, l.last_bumped_at), l.created_at) DESC, l.id DESC LIMIT 10'
         listings = await db.fetch_many(query, *args)
 
         if not listings:
@@ -308,22 +514,28 @@ class Marketplace(commands.Cog):
 
         seller = self.bot.get_user(int(listing['discord_id']))
         embed = await info_embed(
-            title=f'{listing["emoji"] or "📦"} {listing["title"]}',
-            description=listing['description'] or 'No description provided.',
+            title=f'{listing["emoji"] or "📦"} {clip_text(listing["title"], 220)}',
+            description=clip_text(listing['description'] or 'No description provided.', 3000),
             user=interaction.user,
             contributor_source=__name__,
         )
-        embed.add_field(name='Price', value=f'${listing["price"]:.2f}', inline=True)
+        price_text = f'${listing["price"]:.2f}' if listing['price'] is not None else 'Not specified (pending review)'
+        embed.add_field(name='Price', value=price_text, inline=True)
         embed.add_field(name='Condition', value=str(listing['condition']).replace('_', ' ').title(), inline=True)
         embed.add_field(name='Category', value=listing['cat_name'], inline=True)
         embed.add_field(name='Seller', value=seller.mention if seller else f'<@{listing["discord_id"]}>', inline=True)
         embed.add_field(name='Status', value=str(listing['status']).title(), inline=True)
         embed.add_field(name='Views', value=str(listing['views']), inline=True)
 
-        if listing['image_url']:
-            embed.set_image(url=listing['image_url'])
-
-        await safe_send(interaction, embed=embed, ephemeral=False)
+        stored_image = await image_store.get(listing_id)
+        file = stored_image.file() if stored_image else None
+        if file:
+            embed.set_image(url='attachment://listing.webp')
+        elif listing.get('image_url'):
+            embed.add_field(
+                name='Image', value='Original image unavailable; ask the seller to reattach it.', inline=False
+            )
+        await safe_send(interaction, embed=embed, file=file, ephemeral=False)
 
     @marketplace.subcommand(name='mylistings', description='View your own listings')
     @safe_slash_command(requires_db=True)
@@ -357,7 +569,8 @@ class Marketplace(commands.Cog):
         for listing in listings:
             embed.add_field(
                 name=listing['title'],
-                value=f'💰 ${listing["price"]:.2f} | Status: {str(listing["status"]).title()} | Views: {listing["views"]}\n🆔 `{listing["id"]}`',
+                value=f'💰 {"$" + format(listing["price"], ".2f") if listing["price"] is not None else "Not specified"} '
+                f'| Status: {str(listing["status"]).title()} | Views: {listing["views"]}\n🆔 `{listing["id"]}`',
                 inline=False,
             )
 
@@ -416,7 +629,7 @@ class Marketplace(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @commands.command(name='marketplace_push')
-    @admin_only()
+    @bot_operator_only()
     @safe_command(requires_db=True)
     async def mp_directus_push(self, ctx: commands.Context):
         """One-time backfill: mirror all active listings to the web CMS (Directus)."""
@@ -437,18 +650,22 @@ class Marketplace(commands.Cog):
                FROM marketplace_listings l
                JOIN users u ON l.seller_id = u.id
                JOIN marketplace_categories c ON l.category_id = c.id
-               WHERE l.status = 'active'
-               ORDER BY l.created_at ASC""",
+               WHERE l.status = 'active' AND l.is_expired = FALSE AND l.source = 'command'
+                 AND NOT EXISTS (SELECT 1 FROM marketplace_cms_publications p WHERE p.listing_id = l.id)
+               ORDER BY l.created_at ASC LIMIT 25""",
         )
 
         if not listings:
-            embed = await info_embed('Nothing to Push', 'No active listings found.', contributor_source=__name__)
+            embed = await info_embed(
+                'Nothing to Push', 'No unmirrored active listings found.', contributor_source=__name__
+            )
             await safe_send(ctx, embed=embed)
             return
 
         pushed = 0
+        failed = 0
         for listing in listings:
-            await upsert_listing(
+            mirrored = await upsert_listing(
                 {
                     'external_ref': listing['id'],
                     'seller_discord_id': str(listing['discord_id']),
@@ -462,11 +679,19 @@ class Marketplace(commands.Cog):
                     'listing_created_at': listing['created_at'].isoformat() if listing['created_at'] else None,
                 }
             )
-            pushed += 1
+            if mirrored:
+                await db.execute(
+                    'INSERT INTO marketplace_cms_publications (listing_id) VALUES ($1) ON CONFLICT DO NOTHING',
+                    listing['id'],
+                )
+                pushed += 1
+            else:
+                failed += 1
+            await asyncio.sleep(2)
 
         embed = await success_embed(
             'Pushed to Web CMS',
-            f'Mirrored {pushed} active listing(s) to Directus. Note: images from old '
+            f'Mirrored {pushed} active listing(s) to Directus; {failed} failed. At most 25 per run. Note: images from old '
             'listings may be gone — Discord attachment links expire, so only newly '
             'posted listings keep their images.',
             contributor_source=__name__,
@@ -474,27 +699,16 @@ class Marketplace(commands.Cog):
         await safe_send(ctx, embed=embed)
 
     @commands.command(name='marketplace_sync')
-    @admin_only()
+    @bot_operator_only()
     @safe_command(requires_db=True)
     async def mp_sync(self, ctx: commands.Context):
-        """Repost all active listings to the marketplace channel."""
-        if not MARKETPLACE_CHANNEL_ID:
-            embed = await error_embed(
-                'Not Configured',
-                'Marketplace channel is not set. Add MARKETPLACE_CHANNEL_ID to .env',
-                contributor_source=__name__,
-            )
-            await safe_send(ctx, embed=embed)
+        """Publish missing active listings to this guild, at most 25 per invocation."""
+        if ctx.guild is None:
+            await safe_send(ctx, content='Use this command in a server.')
             return
-
-        channel = self.bot.get_channel(MARKETPLACE_CHANNEL_ID)
-        if not channel:
-            embed = await error_embed(
-                'Channel Not Found',
-                f'Marketplace channel `{MARKETPLACE_CHANNEL_ID}` not found.',
-                contributor_source=__name__,
-            )
-            await safe_send(ctx, embed=embed)
+        channel = await guild_settings_service.resolve_channel(ctx.guild, 'marketplace_channel_id')
+        if not isinstance(channel, (nextcord.TextChannel, nextcord.ForumChannel)) or channel.guild.id != ctx.guild.id:
+            await safe_send(ctx, content='Configure this server’s marketplace channel with `/setup` first.')
             return
 
         listings = await db.fetch_many(
@@ -503,23 +717,30 @@ class Marketplace(commands.Cog):
                FROM marketplace_listings l
                JOIN users u ON l.seller_id = u.id
                JOIN marketplace_categories c ON l.category_id = c.id
-               WHERE l.status = 'active'
-               ORDER BY l.created_at ASC""",
+               WHERE l.status = 'active' AND l.is_expired = FALSE AND l.source = 'command'
+                 AND NOT EXISTS (SELECT 1 FROM marketplace_publications p
+                                 WHERE p.guild_id = $1 AND p.listing_id = l.id)
+               ORDER BY l.created_at ASC LIMIT 25""",
+            ctx.guild.id,
         )
 
         if not listings:
-            embed = await info_embed('No Listings', 'No active listings to sync.', contributor_source=__name__)
+            embed = await info_embed(
+                'No Listings', 'No unpublished active listings to sync.', contributor_source=__name__
+            )
             await safe_send(ctx, embed=embed)
             return
 
         synced = 0
         failed = 0
+        existing = 0
         for listing in listings:
             seller = self.bot.get_user(int(listing['discord_id'])) or ctx.guild.get_member(int(listing['discord_id']))
             if not seller:
                 failed += 1
                 continue
-            await self._post_listing_to_channel(
+            outcome = await self._post_listing_to_channel(
+                guild=ctx.guild,
                 listing_id=listing['id'],
                 title=listing['title'],
                 price=listing['price'],
@@ -529,12 +750,15 @@ class Marketplace(commands.Cog):
                 image_url=listing['image_url'] or '',
                 seller=seller,
             )
-            synced += 1
+            synced += outcome == 'sent'
+            failed += outcome == 'failed'
+            existing += outcome == 'existing'
+            await asyncio.sleep(2)
 
         embed = await success_embed(
             'Sync Complete',
-            f'Posted {synced} listing(s) to <#{MARKETPLACE_CHANNEL_ID}>'
-            + (f'. {failed} skipped (seller not found).' if failed else '.'),
+            f'Published {synced} listing(s) to {channel.mention}; {existing} already published; {failed} failed/skipped. '
+            'At most 25 listings are attempted per run; repeat to publish the remaining listings.',
             contributor_source=__name__,
         )
         await safe_send(ctx, embed=embed)
@@ -596,10 +820,15 @@ class Marketplace(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-        await db.execute(
-            'UPDATE marketplace_listings SET last_bumped_at = NOW(), is_expired = FALSE WHERE id = $1',
-            listing_id,
-        )
+        if not await bump_listing(listing_id, interaction.user.id, database=db):
+            embed = await error_embed(
+                'Listing Not Bumped',
+                'The listing changed or was already bumped. Only your active listings can be bumped once per 24 hours.',
+                user=interaction.user,
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
 
         embed = await success_embed(
             'Listing Bumped',

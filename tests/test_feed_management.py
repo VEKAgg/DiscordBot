@@ -1,6 +1,5 @@
 """Dynamic feed management, permissions, quotas, pagination, and scheduler regressions."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -8,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import nextcord
 import pytest
 
+from src.cogs.resources import feeds as feeds_module
 from src.cogs.resources.feeds import Feeds
 from src.core.runtime_state import runtime_state
 
@@ -37,51 +37,29 @@ async def add(cog, interaction, channel):
     await Feeds.feed_add.callback(cog, interaction, ' https://example.com/feed ', channel, '', 10)
 
 
-async def test_add_deferred_and_dynamic(management):
-    cog, database, interaction, channel = management
+async def test_add_deferred_and_dynamic(management, monkeypatch):
+    cog, _database, interaction, channel = management
+    upsert = AsyncMock(return_value={'id': 1})
+    monkeypatch.setattr(feeds_module.feed_service, 'upsert_subscription', upsert)
     await add(cog, interaction, channel)
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
-    assert database.execute.call_args.args[1:] == (interaction.guild.id, 3, 'https://example.com/feed', 'Example', 10)
+    assert upsert.await_args.args == (interaction.guild.id, 3, 'https://example.com/feed', 'Example', 10)
     cog.rss_service.fetch_feed.assert_awaited_once_with('https://example.com/feed')
 
 
 async def test_quota_blocks_new_feed(management, monkeypatch):
-    cog, database, interaction, channel = management
-    monkeypatch.setattr('src.cogs.resources.feeds.FEED_MAX_SUBSCRIPTIONS', 2)
-    database.fetchval.side_effect = [None, 2]
+    cog, _database, interaction, channel = management
+    monkeypatch.setattr(
+        feeds_module.feed_service,
+        'upsert_subscription',
+        AsyncMock(side_effect=feeds_module.feed_service.FeedLimitReached),
+    )
     await add(cog, interaction, channel)
-    database.execute.assert_not_awaited()
     assert cog._management_reply.call_args.args[1] == 'Feed Limit Reached'
 
 
-async def test_quota_allows_existing_subscription_update(management, monkeypatch):
-    cog, database, interaction, channel = management
-    monkeypatch.setattr('src.cogs.resources.feeds.FEED_MAX_SUBSCRIPTIONS', 2)
-    database.fetchval.side_effect = [7, 2]
-    await add(cog, interaction, channel)
-    database.execute.assert_awaited_once()
-    sql = database.execute.call_args.args[0]
-    assert 'consecutive_failures' not in sql and 'paused' not in sql
-
-
-async def test_concurrent_adds_cannot_exceed_quota(management, monkeypatch):
-    cog, database, interaction, channel = management
-    monkeypatch.setattr('src.cogs.resources.feeds.FEED_MAX_SUBSCRIPTIONS', 1)
-    count = 0
-
-    async def fetchval(sql, *_args):
-        await asyncio.sleep(0)
-        return count if 'COUNT' in sql else None
-
-    async def insert(*_args):
-        nonlocal count
-        await asyncio.sleep(0)
-        count += 1
-
-    database.fetchval.side_effect = fetchval
-    database.execute.side_effect = insert
-    await asyncio.gather(add(cog, interaction, channel), add(cog, interaction, channel))
-    assert count == 1
+# The quota itself (incl. concurrent adds from the bot and the API) is enforced by feed_service under a
+# PostgreSQL advisory lock — see tests/test_api.py::test_feed_quota_is_atomic_across_processes.
 
 
 @pytest.mark.parametrize('missing', ['view_channel', 'send_messages', 'embed_links'])

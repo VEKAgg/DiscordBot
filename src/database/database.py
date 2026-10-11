@@ -1,5 +1,7 @@
+import contextlib
 import logging
 import urllib.parse
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncpg
@@ -64,6 +66,15 @@ def _describe_pg_error(exc: asyncpg.PostgresError) -> str:
     return f'{type(exc).__name__}({", ".join(parts)})'
 
 
+def clean_dsn(url: str) -> str:
+    """Strip libpq-only keepalive params — asyncpg passes unknown DSN query params as PostgreSQL
+    server_settings, causing the server to reject them."""
+    libpq_params = {'keepalives', 'tcp_keepalives_idle', 'tcp_keepalives_interval', 'tcp_keepalives_count'}
+    parsed = urllib.parse.urlparse(url)
+    query = {k: v for k, v in urllib.parse.parse_qsl(parsed.query) if k not in libpq_params}
+    return urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+
+
 class Database:
     """PostgreSQL database connection manager using asyncpg."""
 
@@ -74,14 +85,7 @@ class Database:
         if self.pool is not None:
             return
 
-        # Strip libpq-only keepalive params — asyncpg passes unknown DSN query
-        # params as PostgreSQL server_settings, causing the server to reject them.
-        _libpq_params = {'keepalives', 'tcp_keepalives_idle', 'tcp_keepalives_interval', 'tcp_keepalives_count'}
-        parsed = urllib.parse.urlparse(DATABASE_URL)
-        query = {k: v for k, v in urllib.parse.parse_qsl(parsed.query) if k not in _libpq_params}
-        parsed = parsed._replace(query=urllib.parse.urlencode(query))
-        dsn = urllib.parse.urlunparse(parsed)
-
+        dsn = clean_dsn(DATABASE_URL)
         self.pool = await asyncpg.create_pool(
             dsn,
             min_size=1,
@@ -158,6 +162,30 @@ class Database:
                 _short(query),
                 _arg_types(args),
             )
+            raise DatabaseQueryError(f'Database query failed: {summary}') from None
+
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncIterator[asyncpg.Connection]:
+        """One connection + transaction for multi-statement writes (e.g. write + audit + NOTIFY).
+
+        Errors are mapped exactly like single queries: connection failures → DatabaseUnavailableError
+        (and the DB marked unavailable), SQL errors → DatabaseQueryError without DETAIL/row values.
+        """
+        if self.pool is None:
+            runtime_state.db_available = False
+            raise DatabaseUnavailableError('Database pool is not initialized')
+        try:
+            async with self.pool.acquire(timeout=POOL_ACQUIRE_TIMEOUT) as connection, connection.transaction():
+                yield connection
+        except _CONNECTION_ERRORS as exc:
+            runtime_state.db_available = False
+            runtime_state.last_db_error = f'{type(exc).__name__}: {exc}'
+            logger.error('Database connection error in transaction: %s', exc)
+            raise DatabaseUnavailableError('Database unavailable') from exc
+        except asyncpg.PostgresError as exc:
+            summary = _describe_pg_error(exc)
+            runtime_state.last_db_error = summary
+            logger.error('Database query error in transaction: %s', summary)
             raise DatabaseQueryError(f'Database query failed: {summary}') from None
 
     async def fetch_one(self, query: str, *args: Any) -> asyncpg.Record | None:

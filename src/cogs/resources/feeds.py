@@ -10,8 +10,10 @@ from nextcord.ext import commands, tasks
 
 from src.config.config import FEED_MAX_POSTS_PER_GUILD_PER_CYCLE, FEED_MAX_POSTS_PER_POLL, FEED_MAX_SUBSCRIPTIONS
 from src.database.database import db
+from src.services import feed_service
 from src.services.rss_service import RSSService
 from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.outbound import outbound
 from src.utils.safety import (
     DatabaseUnavailableError,
     manage_guild_only,
@@ -19,6 +21,7 @@ from src.utils.safety import (
     safe_send,
     safe_slash_command,
 )
+from src.utils.ttlcache import TTLDict
 
 logger = logging.getLogger('VEKA.feeds')
 
@@ -29,6 +32,7 @@ class Feeds(commands.Cog):
         self.rss_service = RSSService(bot=bot)
         # Serialize quota checks and inserts in this bot process.
         self._management_lock = asyncio.Lock()
+        self._latest_cooldowns: TTLDict[int, bool] = TTLDict(ttl=60, maxsize=10000)
 
     async def cog_ready(self):
         if not self.feed_update.is_running():
@@ -74,6 +78,10 @@ class Feeds(commands.Cog):
                     continue
 
             try:
+                from src.services.guild_modules_service import guild_modules_service
+
+                if not await guild_modules_service.enabled(sub['guild_id'], 'feeds'):
+                    continue
                 guild = self.bot.get_guild(sub['guild_id'])
                 channel = guild.get_channel(sub['channel_id']) if guild else None
                 if not isinstance(channel, nextcord.TextChannel) or self._channel_problem(guild, channel):
@@ -91,7 +99,11 @@ class Feeds(commands.Cog):
                 for entry in new_entries[: min(FEED_MAX_POSTS_PER_POLL, remaining)]:
                     embed = await self._create_feed_embed(entry, sub['feed_name'])
                     try:
-                        await channel.send(embed=embed)
+                        outcome = await outbound.send(
+                            channel, kind='feed_post', embed=embed, dedupe_key=f'feed:{sub["id"]}:{entry["entry_id"]}'
+                        )
+                        if not outcome.ok:
+                            break
                     except Exception as e:
                         logger.error('Failed to send feed to channel %s: %s', sub['channel_id'], e)
                         break
@@ -247,34 +259,15 @@ class Feeds(commands.Cog):
         feed_name = (name.strip() or feed_data.get('title', '').strip() or url)[:64]
 
         try:
-            async with self._management_lock:
-                existing = await db.fetchval(
-                    'SELECT id FROM feed_subscriptions WHERE guild_id = $1 AND feed_url = $2',
-                    interaction.guild.id,
-                    url,
-                )
-                count = await db.fetchval(
-                    'SELECT COUNT(*) FROM feed_subscriptions WHERE guild_id = $1', interaction.guild.id
-                )
-                if existing is None and count >= FEED_MAX_SUBSCRIPTIONS:
-                    await self._management_reply(
-                        interaction,
-                        'Feed Limit Reached',
-                        f'This server allows {FEED_MAX_SUBSCRIPTIONS} subscriptions, including paused feeds. Remove one first.',
-                        error=True,
-                    )
-                    return
-                await db.execute(
-                    """INSERT INTO feed_subscriptions (guild_id, channel_id, feed_url, feed_name, poll_interval_minutes)
-                       VALUES ($1, $2, $3, $4, $5)
-                       ON CONFLICT (guild_id, feed_url) DO UPDATE SET
-                           channel_id = $2, feed_name = $4, poll_interval_minutes = $5""",
-                    interaction.guild.id,
-                    channel.id,
-                    url,
-                    feed_name[:64],
-                    interval_minutes,
-                )
+            await feed_service.upsert_subscription(interaction.guild.id, channel.id, url, feed_name, interval_minutes)
+        except feed_service.FeedLimitReached:
+            await self._management_reply(
+                interaction,
+                'Feed Limit Reached',
+                f'This server allows {FEED_MAX_SUBSCRIPTIONS} subscriptions, including paused feeds. Remove one first.',
+                error=True,
+            )
+            return
         except DatabaseUnavailableError:
             await safe_send(
                 interaction,
@@ -667,6 +660,12 @@ class Feeds(commands.Cog):
         interaction: nextcord.Interaction,
         feed_url: str = nextcord.SlashOption(name='feed_url', description='RSS feed URL', required=True),
     ):
+        if interaction.user.id in self._latest_cooldowns:
+            await safe_send(
+                interaction, content='Please wait a minute before requesting more feed entries.', ephemeral=True
+            )
+            return
+        self._latest_cooldowns[interaction.user.id] = True
         await interaction.response.defer()
 
         feed_data = await self.rss_service.fetch_feed(feed_url)
@@ -680,9 +679,9 @@ class Feeds(commands.Cog):
             await interaction.followup.send(embed=embed)
             return
 
-        for entry in feed_data['entries'][:5]:
-            embed = await self._create_feed_embed(entry, feed_data.get('title', 'Feed'))
-            await interaction.followup.send(embed=embed)
+        # One requested preview, rather than five identical public posts per invocation.
+        embed = await self._create_feed_embed(feed_data['entries'][0], feed_data.get('title', 'Feed'))
+        await interaction.followup.send(embed=embed)
 
     # ============================================================
     # Helpers

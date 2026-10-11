@@ -10,6 +10,7 @@ from nextcord.ext import commands
 
 from src.database.database import db, get_user
 from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.outbound import outbound
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import rate_limit, sanitize
 
@@ -46,7 +47,7 @@ class MarketplaceReviews(commands.Cog):
             if not transaction:
                 embed = await error_embed(
                     'Not Found',
-                    'Transaction not found or not completed yet.',
+                    'Reviews require an existing completed transaction record. A marketplace offer alone does not create one.',
                     contributor_source=__name__,
                     user=interaction.user,
                 )
@@ -125,7 +126,7 @@ class MarketplaceReviews(commands.Cog):
                     )
                     if safe_comment:
                         notify.add_field(name='Comment', value=safe_comment[:500], inline=False)
-                    await reviewee.send(embed=notify)
+                    await outbound.dm(reviewee, kind='marketplace_review', embed=notify)
                 except Exception:
                     pass
 

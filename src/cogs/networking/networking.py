@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 import logging
 import re
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 import nextcord
 from nextcord.ext import commands
 
 from src.database.database import db
-from src.services.networking_service import NetworkingService
+from src.services.networking_service import NetworkingService, normalize_skills
+from src.utils.embed_limits import bounded_items, clip_text
 from src.utils.embeds import error_embed, info_embed, success_embed
+from src.utils.outbound import outbound
 from src.utils.safety import safe_command, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.networking')
@@ -20,12 +25,20 @@ class ConnectionRequestView(nextcord.ui.View):
     dropdown only ever listed the first 25 members — audit M-11).
     """
 
-    def __init__(self, guild: nextcord.Guild, requester_id: str, message: str, svc: NetworkingService):
+    def __init__(
+        self,
+        guild: nextcord.Guild,
+        requester_id: str,
+        message: str,
+        svc: NetworkingService,
+        response_factory: Callable[..., ConnectionResponseView] = None,
+    ):
         super().__init__(timeout=120)
         self.guild = guild
         self.requester_id = requester_id
         self.message = message
         self.svc = svc
+        self.response_factory = response_factory or ConnectionResponseView
 
         select: nextcord.ui.UserSelect = nextcord.ui.UserSelect(placeholder='Search for a member to connect with...')
         select.callback = self._select_callback  # type: ignore[method-assign]
@@ -33,6 +46,13 @@ class ConnectionRequestView(nextcord.ui.View):
         self.add_item(select)
 
     async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if interaction.guild and not await guild_modules_service.enabled(interaction.guild.id, 'networking'):
+            await interaction.response.send_message(
+                'This feature is turned off in this server by its admins.', ephemeral=True
+            )
+            return False
         # The prefix variant posts this picker publicly; only the invoker may use it, otherwise
         # another member could send requests in the invoker's name.
         if interaction.user is None or str(interaction.user.id) != self.requester_id:
@@ -58,10 +78,10 @@ class ConnectionRequestView(nextcord.ui.View):
         selected_id = str(selected_member.id)
 
         try:
-            await self.svc.create_request(self.requester_id, selected_id, self.message)
+            request_id = await self.svc.create_request(self.requester_id, selected_id, self.message)
             embed = await success_embed(
-                title='Connection Request Sent',
-                description=f'Your request has been sent to **{selected_member.display_name}**.',
+                title='Connection Request Recorded',
+                description=f'Your pending request to **{selected_member.display_name}** is recorded. DM delivery is not guaranteed.',
                 contributor_source=__name__,
                 user=interaction.user,
             )
@@ -77,17 +97,20 @@ class ConnectionRequestView(nextcord.ui.View):
             )
             if self.message:
                 notify.add_field(name='Message', value=self.message, inline=False)
-            view = ConnectionResponseView(
-                request_id='pending',
+            view = self.response_factory(
+                request_id=request_id,
                 requester_id=self.requester_id,
                 recipient_id=selected_id,
                 requester_name=interaction.user.display_name,
                 svc=self.svc,
             )
             try:
-                await selected_member.send(embed=notify, view=view)
-            except nextcord.Forbidden:
-                logger.info('Unable to DM %s for connection request', selected_id)
+                outcome = await outbound.dm(selected_member, kind='connection_request', embed=notify, view=view)
+                if not outcome.ok:
+                    view.stop()
+            except BaseException:
+                view.stop()
+                raise
         except ValueError as exc:
             embed = await error_embed(
                 title='Unable to Send Request',
@@ -113,30 +136,48 @@ class ConnectionResponseView(nextcord.ui.View):
 
     def __init__(
         self,
-        request_id: str,
+        request_id: int,
         requester_id: str,
         recipient_id: str,
         requester_name: str,
         svc: NetworkingService,
+        on_finish: Callable[[ConnectionResponseView], None] | None = None,
     ):
         super().__init__(timeout=None)
+        self.on_finish = on_finish
         self.request_id = request_id
         self.requester_id = requester_id
         self.recipient_id = recipient_id
         self.requester_name = requester_name
         self.svc = svc
+        for button in self.children:
+            if isinstance(button, nextcord.ui.Button):
+                action = 'accept' if button.label == 'Accept' else 'decline'
+                button.custom_id = f'connection:{request_id}:{action}'
 
-    @nextcord.ui.button(label='Accept', style=nextcord.ButtonStyle.success, emoji='\u2705')
+    def stop(self) -> None:
+        super().stop()
+        callback, self.on_finish = self.on_finish, None
+        if callback is not None:
+            callback(self)
+
+    async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        if str(interaction.user.id) != self.recipient_id:
+            await interaction.response.send_message('Only the recipient can respond to this request.', ephemeral=True)
+            return False
+        return True
+
+    @nextcord.ui.button(
+        label='Accept', style=nextcord.ButtonStyle.success, emoji='\u2705', custom_id='connection:accept'
+    )
     async def accept_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await interaction.response.defer()
         try:
-            request = await self.svc.get_pending_request(self.requester_id, self.recipient_id)
-            if not request:
+            if not await self.svc.respond_request(self.request_id, str(interaction.user.id), accept=True):
+                self.stop()
                 await interaction.edit_original_message(content='This request has already been processed.', view=None)
                 return
-
-            await self.svc.update_request_status(request['id'], 'accepted')
-            await self.svc.create_connection(self.recipient_id, self.requester_id)
+            self.stop()
 
             embed = await success_embed(
                 title='Connection Accepted',
@@ -156,22 +197,27 @@ class ConnectionResponseView(nextcord.ui.View):
                         contributor_source=__name__,
                         user=requester,
                     )
-                    await requester.send(embed=notify)
+                    await outbound.dm(requester, kind='connection_accepted', embed=notify)
                 except nextcord.Forbidden:
                     pass
         except Exception as exc:
             logger.error('Failed to accept connection: %s', exc, exc_info=True)
+            if not self.is_finished():
+                await interaction.edit_original_message(
+                    content='Unable to process this request right now. Please try again.', view=self
+                )
 
-    @nextcord.ui.button(label='Decline', style=nextcord.ButtonStyle.danger, emoji='\u274c')
+    @nextcord.ui.button(
+        label='Decline', style=nextcord.ButtonStyle.danger, emoji='\u274c', custom_id='connection:decline'
+    )
     async def decline_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await interaction.response.defer()
         try:
-            request = await self.svc.get_pending_request(self.requester_id, self.recipient_id)
-            if not request:
+            if not await self.svc.respond_request(self.request_id, str(interaction.user.id), accept=False):
+                self.stop()
                 await interaction.edit_original_message(content='This request has already been processed.', view=None)
                 return
-
-            await self.svc.update_request_status(request['id'], 'declined')
+            self.stop()
 
             embed = await error_embed(
                 title='Connection Declined',
@@ -191,11 +237,15 @@ class ConnectionResponseView(nextcord.ui.View):
                         contributor_source=__name__,
                         user=requester,
                     )
-                    await requester.send(embed=notify)
+                    await outbound.dm(requester, kind='connection_declined', embed=notify)
                 except nextcord.Forbidden:
                     pass
         except Exception as exc:
             logger.error('Failed to decline connection: %s', exc, exc_info=True)
+            if not self.is_finished():
+                await interaction.edit_original_message(
+                    content='Unable to process this request right now. Please try again.', view=self
+                )
 
 
 class Networking(commands.Cog):
@@ -239,6 +289,60 @@ class Networking(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.svc = NetworkingService()
+        self._response_views: dict[int, ConnectionResponseView] = {}
+        self._unloaded = False
+
+    def _forget_response_view(self, view: ConnectionResponseView) -> None:
+        if self._response_views.get(view.request_id) is view:
+            self._response_views.pop(view.request_id)
+
+    def _make_response_view(
+        self, request_id: int, requester_id: str, recipient_id: str, requester_name: str, svc: NetworkingService
+    ) -> ConnectionResponseView:
+        if self._unloaded:
+            raise RuntimeError('Networking cog was unloaded; retry the command.')
+        view = ConnectionResponseView(
+            request_id, requester_id, recipient_id, requester_name, svc, on_finish=self._forget_response_view
+        )
+        previous = self._response_views.get(view.request_id)
+        if previous is not None:
+            previous.stop()
+        self.bot.add_view(view)
+        self._response_views[view.request_id] = view
+        return view
+
+    async def cog_ready(self):
+        existing = dict(self._response_views)
+        seen: set[int] = set()
+        after_id = 0
+        while not self._unloaded:
+            requests = await self.svc.get_pending_requests(after_id=after_id)
+            if self._unloaded:
+                return
+            if not requests:
+                break
+            for request in requests:
+                request_id = request['id']
+                seen.add(request_id)
+                if request_id not in self._response_views:
+                    self._make_response_view(
+                        request_id,
+                        request['requester_discord_id'],
+                        request['recipient_discord_id'],
+                        f'Member {request["requester_discord_id"]}',
+                        self.svc,
+                    )
+            after_id = requests[-1]['id']
+        # Do not prune a newly sent view that appeared after reconciliation started.
+        for request_id, view in existing.items():
+            if request_id not in seen and self._response_views.get(request_id) is view:
+                view.stop()
+
+    def cog_unload(self):
+        self._unloaded = True
+        for view in list(self._response_views.values()):
+            view.stop()
+        self._response_views.clear()
 
     def _normalize_links(self, links: str | None) -> str | None:
         if not links:
@@ -275,17 +379,25 @@ class Networking(commands.Cog):
         viewer: nextcord.Member | None = None,
     ) -> nextcord.Embed:
         embed = await info_embed(
-            title=f"{target.display_name}'s Professional Profile",
+            title=f"{clip_text(target.display_name, 100)}'s Professional Profile",
             description='A concise overview of community networking details.',
             contributor_source=__name__,
             user=user,
         )
         embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
-        embed.add_field(name='Title', value=profile.get('title') or 'Not set', inline=False)
-        embed.add_field(name='Skills', value=profile.get('skills') or 'Not set', inline=False)
-        embed.add_field(name='About', value=profile.get('bio') or profile.get('experience') or 'Not set', inline=False)
-        embed.add_field(name='Looking For', value=profile.get('looking_for') or 'Not set', inline=False)
-        embed.add_field(name='Links', value=self._links_display(profile.get('links')), inline=False)
+        embed.add_field(name='Title', value=clip_text(profile.get('title') or 'Not set', 200), inline=False)
+        skills = profile.get('skills') or []
+        parts = skills.split(',') if isinstance(skills, str) else skills
+        skills_text = bounded_items([clip_text(skill, 64) for skill in parts if skill], 600) if parts else 'Not set'
+        embed.add_field(name='Skills', value=skills_text, inline=False)
+        embed.add_field(name='Timezone', value=clip_text(profile.get('timezone') or 'Not set', 64), inline=True)
+        embed.add_field(
+            name='About',
+            value=clip_text(profile.get('bio') or profile.get('experience') or 'Not set', 900),
+            inline=False,
+        )
+        embed.add_field(name='Looking For', value=clip_text(profile.get('looking_for') or 'Not set', 600), inline=False)
+        embed.add_field(name='Links', value=clip_text(self._links_display(profile.get('links')), 900), inline=False)
 
         conn_count = await self.svc.get_connection_count(str(target.id))
         embed.add_field(name='Connections', value=str(conn_count), inline=True)
@@ -300,31 +412,6 @@ class Networking(commands.Cog):
             rep_text = 'No reviews yet'
         embed.add_field(name='Reputation', value=rep_text, inline=True)
 
-        user_row = await db.fetch_one(
-            'SELECT last_active FROM users WHERE discord_id = $1',
-            str(target.id),
-        )
-        if user_row and user_row['last_active']:
-            last_active = user_row['last_active']
-            if last_active.tzinfo is None:
-                from datetime import UTC
-
-                last_active = last_active.replace(tzinfo=UTC)
-            from datetime import datetime
-
-            delta = datetime.now(UTC) - last_active
-            if delta.days == 0:
-                last_active_text = f'{delta.seconds // 3600}h {(delta.seconds % 3600) // 60}m ago'
-            elif delta.days == 1:
-                last_active_text = 'Yesterday'
-            elif delta.days < 30:
-                last_active_text = f'{delta.days} days ago'
-            else:
-                last_active_text = last_active.strftime('%d %b %Y')
-        else:
-            last_active_text = 'Never'
-        embed.add_field(name='Last Active', value=last_active_text, inline=True)
-
         if viewer and viewer != target:
             mutual = await self.svc.get_mutual_connections(str(viewer.id), str(target.id))
             if mutual:
@@ -337,14 +424,14 @@ class Networking(commands.Cog):
                     mutual_text += f'\n...and {len(mutual) - 3} more'
             else:
                 mutual_text = 'None'
-            embed.add_field(name='Mutual Connections', value=mutual_text, inline=False)
+            embed.add_field(name='Mutual Connections', value=clip_text(mutual_text, 300), inline=False)
 
         embed.set_footer(text=f'Last updated: {profile.get("last_updated", "Never")}')
         return embed
 
     async def _build_profile_data(self, existing: dict | None, values: dict) -> dict:
         profile_data = {}
-        for field in ['title', 'skills', 'bio', 'links', 'looking_for']:
+        for field in ['title', 'skills', 'bio', 'links', 'looking_for', 'timezone']:
             if values.get(field) is not None:
                 profile_data[field] = values[field]
             elif existing:
@@ -486,9 +573,20 @@ class Networking(commands.Cog):
         message: str | None = None,
     ):
         """Send a connection request — pick a user from the dropdown."""
+        if interaction.guild is None:
+            embed = await error_embed(
+                'Server Only',
+                'Start connection requests in a server.',
+                contributor_source=__name__,
+                user=interaction.user,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
         await interaction.response.defer(ephemeral=True)
         try:
-            view = ConnectionRequestView(interaction.guild, str(interaction.user.id), message or '', self.svc)  # type: ignore[arg-type]
+            view = ConnectionRequestView(
+                interaction.guild, str(interaction.user.id), message or '', self.svc, self._make_response_view
+            )
             embed = await info_embed(
                 title='Select a User',
                 description='Choose the member you want to connect with from the dropdown below.',
@@ -580,11 +678,7 @@ class Networking(commands.Cog):
             elif field == 'links':
                 updates['links'] = self._normalize_links(value)
             elif field == 'skills':
-                # Skills stored as TEXT[] — accept comma-separated
-                skills_list = [s.strip() for s in value.split(',') if s.strip()]
-                if len(skills_list) > 20:
-                    skills_list = skills_list[:20]
-                updates['skills'] = skills_list
+                updates['skills'] = normalize_skills(value)
             elif field == 'timezone':
                 updates['timezone'] = value.strip()[:64]
 
@@ -751,8 +845,16 @@ class Networking(commands.Cog):
     @commands.command(name='connect', description='Send a connection request')
     @safe_command(requires_db=True)
     async def connect_fallback(self, ctx, member: nextcord.Member = None, *, message: str = None):
+        if ctx.guild is None:
+            embed = await error_embed(
+                'Server Only', 'Start connection requests in a server.', contributor_source=__name__, user=ctx.author
+            )
+            await safe_send(ctx, embed=embed)
+            return
         if not member:
-            view = ConnectionRequestView(ctx.guild, str(ctx.author.id), message or '', self.svc)
+            view = ConnectionRequestView(
+                ctx.guild, str(ctx.author.id), message or '', self.svc, self._make_response_view
+            )
             embed = await info_embed(
                 title='Select a User',
                 description='Choose the member you want to connect with from the dropdown below.',
@@ -762,10 +864,12 @@ class Networking(commands.Cog):
             await ctx.send(embed=embed, view=view)
             return
         try:
-            await self.svc.create_request(str(ctx.author.id), str(member.id), message or '')
+            if member.bot:
+                raise ValueError('Pick another (non-bot) member of this server.')
+            request_id = await self.svc.create_request(str(ctx.author.id), str(member.id), message or '')
             embed = await success_embed(
-                title='Connection Request Sent',
-                description=f'Your request has been sent to {member.display_name}.',
+                title='Connection Request Recorded',
+                description=f'Your pending request to {member.display_name} is recorded. DM delivery is not guaranteed.',
                 contributor_source=__name__,
                 user=ctx.author,
             )
@@ -781,17 +885,20 @@ class Networking(commands.Cog):
             )
             if message:
                 notify.add_field(name='Message', value=message, inline=False)
-            response_view = ConnectionResponseView(
-                request_id='pending',
+            response_view = self._make_response_view(
+                request_id=request_id,
                 requester_id=str(ctx.author.id),
                 recipient_id=str(member.id),
                 requester_name=ctx.author.display_name,
                 svc=self.svc,
             )
             try:
-                await member.send(embed=notify, view=response_view)
-            except nextcord.Forbidden:
-                logger.info('Unable to DM %s for connection request', member.id)
+                outcome = await outbound.dm(member, kind='connection_request', embed=notify, view=response_view)
+                if not outcome.ok:
+                    response_view.stop()
+            except BaseException:
+                response_view.stop()
+                raise
         except ValueError as exc:
             embed = await error_embed(
                 title='Unable to Send Request',

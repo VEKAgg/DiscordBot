@@ -12,7 +12,9 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 # Install exactly the locked runtime dependencies (the old `pip install .` ignored uv.lock).
-RUN uv sync --locked --no-dev --no-install-project
+# UV_EXTRAS is empty for the bot image; the dashboard API image builds with "--extra api".
+ARG UV_EXTRAS=""
+RUN uv sync --locked --no-dev --no-install-project ${UV_EXTRAS}
 
 # ---- runtime: no compilers, no git ----
 FROM python:3.13-slim

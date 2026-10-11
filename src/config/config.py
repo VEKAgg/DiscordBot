@@ -21,20 +21,9 @@ INTERN_IDS = [int(item) for item in os.getenv('INTERN_IDS', '').split(',') if it
 DONATOR_IDS = [int(item) for item in os.getenv('DONATOR_IDS', '').split(',') if item.strip().isdigit()]
 ACTIVE_PRO_IDS = [int(item) for item in os.getenv('ACTIVE_PRO_IDS', '').split(',') if item.strip().isdigit()]
 
-# Channel IDs — Legacy fallback defaults (deprecated: use guild_settings via /setup instead)
+# Bot-operator alert destination (server feature channels live in guild_settings).
 _admin_alert_channel = os.getenv('ADMIN_ALERT_CHANNEL_ID', '')
 ADMIN_ALERT_CHANNEL_ID = int(_admin_alert_channel) if _admin_alert_channel.strip().isdigit() else None
-
-_marketplace_channel = os.getenv('MARKETPLACE_CHANNEL_ID', '')
-MARKETPLACE_CHANNEL_ID = int(_marketplace_channel) if _marketplace_channel.strip().isdigit() else None
-
-STAFF_BOT_COMMANDS_CHANNEL_ID = 1328775724668031126  # Deprecated fallback
-STAFF_CHANNEL_ID = 1091908318324334704  # Deprecated fallback
-PUBLIC_BOT_COMMANDS_CHANNEL_ID = 1385610318889222226  # Deprecated fallback
-LOGS_CHANNEL_ID = 1329192112410857563  # Deprecated fallback
-
-_massunban_log_channel = os.getenv('MASSUNBAN_LOG_CHANNEL_ID', '')
-MASSUNBAN_LOG_CHANNEL_ID = int(_massunban_log_channel) if _massunban_log_channel.strip().isdigit() else None
 
 # Notification settings
 NOTIFICATION_SQUAD_ROLE_NAME = 'notification squad'
@@ -76,20 +65,20 @@ FEED_MAX_SUBSCRIPTIONS = max(1, int(os.getenv('FEED_MAX_SUBSCRIPTIONS', '25')))
 FEED_MAX_POSTS_PER_POLL = max(1, min(10, int(os.getenv('FEED_MAX_POSTS_PER_POLL', '3'))))
 FEED_MAX_POSTS_PER_GUILD_PER_CYCLE = max(1, int(os.getenv('FEED_MAX_POSTS_PER_GUILD_PER_CYCLE', '15')))
 
+# Data retention (nightly maintenance job, days; optional overrides)
+RETENTION_ACTIVITY_LOG_DAYS = max(7, int(os.getenv('RETENTION_ACTIVITY_LOG_DAYS', '90')))
+RETENTION_HONEYPOT_EVENTS_DAYS = max(7, int(os.getenv('RETENTION_HONEYPOT_EVENTS_DAYS', '180')))
+RETENTION_MASSUNBAN_ITEMS_DAYS = max(7, int(os.getenv('RETENTION_MASSUNBAN_ITEMS_DAYS', '180')))
+RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS = max(1, int(os.getenv('RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS', '30')))
+
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
 
 # --- Radio Configuration ---
-RADIO_STREAM_URL = os.getenv('RADIO_STREAM_URL', 'https://www.youtube.com/@LofiGirl/live')
-_radio_channel = os.getenv('RADIO_VOICE_CHANNEL_ID', '')
-RADIO_VOICE_CHANNEL_ID = int(_radio_channel) if _radio_channel.strip().isdigit() else None
-RADIO_REFRESH_INTERVAL = 7200  # seconds (2 hours) — refresh stream URL before YouTube expiry
 RADIO_STABILITY_INTERVAL = 30  # seconds between stability checks
 RADIO_RECOVERY_PINGS_REQUIRED = 3  # consecutive healthy checks before rejoining
 
 # --- RPG / Leaderboard Configuration ---
-_leaderboard_channel = os.getenv('LEADERBOARD_CHANNEL_ID', '')
-LEADERBOARD_CHANNEL_ID = int(_leaderboard_channel) if _leaderboard_channel.strip().isdigit() else 1332399327100010569
 LEADERBOARD_UPDATE_INTERVAL = 1800  # seconds (30 minutes)
 LEADERBOARD_TOP_N = 10
 MESSAGE_XP_COOLDOWN = 10  # seconds between message XP awards

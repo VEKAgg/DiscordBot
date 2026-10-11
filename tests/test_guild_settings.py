@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -29,19 +29,6 @@ class TestGuildSettingsDataclass:
         assert settings.welcome_card_enabled is True
         assert settings.honeypot_channel_ids == []
 
-    def test_get_resolved_returns_set_value(self):
-        settings = GuildSettings(guild_id=1, log_channel_id=123)
-        assert settings.get_resolved('log_channel_id') == 123
-
-    @patch('src.services.guild_settings_service._load_defaults', return_value={'log_channel_id': 999})
-    def test_get_resolved_falls_back_to_config(self, _mock_defaults):
-        settings = GuildSettings(guild_id=1, log_channel_id=None)
-        assert settings.get_resolved('log_channel_id') == 999
-
-    def test_get_resolved_unknown_field(self):
-        settings = GuildSettings(guild_id=1)
-        assert settings.get_resolved('nonexistent_field') is None
-
 
 class TestGuildSettingsServiceCache:
     async def test_cache_hit_skips_db(self, service):
@@ -53,8 +40,8 @@ class TestGuildSettingsServiceCache:
 
     async def test_cache_miss_queries_db(self, service):
         """Cache miss queries DB and caches the result."""
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda _self, key: {
+        # db.fetch_one returns an asyncpg Record (dict-like, has .get); columns added by later migrations (e.g. 029/031) may be absent.
+        mock_row: dict[str, object] = {
             'guild_id': 55,
             'log_channel_id': 222,
             'staff_channel_id': None,
@@ -72,14 +59,20 @@ class TestGuildSettingsServiceCache:
             'welcome_card_enabled': True,
             'created_at': None,
             'updated_at': None,
-        }.get(key)
+        }
 
         with patch('src.services.guild_settings_service.db') as mock_db:
             mock_db.fetch_one = AsyncMock(return_value=mock_row)
             result = await service.get_settings(55)
 
         assert result.log_channel_id == 222
+        assert result.marketplace_channel_id is None
+        assert result.inactivity_dm_enabled is False
         assert 55 in service._cache
+
+    async def test_update_rejects_unknown_columns(self, service):
+        with pytest.raises(ValueError):
+            await service.update_settings(55, **{'log_channel_id = 1; DROP TABLE users; --': 1})
 
     async def test_no_row_inserts_defaults(self, service):
         """When DB returns None, inserts default row and caches."""
@@ -108,8 +101,7 @@ class TestGuildSettingsServiceCache:
     async def test_update_settings_invalidates_and_refetches(self, service):
         service._cache[10] = GuildSettings(guild_id=10, log_channel_id=100)
 
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda _self, key: {
+        mock_row: dict[str, object] = {
             'guild_id': 10,
             'log_channel_id': 200,
             'staff_channel_id': None,
@@ -127,7 +119,7 @@ class TestGuildSettingsServiceCache:
             'welcome_card_enabled': True,
             'created_at': None,
             'updated_at': None,
-        }.get(key)
+        }
 
         with patch('src.services.guild_settings_service.db') as mock_db:
             mock_db.execute = AsyncMock()

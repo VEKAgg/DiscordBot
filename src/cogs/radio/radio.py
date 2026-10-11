@@ -22,12 +22,10 @@ from nextcord.ext import commands, tasks
 from src.config.config import (
     RADIO_RECOVERY_PINGS_REQUIRED,
     RADIO_STABILITY_INTERVAL,
-    RADIO_VOICE_CHANNEL_ID,
 )
 from src.core.lifecycle import has_running_loop, spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.guild_gate import owner_in_external_only
 from src.utils.http import PublicOnlyResolver, UnsafeURLError, fetch_public_url, validate_public_url
@@ -96,23 +94,13 @@ class RadioManager(commands.Cog):
         # Bumped on every play; an `after=` callback from an older play is ignored (intentional stop/switch).
         self._play_generation: int = 0
         self._voice_client: nextcord.VoiceClient | None = None
-        self._target_channel_id: int | None = RADIO_VOICE_CHANNEL_ID
+        self._target_channel_id: int | None = None
         self._started_at: datetime | None = None
         self._manual_stop: bool = False
 
     async def _get_target_channel_id(self) -> int | None:
-        """Resolve target voice channel from guild settings, falling back to config."""
-        if self._target_channel_id:
-            return self._target_channel_id
-        try:
-            from src.config.config import MAIN_GUILD_ID
-
-            settings = await guild_settings_service.get_settings(MAIN_GUILD_ID)
-            if settings.radio_channel_id:
-                return settings.radio_channel_id
-        except Exception:
-            pass
-        return RADIO_VOICE_CHANNEL_ID
+        """Playback targets are set explicitly by the invoking server's play command."""
+        return self._target_channel_id
 
     async def cog_ready(self):
         """Start background tasks (called from on_ready). Nothing auto-plays: there are no built-in stations."""

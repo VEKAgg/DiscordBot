@@ -7,6 +7,7 @@ from src.core.runtime_state import runtime_state
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed
 from src.utils.logger import get_logger
+from src.utils.outbound import outbound
 
 logger = get_logger('VEKA.admin_notifier')
 
@@ -20,17 +21,17 @@ class AdminNotifier:
         self._channel_fetched_at: datetime | None = None
 
     async def _get_channel(self, guild_id: int | None = None):
-        # Try guild-specific settings first
+        # Guild-specific alerts stay inside that guild: never fall back to another server's channel.
         if guild_id is not None:
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                return None
             try:
                 settings = await guild_settings_service.get_settings(guild_id)
-                channel_id = settings.alert_channel_id or settings.log_channel_id
-                if channel_id:
-                    channel = self.bot.get_channel(channel_id)
-                    if channel is not None:
-                        return channel
             except Exception:
-                pass  # Fall back to global admin alert channel
+                return None
+            channel_id = settings.alert_channel_id or settings.log_channel_id
+            return guild.get_channel(channel_id) if channel_id else None
 
         # Fallback to global admin alert channel
         if not ADMIN_ALERT_CHANNEL_ID:
@@ -92,11 +93,15 @@ class AdminNotifier:
             return
 
         embed = await alert_embed(title=title, description=description, severity=severity, contributor_source=__name__)
-        try:
-            await channel.send(embed=embed)
+        # Essential: alerts bypass the circuit breaker (they report it) but still respect budgets and dedupe.
+        outcome = await outbound.send(channel, kind='admin_alert', embed=embed, essential=True)
+        if outcome.ok:
             logger.info('Sent admin alert: [%s] %s', severity, title)
-        except Exception as e:
-            logger.error('Failed to send admin alert: %s', e)
+        else:
+            # Undelivered: don't let the cooldown suppress the next attempt.
+            if dedupe_key:
+                self.clear_cooldown(dedupe_key)
+            logger.error('Failed to send admin alert (%s): %s', outcome.status.value, title)
 
     async def send_startup_summary(self):
         if not await self._get_channel():

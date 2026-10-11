@@ -1,17 +1,28 @@
 """Welcome System — greets new members with a visual card and configurable message."""
 
+import asyncio
 import logging
+import time
+from collections import deque
 
 import aiohttp
 import nextcord
 from nextcord.ext import commands
 
+from src.core.lifecycle import spawn
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import info_embed, success_embed
 from src.utils.http import get_session
+from src.utils.outbound import DigestBuffer, outbound
 from src.utils.safety import safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.welcome')
+
+# Raid mode: more than RAID_JOIN_THRESHOLD joins within RAID_WINDOW_SECONDS switches a guild to one
+# batched welcome per window (no cards), instead of a message + rendered card per member.
+RAID_JOIN_THRESHOLD = 5
+RAID_WINDOW_SECONDS = 60
+_BATCH_MAX_MENTIONS = 30
 
 
 def render_welcome(template: str, user_mention: str, guild: nextcord.Guild) -> str:
@@ -26,11 +37,55 @@ def render_welcome(template: str, user_mention: str, guild: nextcord.Guild) -> s
 class Welcome(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._recent_joins: dict[int, deque[float]] = {}
+        self._batches: dict[int, DigestBuffer] = {}
+        self._batch_tasks: set[asyncio.Task] = set()
+
+    def cog_unload(self) -> None:
+        for task in tuple(self._batch_tasks):
+            task.cancel()
+        self._batches.clear()
+
+    def _is_raid(self, guild_id: int) -> bool:
+        now = time.monotonic()
+        joins = self._recent_joins.setdefault(guild_id, deque(maxlen=RAID_JOIN_THRESHOLD + 1))
+        joins.append(now)
+        while joins and now - joins[0] > RAID_WINDOW_SECONDS:
+            joins.popleft()
+        if not joins:
+            self._recent_joins.pop(guild_id, None)
+        return len(joins) > RAID_JOIN_THRESHOLD
+
+    async def _flush_batch(self, guild: nextcord.Guild, channel: nextcord.TextChannel) -> None:
+        await asyncio.sleep(RAID_WINDOW_SECONDS)
+        batch = self._batches.pop(guild.id, None)
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'welcome'):
+            return
+        if batch is None or batch.count == 0:
+            return
+        shown = batch.sample
+        more = batch.count - len(shown)
+        embed = await info_embed(
+            title=f'Welcome to {guild.name}!',
+            description=f'Welcome {", ".join(shown)}' + (f' and {more} others' if more else '') + '!',
+            contributor_source=__name__,
+        )
+        await outbound.send(
+            channel,
+            kind='welcome_batch',
+            guild_id=guild.id,
+            embed=embed,
+            allowed_mentions=nextcord.AllowedMentions.none(),
+        )
 
     @commands.Cog.listener()
     async def on_member_join(self, member: nextcord.Member):
         """Greet a new member with a welcome card and message."""
-        if member.bot:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if member.bot or not await guild_modules_service.enabled(member.guild.id, 'welcome'):
             return
 
         try:
@@ -40,6 +95,16 @@ class Welcome(commands.Cog):
 
             channel = member.guild.get_channel(settings.welcome_channel_id)
             if not channel or not isinstance(channel, nextcord.TextChannel):
+                return
+
+            if self._is_raid(member.guild.id) or member.guild.id in self._batches:
+                first = member.guild.id not in self._batches
+                self._batches.setdefault(member.guild.id, DigestBuffer(limit=_BATCH_MAX_MENTIONS)).add(member.mention)
+                if first:
+                    task = spawn(self._flush_batch(member.guild, channel), name=f'welcome:batch:{member.guild.id}')
+                    if task is not None:
+                        self._batch_tasks.add(task)
+                        task.add_done_callback(self._batch_tasks.discard)
                 return
 
             # Render welcome template
@@ -76,9 +141,9 @@ class Welcome(commands.Cog):
                 )
                 file = nextcord.File(fp=buffer, filename='welcome_card.png')
                 embed.set_image(url='attachment://welcome_card.png')
-                await channel.send(embed=embed, file=file)
+                await outbound.send(channel, kind='welcome', guild_id=member.guild.id, embed=embed, file=file)
             else:
-                await channel.send(embed=embed)
+                await outbound.send(channel, kind='welcome', guild_id=member.guild.id, embed=embed)
 
         except Exception as e:
             logger.error('Failed to send welcome message for %s: %s', member, e, exc_info=True)
