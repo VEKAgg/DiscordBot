@@ -16,6 +16,29 @@ services:
     depends_on:
       - postgres
 
+  api:
+    build:
+      context: .
+      args:
+        UV_EXTRAS: "--extra api"
+    image: veka-api:dev
+    container_name: veka-api-dev
+    restart: unless-stopped
+    command: ["python", "-m", "src.api"]
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./src:/app/src:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
+      - API_CORS_ORIGINS=http://localhost:5173
+    ports:
+      - "8080:8080"
+    networks:
+      - veka-network
+    depends_on:
+      - postgres
+
   postgres:
     image: postgres:15-alpine
     container_name: veka-postgres-dev

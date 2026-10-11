@@ -75,17 +75,30 @@ async def test_unban_403_mfa_required_is_job_stopping(mock_bot):
     assert '2FA' in result['failure_reason']
 
 
-async def test_fetch_ban_403_is_job_stopping(mock_bot):
+async def test_unban_403_missing_permission_is_job_stopping(mock_bot):
     cog = MassUnban(mock_bot)
     guild = MagicMock()
-    guild.fetch_ban = AsyncMock(side_effect=_forbidden(50013))
-    guild.unban = AsyncMock()
+    guild.unban = AsyncMock(side_effect=_forbidden(50013))
 
     result = await cog._process_unban_item(guild, _item(5), JOB)
 
     assert result['forbidden'] is True
     assert 'Missing permission' in result['failure_reason']
-    guild.unban.assert_not_awaited()
+
+
+async def test_unban_404_is_skipped_with_one_api_call(mock_bot):
+    """No separate fetch_ban: an unban of a user who is not banned returns 404 and is a skip."""
+    cog = MassUnban(mock_bot)
+    guild = MagicMock()
+    guild.fetch_ban = AsyncMock()
+    response = MagicMock(status=404, reason='Not Found')
+    guild.unban = AsyncMock(side_effect=nextcord.NotFound(response, {'code': 10026, 'message': 'Unknown Ban'}))
+
+    result = await cog._process_unban_item(guild, _item(5), JOB)
+
+    assert result['status'] == 'skipped'
+    guild.fetch_ban.assert_not_awaited()
+    assert guild.unban.await_count == 1
 
 
 async def test_job_stops_after_first_403(mock_bot, _reset_runtime_state):
@@ -102,11 +115,13 @@ async def test_job_stops_after_first_403(mock_bot, _reset_runtime_state):
     db.fetch_one = AsyncMock(return_value=JOB)
     db.fetch = AsyncMock(return_value=[_item(1), _item(2), _item(3)])
     db.execute = AsyncMock()
+    db.fetchval = AsyncMock(return_value='running')  # persisted status checked before each unban
 
     # Patch the globals the class was defined with: test_cog_loading may have reloaded the module.
     with (
         patch.dict(MassUnban._run_job.__globals__, {'db': db}),
-        patch.object(cog, '_log_job_event', AsyncMock()),
+        patch.object(cog, '_update_progress', AsyncMock()),
+        patch.object(cog, '_notify_runner_once', AsyncMock()),
         patch.object(cog, '_complete_job', AsyncMock()) as complete,
     ):
         await cog._run_job(1, resumed=False)

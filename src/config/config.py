@@ -76,6 +76,12 @@ FEED_MAX_SUBSCRIPTIONS = max(1, int(os.getenv('FEED_MAX_SUBSCRIPTIONS', '25')))
 FEED_MAX_POSTS_PER_POLL = max(1, min(10, int(os.getenv('FEED_MAX_POSTS_PER_POLL', '3'))))
 FEED_MAX_POSTS_PER_GUILD_PER_CYCLE = max(1, int(os.getenv('FEED_MAX_POSTS_PER_GUILD_PER_CYCLE', '15')))
 
+# Data retention (nightly maintenance job, days; optional overrides)
+RETENTION_ACTIVITY_LOG_DAYS = max(7, int(os.getenv('RETENTION_ACTIVITY_LOG_DAYS', '90')))
+RETENTION_HONEYPOT_EVENTS_DAYS = max(7, int(os.getenv('RETENTION_HONEYPOT_EVENTS_DAYS', '180')))
+RETENTION_MASSUNBAN_ITEMS_DAYS = max(7, int(os.getenv('RETENTION_MASSUNBAN_ITEMS_DAYS', '180')))
+RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS = max(1, int(os.getenv('RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS', '30')))
+
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}
 

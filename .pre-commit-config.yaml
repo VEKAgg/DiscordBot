@@ -32,12 +32,15 @@ repos:
           - Pillow>=11.0.0
           - psutil>=5.9.0
           - pytest>=8.0.0
+          - fastapi==0.143.0
+          - httpx==0.28.1
+          - uvicorn==0.54.0
 
   - repo: local
     hooks:
       - id: pytest
         name: pytest
-        entry: uv run --extra dev pytest tests/ -x -q
+        entry: uv run --extra dev --extra api pytest tests/ -x -q
         language: system
         pass_filenames: false
         always_run: true
