@@ -403,7 +403,6 @@ class Health(commands.Cog):
         # Active users by activity type
         streaming_count = 0
         gaming_count = 0
-        listening_count = 0
         coding_count = 0
 
         if guild:
@@ -417,10 +416,6 @@ class Health(commands.Cog):
                 for activity in member.activities:
                     if activity.type == nextcord.ActivityType.playing:
                         gaming_count += 1
-                        break
-                for activity in member.activities:
-                    if activity.type == nextcord.ActivityType.listening:
-                        listening_count += 1
                         break
                 for activity in member.activities:
                     if activity.type in (nextcord.ActivityType.playing, nextcord.ActivityType.custom):
@@ -474,7 +469,6 @@ class Health(commands.Cog):
         embed.add_field(name='In Voice', value=str(voice_users), inline=True)
         embed.add_field(name='Streaming', value=str(streaming_count), inline=True)
         embed.add_field(name='Gaming', value=str(gaming_count), inline=True)
-        embed.add_field(name='Listening', value=str(listening_count), inline=True)
         embed.add_field(name='Coding', value=str(coding_count), inline=True)
 
         # Radio
