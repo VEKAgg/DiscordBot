@@ -84,9 +84,12 @@ _period_start = activity_service.period_start
 
 
 def _notified_since(notices: dict, user_id: int, level: str, last_active: date) -> bool:
-    """Already reported at this level since the member was last active in the server."""
+    """Already reported at this level since the member was last active in the server.
+
+    A notice is only ever sent days after the last activity, so activity on the notice day itself means
+    the member came back after it: that notice no longer counts (strict comparison)."""
     when = notices.get((user_id, level))
-    return when is not None and when >= last_active
+    return when is not None and when > last_active
 
 
 PREV_LABEL = '\u25c0 Previous'
@@ -471,6 +474,14 @@ class RPGManager(commands.Cog):
         live_role = after.guild.get_role(LIVE_ROLE_ID)
         if not live_role:
             return
+        if is_streaming and (
+            not self.is_opted_in(after.id)
+            or not (await guild_settings_service.get_settings(after.guild.id)).presence_tracking_enabled
+        ):
+            return  # server tracking off or member opted out: don't react to their streaming
+        if (problem := punitive_role_problem(live_role, after.guild)) is not None:
+            logger.warning('Live role in %s not managed: %s', after.guild.id, problem)
+            return
         try:
             if is_streaming and live_role not in after.roles:
                 await after.add_roles(live_role, reason='Started streaming')
@@ -692,11 +703,16 @@ class RPGManager(commands.Cog):
         embed = await self._build_leaderboard_embed(guild=guild)
         if not embed:
             return
+        # Only reuse a message in the *current* channel: after the channel changes (slash or dashboard) the
+        # old message is left alone and a new one is posted. A stored ID from another channel 404s here,
+        # which makes upsert_status post a fresh message.
         existing = self._leaderboard_messages.get(guild.id)
+        if existing is not None and existing.channel.id != channel.id:
+            existing = None
         if existing is None and settings.leaderboard_message_id:
             existing = channel.get_partial_message(settings.leaderboard_message_id)
         outcome = await outbound.upsert_status(
-            f'leaderboard:{guild.id}', channel, kind='leaderboard', embed=embed, message=existing
+            f'leaderboard:{guild.id}:{channel.id}', channel, kind='leaderboard', embed=embed, message=existing
         )
         if outcome.message is not None:
             if outcome.status == SendStatus.SENT:
@@ -728,8 +744,7 @@ class RPGManager(commands.Cog):
         }
         if not roles:
             return
-        safe = {key: role for key, role in roles.items() if punitive_role_problem(role, guild) is None}
-        if len(safe) != len(roles):
+        if any(punitive_role_problem(role, guild) is not None for role in roles.values()):
             logger.warning('Activity roles in %s skipped: unsafe (privileged or above the bot)', guild.id)
         cutoff = datetime.now(UTC).date() - timedelta(days=ACTIVITY_ROLE_INACTIVITY_DAYS)
         rows = await db.fetch(
@@ -745,19 +760,21 @@ class RPGManager(commands.Cog):
             if member is None or member.bot:
                 continue
             xp, last_day = stats.get(user_id, (0, None))
+            # Safety is re-checked live for every role at every change (roles can gain permissions while we
+            # await); an unsafe role is neither given nor taken away.
             target = None
             if last_day is not None and last_day >= cutoff:
                 for key, threshold in reversed(_ACTIVITY_ROLE_THRESHOLDS):
-                    if xp >= threshold and key in safe:
-                        target = safe[key]
+                    if xp >= threshold and key in roles and punitive_role_problem(roles[key], guild) is None:
+                        target = roles[key]
                         break
             for role in all_roles & set(member.roles):
-                if role != target:
+                if role != target and punitive_role_problem(role, guild) is None:
                     try:
                         await member.remove_roles(role, reason='Activity role update')
                     except Exception as exc:
                         logger.debug('Failed to remove role %s from %s: %s', role.id, member.id, type(exc).__name__)
-            if target is not None and target not in member.roles:
+            if target is not None and target not in member.roles and punitive_role_problem(target, guild) is None:
                 try:
                     await member.add_roles(target, reason='Activity role update')
                 except Exception as exc:
@@ -938,6 +955,17 @@ class RPGManager(commands.Cog):
         if pool is None:
             raise RuntimeError('database unavailable')
         async with pool.acquire() as conn, conn.transaction():
+            # Same lock order as ActivityService and /privacy delete (users rows, ordered by discord_id): a
+            # deletion either finishes first (its rows are gone when we read) or waits for this archive and
+            # then deletes the snapshots too. Each INSERT below reads a fresh snapshot after the locks.
+            await conn.execute(
+                """SELECT 1 FROM users WHERE discord_id IN (
+                       SELECT DISTINCT user_id::text FROM user_activity_daily
+                       WHERE activity_date >= $1 AND activity_date < $2
+                   ) ORDER BY discord_id FOR UPDATE""",
+                month_start,
+                next_month,
+            )
             for category, column in _SEASON_CATEGORIES.items():
                 presence = column in ('gaming_minutes', 'streaming_minutes', 'coding_minutes')
                 await conn.execute(
@@ -949,7 +977,12 @@ class RPGManager(commands.Cog):
                                    PARTITION BY d.guild_id ORDER BY SUM(d.{column}) DESC, d.user_id
                                ) AS rnk
                         FROM user_activity_daily d
-                        {'JOIN users u ON u.discord_id = d.user_id::text AND u.presence_opt_in' if presence else ''}
+                        {
+                        '''JOIN users u ON u.discord_id = d.user_id::text AND u.presence_opt_in
+                        JOIN guild_settings gs ON gs.guild_id = d.guild_id AND gs.presence_tracking_enabled'''
+                        if presence
+                        else ''
+                    }
                         WHERE d.activity_date >= $3 AND d.activity_date < $4
                         GROUP BY d.guild_id, d.user_id
                         HAVING SUM(d.{column}) > 0
@@ -1239,7 +1272,7 @@ class RPGManager(commands.Cog):
             interaction.guild.id, leaderboard_channel_id=channel.id, leaderboard_message_id=None
         )
         self._leaderboard_messages.pop(interaction.guild.id, None)
-        outbound.forget_status(f'leaderboard:{interaction.guild.id}')
+        outbound.forget_status(f'leaderboard:{interaction.guild.id}:{channel.id}')
         if self.update_leaderboard.is_running():
             self.update_leaderboard.restart()
         embed = await success_embed(
