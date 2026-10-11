@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -857,3 +858,36 @@ async def test_feed_routes(app, api_db, monkeypatch):
         "SELECT COUNT(*) FROM audit_logs WHERE guild_id = $1 AND action LIKE 'dashboard_feed_%'", str(GUILD)
     )
     assert audit >= 3
+
+
+def test_client_ip_uses_rightmost_untrusted_forwarded_address(monkeypatch):
+    import ipaddress
+
+    from src.api import auth
+
+    nets = [ipaddress.ip_network('172.16.0.0/12'), ipaddress.ip_network('192.168.1.97/32')]
+    monkeypatch.setattr(auth, 'settings', SimpleNamespace(trusted_proxy_networks=nets))
+
+    def req(peer, xff=None):
+        headers = {'x-forwarded-for': xff} if xff else {}
+        return SimpleNamespace(client=SimpleNamespace(host=peer), headers=headers)
+
+    # Forged left-most entry is ignored; the hop added by our proxy chain wins.
+    assert auth.client_ip(req('172.18.0.5', '6.6.6.6, 203.0.113.9, 172.19.0.2')) == '203.0.113.9'
+    # An untrusted peer's header is ignored entirely.
+    assert auth.client_ip(req('198.51.100.1', '6.6.6.6')) == '198.51.100.1'
+    # Only proxies in the chain: fall back to the left-most entry.
+    assert auth.client_ip(req('172.18.0.5', '192.168.1.97')) == '192.168.1.97'
+
+
+async def test_ready_is_503_when_the_database_is_down(app):
+    from src.api.routes import health
+
+    with patch.object(health.db, 'fetchval', AsyncMock(side_effect=OSError('down'))):
+        async with await _client(app) as c:
+            down = await c.get('/v1/ready')
+    with patch.object(health.db, 'fetchval', AsyncMock(return_value=1)):
+        async with await _client(app) as c:
+            up = await c.get('/v1/ready')
+    assert (down.status_code, down.json()) == (503, {'ready': False})
+    assert (up.status_code, up.json()) == (200, {'ready': True})
