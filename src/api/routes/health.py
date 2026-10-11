@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from src.database.database import db
 
@@ -28,3 +29,14 @@ async def health() -> dict:
     except Exception:
         db_ok = False
     return {'api': 'ok', 'db': 'ok' if db_ok else 'down', 'bot': bot}
+
+
+@router.get('/ready')
+async def ready() -> JSONResponse:
+    """Readiness for load balancers and container health checks: 200 only if the database answers,
+    otherwise 503. No auth; reveals nothing beyond up/down."""
+    try:
+        await db.fetchval('SELECT 1')
+    except Exception:
+        return JSONResponse({'ready': False}, status_code=503)
+    return JSONResponse({'ready': True})
