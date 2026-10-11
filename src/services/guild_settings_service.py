@@ -51,13 +51,19 @@ class GuildSettings:
     welcome_channel_id: int | None = None
     radio_channel_id: int | None = None
     leaderboard_channel_id: int | None = None
+    marketplace_channel_id: int | None = None
+    leaderboard_message_id: int | None = None
     muted_role_id: int | None = None
     honeypot_channel_ids: list[int] = field(default_factory=list)
     warn_mute_threshold: int = 3
     warn_ban_threshold: int = 5
     honeypot_cooldown_seconds: int = 60
     welcome_message_template: str = 'Welcome {user} to {server}!'
+    bump_reminder_enabled: bool = False
     welcome_card_enabled: bool = True
+    inactivity_dm_enabled: bool = False
+    presence_tracking_enabled: bool = False
+    inactivity_alerts_enabled: bool = True
     created_at: object | None = None
     updated_at: object | None = None
 
@@ -68,6 +74,60 @@ class GuildSettings:
             return val
         defaults = _load_defaults()
         return defaults.get(field_name)
+
+
+_OPTIONAL_ID_FIELDS = (
+    'log_channel_id',
+    'staff_channel_id',
+    'alert_channel_id',
+    'public_commands_channel_id',
+    'welcome_channel_id',
+    'radio_channel_id',
+    'leaderboard_channel_id',
+    'marketplace_channel_id',
+    'leaderboard_message_id',
+    'muted_role_id',
+)
+
+
+def settings_from_row(row) -> GuildSettings:
+    """Build settings from a guild_settings row; columns added by later migrations may be absent."""
+    get = row.get if hasattr(row, 'get') else lambda k, d=None: row[k] if k in row else d
+    welcome_card = get('welcome_card_enabled', True)
+    return GuildSettings(
+        guild_id=row['guild_id'],
+        **{name: get(name) for name in _OPTIONAL_ID_FIELDS},
+        honeypot_channel_ids=list(get('honeypot_channel_ids') or []),
+        warn_mute_threshold=get('warn_mute_threshold') or 3,
+        warn_ban_threshold=get('warn_ban_threshold') or 5,
+        honeypot_cooldown_seconds=get('honeypot_cooldown_seconds') or 60,
+        welcome_message_template=get('welcome_message_template') or 'Welcome {user} to {server}!',
+        bump_reminder_enabled=bool(get('bump_reminder_enabled') or False),
+        welcome_card_enabled=True if welcome_card is None else bool(welcome_card),
+        inactivity_dm_enabled=bool(get('inactivity_dm_enabled') or False),
+        presence_tracking_enabled=bool(get('presence_tracking_enabled') or False),
+        inactivity_alerts_enabled=get('inactivity_alerts_enabled') is not False,
+        created_at=get('created_at'),
+        updated_at=get('updated_at'),
+    )
+
+
+# Column names that may be interpolated into UPDATE statements.
+_WRITABLE_FIELDS = frozenset(
+    {
+        *_OPTIONAL_ID_FIELDS,
+        'honeypot_channel_ids',
+        'warn_mute_threshold',
+        'warn_ban_threshold',
+        'honeypot_cooldown_seconds',
+        'welcome_message_template',
+        'bump_reminder_enabled',
+        'welcome_card_enabled',
+        'inactivity_dm_enabled',
+        'presence_tracking_enabled',
+        'inactivity_alerts_enabled',
+    }
+)
 
 
 class GuildSettingsService:
@@ -87,25 +147,7 @@ class GuildSettingsService:
         )
 
         if row:
-            settings = GuildSettings(
-                guild_id=row['guild_id'],
-                log_channel_id=row['log_channel_id'],
-                staff_channel_id=row['staff_channel_id'],
-                alert_channel_id=row['alert_channel_id'],
-                public_commands_channel_id=row['public_commands_channel_id'],
-                welcome_channel_id=row['welcome_channel_id'],
-                radio_channel_id=row['radio_channel_id'],
-                leaderboard_channel_id=row['leaderboard_channel_id'],
-                muted_role_id=row['muted_role_id'],
-                honeypot_channel_ids=list(row['honeypot_channel_ids']) if row['honeypot_channel_ids'] else [],
-                warn_mute_threshold=row.get('warn_mute_threshold') or 3,
-                warn_ban_threshold=row.get('warn_ban_threshold') or 5,
-                honeypot_cooldown_seconds=row.get('honeypot_cooldown_seconds') or 60,
-                welcome_message_template=row.get('welcome_message_template') or 'Welcome {user} to {server}!',
-                welcome_card_enabled=row.get('welcome_card_enabled', True),
-                created_at=row['created_at'],
-                updated_at=row['updated_at'],
-            )
+            settings = settings_from_row(row)
         else:
             # Insert and return defaults
             settings = GuildSettings(guild_id=guild_id)
@@ -127,12 +169,10 @@ class GuildSettingsService:
         values: list[object] = []
         idx = 1
         for key, value in kwargs.items():
-            if key == 'honeypot_channel_ids':
-                set_parts.append(f'{key} = ${idx}')
-                values.append(value)
-            else:
-                set_parts.append(f'{key} = ${idx}')
-                values.append(value)
+            if key not in _WRITABLE_FIELDS:
+                raise ValueError(f'Unknown guild setting: {key}')
+            set_parts.append(f'{key} = ${idx}')
+            values.append(value)
             idx += 1
 
         set_parts.append('updated_at = NOW()')

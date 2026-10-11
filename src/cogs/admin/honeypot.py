@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from datetime import timedelta
@@ -10,14 +11,21 @@ from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
+from src.utils.outbound import DigestBuffer, outbound
+from src.utils.roles import punitive_role_problem
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import require_admin
+from src.utils.ttlcache import TTLDict
 
 logger = logging.getLogger('VEKA.admin.honeypot')
 
 # Default dedup cooldown — overridden per-guild via guild_settings.honeypot_cooldown_seconds
 _DEFAULT_TRIGGER_COOLDOWN_SECONDS = 60
 _PURGE_SCAN_LIMIT_PER_CHANNEL = 200  # messages scanned per channel when cleaning up after timeout/role
+# Raid protection for alerts: the first trigger in a guild is alerted at once (with the role ping);
+# further triggers within this window are collected into one digest message without a ping.
+ALERT_DIGEST_WINDOW_SECONDS = 60
+_DIGEST_MAX_LINES = 20
 
 
 def _is_exempt(guild: nextcord.Guild, member: nextcord.Member) -> bool:
@@ -35,9 +43,17 @@ class Honeypot(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self._trigger_cooldowns: dict[tuple[int, int], float] = {}
+        self._trigger_cooldowns: TTLDict[tuple[int, int], float] = TTLDict(ttl=3600, maxsize=50_000)
+        self._logging_config: TTLDict[int, dict] = TTLDict(ttl=300, maxsize=5000)
+        self._digests: dict[int, DigestBuffer] = {}  # guild_id -> triggers collected while a window is open
+        self._digest_tasks: set[asyncio.Task] = set()
         self._honeypot_cache: dict[int, dict] = {}
         self._cache_loaded = False
+
+    def cog_unload(self) -> None:
+        for task in tuple(self._digest_tasks):
+            task.cancel()
+        self._digests.clear()
 
     # ------------------------------------------------------------------
     # Cache helpers
@@ -57,6 +73,7 @@ class Honeypot(commands.Cog):
     def _invalidate_cache(self) -> None:
         self._cache_loaded = False
         self._honeypot_cache.clear()
+        self._logging_config.clear()
 
     # ------------------------------------------------------------------
     # /honeypot slash command group
@@ -528,13 +545,9 @@ class Honeypot(commands.Cog):
             return 'failed'
         try:
             role = guild.get_role(role_id)
-            if not role:
-                logger.warning('Role %s not found in guild %s', role_id, guild.id)
-                return 'failed'
-            # Validate hierarchy: bot's highest role must be above target role
-            bot_member = guild.me
-            if bot_member and bot_member.top_role <= role:
-                logger.warning('Bot role hierarchy too low to assign role %s', role_id)
+            problem = punitive_role_problem(role, guild)
+            if problem or role is None:
+                logger.warning('Honeypot role %s in guild %s not assigned: %s', role_id, guild.id, problem)
                 return 'failed'
             await member.add_roles(role, reason='Honeypot: spam bot detected')
             return 'success'
@@ -549,6 +562,15 @@ class Honeypot(commands.Cog):
     # Alert sender
     # ------------------------------------------------------------------
 
+    async def _get_logging_config(self, guild_id: int) -> dict:
+        cached = self._logging_config.get(guild_id)
+        if cached is not None:
+            return cached
+        row = await db.fetch_one('SELECT * FROM honeypot_logging_config WHERE guild_id = $1', guild_id)
+        config = dict(row) if row else {}
+        self._logging_config.set(guild_id, config)
+        return config
+
     async def _send_alert(
         self,
         message: nextcord.Message,
@@ -556,31 +578,35 @@ class Honeypot(commands.Cog):
         action_type: str,
         result: str,
     ) -> None:
+        guild = message.guild
+        if guild is None:
+            return
+        line = (
+            f'{message.author.mention} (`{message.author.id}`) in {message.channel.mention} → {action_type} ({result})'
+        )
+        if guild.id in self._digests:
+            # A digest window is open (raid in progress): collect instead of posting another alert.
+            self._digests[guild.id].add(line)
+            return
+        self._digests[guild.id] = DigestBuffer(limit=_DIGEST_MAX_LINES)
+        task = spawn(self._flush_digest(guild), name=f'honeypot:digest:{guild.id}')
+        if task is not None:
+            self._digest_tasks.add(task)
+            task.add_done_callback(self._digest_tasks.discard)
         try:
-            # Try honeypot-specific logging config first, fall back to guild_settings
-            config = await db.fetch_one(
-                'SELECT * FROM honeypot_logging_config WHERE guild_id = $1',
-                message.guild.id,  # type: ignore[union-attr]
-            )
-
-            log_channel_id = None
-            notification_role_id = None
-            if config:
-                log_channel_id = config.get('logging_channel_id')
-                notification_role_id = config.get('notification_role_id')
+            config = await self._get_logging_config(guild.id)
+            log_channel_id = config.get('logging_channel_id')
+            notification_role_id = config.get('notification_role_id')
 
             if not log_channel_id and runtime_state.db_available:
                 try:
-                    settings = await guild_settings_service.get_settings(message.guild.id)  # type: ignore[union-attr]
+                    settings = await guild_settings_service.get_settings(guild.id)
                     log_channel_id = settings.log_channel_id
                 except Exception:
                     pass
 
-            if not log_channel_id:
-                return
-
-            log_channel = message.guild.get_channel(log_channel_id)  # type: ignore[union-attr]
-            if not log_channel:
+            log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
+            if not isinstance(log_channel, nextcord.TextChannel):
                 return
 
             action_desc = {
@@ -598,11 +624,12 @@ class Honeypot(commands.Cog):
                     f'**Channel:** {message.channel.mention}\n'
                     f'**Action:** {action_desc}\n'
                     f'**Result:** {result.title()}\n'
-                    f'**Content preview:** {message.content[:200] if message.content else "*No text content*"}'
+                    f'**Content preview:** {message.content[:200] if message.content else "*No text content*"}\n\n'
+                    f'*Further triggers in the next {ALERT_DIGEST_WINDOW_SECONDS}s are grouped into one summary.*'
                 ),
                 color=nextcord.Color.orange(),
                 user=message.author,
-                guild=message.guild,
+                guild=guild,
                 contributor_source=__name__,
             )
 
@@ -613,9 +640,50 @@ class Honeypot(commands.Cog):
                 # The bot-wide default suppresses role pings; opt in for exactly this role.
                 allowed = nextcord.AllowedMentions(roles=[nextcord.Object(id=notification_role_id)])
 
-            await log_channel.send(content=content, embed=embed, allowed_mentions=allowed)  # type: ignore[union-attr]
+            await outbound.send(
+                log_channel,
+                kind='honeypot_alert',
+                guild_id=guild.id,
+                content=content,
+                embed=embed,
+                allowed_mentions=allowed,
+                essential=True,
+            )
         except Exception:
             logger.warning('Failed to send honeypot alert', exc_info=True)
+
+    async def _flush_digest(self, guild: nextcord.Guild) -> None:
+        """Close the guild's digest window and post one summary of the triggers collected in it."""
+        await asyncio.sleep(ALERT_DIGEST_WINDOW_SECONDS)
+        buffer = self._digests.pop(guild.id, None)
+        if buffer is None or buffer.count == 0:
+            return
+        try:
+            config = await self._get_logging_config(guild.id)
+            log_channel_id = config.get('logging_channel_id')
+            if not log_channel_id:
+                log_channel_id = (await guild_settings_service.get_settings(guild.id)).log_channel_id
+            log_channel = guild.get_channel(log_channel_id) if log_channel_id else None
+            if not isinstance(log_channel, nextcord.TextChannel):
+                return
+            more = buffer.count - len(buffer.sample)
+            embed = await veka_embed(
+                title=f'Honeypot — {buffer.count} more trigger(s) in {ALERT_DIGEST_WINDOW_SECONDS}s',
+                description='\n'.join(buffer.sample)[:3900] + (f'\n…and {more} more' if more else ''),
+                color=nextcord.Color.orange(),
+                guild=guild,
+                contributor_source=__name__,
+            )
+            await outbound.send(
+                log_channel,
+                kind='honeypot_digest',
+                guild_id=guild.id,
+                embed=embed,
+                allowed_mentions=nextcord.AllowedMentions.none(),
+                essential=True,
+            )
+        except Exception:
+            logger.warning('Failed to send honeypot digest', exc_info=True)
 
     # ------------------------------------------------------------------
     # Shared command logic (slash + prefix delegate here)
@@ -969,6 +1037,7 @@ class Honeypot(commands.Cog):
             channel.id,
             user.id,
         )
+        self._logging_config.pop(guild.id)
 
         embed = await success_embed(
             'Logging Channel Set',
@@ -993,6 +1062,7 @@ class Honeypot(commands.Cog):
             role.id,
             user.id,
         )
+        self._logging_config.pop(guild.id)
 
         embed = await success_embed(
             'Notification Role Set',
@@ -1016,6 +1086,7 @@ class Honeypot(commands.Cog):
             guild.id,
             user.id,
         )
+        self._logging_config.pop(guild.id)
 
         embed = await success_embed(
             'Notification Role Cleared', 'No role will be pinged on triggers.', contributor_source=__name__

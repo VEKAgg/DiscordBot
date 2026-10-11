@@ -170,6 +170,11 @@ class RBAC:
                 if ROLE_HIERARCHY.index(mapped_role) > ROLE_HIERARCHY.index(user_role):
                     user_role = mapped_role
 
+        # Any server can create a role with a mapped name. Outside the main guild a role name grants at
+        # most ADMIN, mirroring the guild-owner rule above (founder powers are bot-wide).
+        if user_role == Role.FOUNDER and ctx.guild.id != MAIN_GUILD_ID:
+            user_role = Role.ADMIN
+
         return user_role
 
     def has_permission(self, user_role: Role, permission: str) -> bool:
@@ -216,6 +221,8 @@ class RBAC:
 
                 return await func(*args, **kwargs)
 
+            # Marker read by tests/test_permissions.py to prove slash commands are guarded.
+            wrapper.__veka_guards__ = [*getattr(func, '__veka_guards__', []), f'role>={min_role.value}']  # type: ignore[attr-defined]
             return wrapper
 
         return decorator
