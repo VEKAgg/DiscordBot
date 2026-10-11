@@ -12,6 +12,7 @@ What deploying `overhaul/discord-bot-2026-10` (2026-10-11) changes, and what to 
    - `/setupleaderboard #channel` if the auto-leaderboard should continue (it posts one new message, then edits it).
    - Optional: `/setup option inactivity_dms on`, `/setup option bump_reminder on` (both off by default).
 4. Delete the old auto-leaderboard message by hand if you want.
+5. **Dashboard API:** the deploy now also starts `veka-api`. Before merging to `main`, set the GitHub variables (at least `API_BIND_ADDRESS`) and add the Traefik route — `docs/DASHBOARD_API_DEPLOY.md`. Without them the API still starts, but only on the bot machine's localhost.
 
 ## Outbound safety — stop the bot getting quarantined
 
@@ -57,15 +58,15 @@ Behaviour after deploy:
 - `/most listened` and all listening/Spotify tracking are gone.
 - Manual verification: `docs/VERIFY_TRACKING.md`.
 
-### Dashboard API (migration 033) — dev only for now
+### Dashboard API (migration 033)
 
 | File | What it does | Data impact |
 |---|---|---|
 | `033_api_bridge.sql` | `bot_status`, `bot_guild_snapshot` (written by the bot), mass-unban dashboard columns (`source`, `include_unaudited`, confirm token hash/step/expiry, `claimed_at`), `massunban_jobs.status` widened to `VARCHAR(32)`, unique `(job_id, target_user_id)` on job items. | Additive. |
 
 - The bot starts writing its status/guild snapshots and listening on `veka_cache` immediately; nothing else changes for users.
-- The API runs only in `docker-compose.dev.yml` (`api` service, port 8080). **Production wiring is not done** (needs: an `api` service in the prod compose with `UV_EXTRAS=--extra api`, `API_SERVICE_TOKEN`/`API_CORS_ORIGINS` secrets/variables, a reverse proxy with TLS, and `API_TRUSTED_PROXIES`). That is a deploy change for the owner to approve.
-- **Moving the SvelteKit dashboard off direct DB reads** (we did not edit `veka`): (1) deploy the API on the internal network and give the web app `VEKA_API_URL`; (2) pass the user's Discord OAuth access token (scopes `identify guilds`, already used for the guild picker) as the bearer token; (3) replace Drizzle reads page by page — guild picker → `/v1/me/guilds`, settings → `/v1/guilds/{gid}/settings` (send `If-Match`), moderation → `/warnings` + `/audit-log`, mass unban → `/massunban/jobs` flow, privacy → `/v1/me/privacy`, leaderboards/profile XP → `/leaderboards` + `/members/{uid}/activity`, server charts → `/stats/daily`, feeds → `/feeds`, honeypots → `/honeypots`, marketplace → the marketplace endpoints; (4) remove the web app's credentials for the bot's tables; (5) later swap Discord bearer tokens for VEKA sessions inside the API's auth dependency only.
+- Production: the deploy builds and starts the `api` service (`veka-api`) next to the bot and health-checks it. One-time setup (GitHub variables/secrets, Traefik route, optional Cloudflare Tunnel): `docs/DASHBOARD_API_DEPLOY.md`.
+- **Moving the SvelteKit dashboard off direct DB reads** (deferred by the owner; `veka` not edited): (1) give the web app `VEKA_API_URL=https://api.veka.gg`; (2) pass the user's Discord OAuth access token (scopes `identify guilds`, already used for the guild picker) as the bearer token; (3) replace Drizzle reads page by page — guild picker → `/v1/me/guilds`, settings → `/v1/guilds/{gid}/settings` (send `If-Match`), moderation → `/warnings` + `/audit-log`, mass unban → `/massunban/jobs` flow, privacy → `/v1/me/privacy`, leaderboards/profile XP → `/leaderboards` + `/members/{uid}/activity`, server charts → `/stats/daily`, feeds → `/feeds`, honeypots → `/honeypots`, marketplace → the marketplace endpoints; (4) remove the web app's credentials for the bot's tables; (5) later swap Discord bearer tokens for VEKA sessions inside the API's auth dependency only.
 - **Container still runs as root.** Making it non-root needs the deploy to stop mounting `.env` with mode 600 owned by the runner (e.g. pass variables via `env_file:` or make the file group-readable by a fixed GID) — a deploy change, so not done.
 
 ### Multi-server readiness (migration 037) — owner/partner decision 2026-10-11
