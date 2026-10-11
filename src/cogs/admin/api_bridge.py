@@ -52,6 +52,7 @@ def guild_snapshot(guild: nextcord.Guild) -> tuple:
             'type': str(c.type),
             'parent_id': str(c.category_id) if getattr(c, 'category_id', None) else None,
             'position': c.position,
+            'bot_permissions': str(c.permissions_for(guild.me).value) if guild.me is not None else None,
         }
         for c in guild.channels
     ]

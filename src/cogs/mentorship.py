@@ -456,6 +456,10 @@ class Mentorship(commands.Cog):
             groups.setdefault((row['guild_id'], row['user_id'], row['revision'], row['discord_id']), []).append(row)
         failures = 0
         for guild_id, user_id, revision, discord_id in groups:
+            from src.services.guild_modules_service import guild_modules_service
+
+            if not await guild_modules_service.enabled(guild_id, 'mentorship'):
+                continue
             if not await service.claim_reminder(guild_id, user_id, revision):
                 continue
             guild = self.bot.get_guild(guild_id)

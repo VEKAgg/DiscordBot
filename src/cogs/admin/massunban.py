@@ -23,7 +23,7 @@ from typing import Any
 import nextcord
 from nextcord.ext import commands, tasks
 
-from src.config.config import MASSUNBAN_LOG_CHANNEL_ID, OWNER_IDS
+from src.config.config import OWNER_IDS
 from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
@@ -387,7 +387,12 @@ class MassUnban(commands.Cog):
                 continue  # already resumed by an earlier (partially failed) attempt
             try:
                 logger.info('Resuming mass unban job %s', job['id'])
-                await db.execute("UPDATE massunban_jobs SET status = 'running' WHERE id = $1", job['id'])
+                resumed = await db.execute(
+                    "UPDATE massunban_jobs SET status = 'running' WHERE id = $1 AND status <> 'cancelled'",
+                    job['id'],
+                )
+                if resumed != 'UPDATE 1':
+                    continue
                 self._active_jobs[job['id']] = False
                 self._spawn_worker(self._execute_job(job['id'], resumed=True), name=f'massunban:{job["id"]}')
             except Exception:
@@ -945,7 +950,19 @@ class MassUnban(commands.Cog):
             )
             return
 
-        await db.execute("UPDATE massunban_jobs SET status = 'running', started_at = NOW() WHERE id = $1", job_id)
+        started = await db.execute(
+            "UPDATE massunban_jobs SET status = 'running', started_at = NOW() WHERE id = $1 AND status <> 'cancelled'",
+            job_id,
+        )
+        if started != 'UPDATE 1':
+            await safe_send(
+                target,
+                embed=await info_embed(
+                    'Cancelled', f'Job **#{job_id}** was cancelled before it started.', contributor_source=__name__
+                ),
+                ephemeral=True,
+            )
+            return
         try:
             await audit_log.record(
                 user_id=str(user.id),
@@ -1156,6 +1173,26 @@ class MassUnban(commands.Cog):
                     self._forget_job(job_id)
                     return
 
+                from src.services.guild_modules_service import guild_modules_service
+
+                module_state = await guild_modules_service.enabled(guild.id, 'massunban')
+                if not module_state:
+                    paused = await db.execute(
+                        "UPDATE massunban_jobs SET status = 'paused', "
+                        "metadata = COALESCE(metadata, '{}'::jsonb) || '{\"module_paused\": true}'::jsonb "
+                        "WHERE id = $1 AND status = 'running'",
+                        job_id,
+                    )
+                    if paused == 'UPDATE 1':
+                        note = (
+                            'Paused: feature turned off.'
+                            if module_state is False
+                            else 'Paused: configuration unavailable.'
+                        )
+                        await self._update_progress(job_id, guild, note=note, force=True)
+                    else:
+                        self._forget_job(job_id)
+                    return
                 result = await self._process_unban_item(guild, item, job)
 
                 if result.get('rate_limit'):
@@ -1367,6 +1404,19 @@ class MassUnban(commands.Cog):
         )
         self._spawn_worker(self._scheduled_resume(job_id, retry_after_secs), name=f'massunban:resume:{job_id}')
 
+    async def resume_module_jobs(self, guild_id: int | None = None) -> None:
+        """Resume only module-paused jobs after re-enabling; never bypass rate-limit pauses."""
+        from src.services.guild_modules_service import guild_modules_service
+
+        rows = await db.fetch(
+            "SELECT id, guild_id FROM massunban_jobs WHERE status = 'paused' "
+            'AND metadata @> \'{"module_paused": true}\'::jsonb AND ($1::bigint IS NULL OR guild_id = $1)',
+            guild_id,
+        )
+        for row in rows:
+            if await guild_modules_service.enabled(row['guild_id'], 'massunban'):
+                self._spawn_worker(self._resume_job(row['id']), name=f'massunban:module-resume:{row["id"]}')
+
     async def _scheduled_resume(self, job_id: int, delay: float) -> None:
         """Wait then resume a rate-limited job, checking for cancellation first."""
         await asyncio.sleep(delay + 1)
@@ -1380,7 +1430,8 @@ class MassUnban(commands.Cog):
             if not runtime_state.db_available:
                 return
             result = await db.execute(
-                "UPDATE massunban_jobs SET status = 'running' WHERE id = $1 AND status IN ('retry_wait', 'paused')",
+                "UPDATE massunban_jobs SET status = 'running', metadata = COALESCE(metadata, '{}'::jsonb) - 'module_paused' "
+                "WHERE id = $1 AND status IN ('retry_wait', 'paused')",
                 job_id,
             )
             if result == 'UPDATE 0':
@@ -1739,15 +1790,11 @@ class MassUnban(commands.Cog):
     # ============================================================
 
     async def _log_channel(self, guild: nextcord.Guild) -> nextcord.TextChannel | None:
-        """Log channel for this guild only — never another server's channel (cross-guild fallback removed)."""
-        channel: nextcord.abc.GuildChannel | None = (
-            guild.get_channel(MASSUNBAN_LOG_CHANNEL_ID) if MASSUNBAN_LOG_CHANNEL_ID else None
-        )
-        if channel is None:
-            try:
-                channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
-            except Exception:
-                channel = None
+        """Resolve the server's configured log channel."""
+        try:
+            channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
+        except Exception:
+            channel = None
         return channel if isinstance(channel, nextcord.TextChannel) else None
 
 

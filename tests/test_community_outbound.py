@@ -158,6 +158,7 @@ async def test_directus_failed_lookup_is_not_absence():
 async def test_expiry_digest_one_dm_per_seller(monkeypatch, mock_user, sender):
     monkeypatch.setattr('src.cogs.marketplace_enhanced.asyncio.sleep', AsyncMock())
     guild = SimpleNamespace(get_member=lambda uid: mock_user if uid == mock_user.id else None)
+    guild.id = 77
     cog = MarketplaceEnhanced(SimpleNamespace(guilds=[guild]))
     rows = [{'discord_id': str(mock_user.id), 'title': f'Item {i}', 'id': str(i)} for i in range(500)]
     await cog._notify_sellers(rows, expired=True)

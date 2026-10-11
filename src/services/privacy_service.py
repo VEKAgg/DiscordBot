@@ -22,7 +22,7 @@ _DELETE_STATEMENTS = (
     """UPDATE users SET points = 0, experience = 0, level = 0,
            total_messages = 0, total_voice_minutes = 0, total_commands = 0,
            total_gaming_minutes = 0, total_streaming_minutes = 0, total_coding_minutes = 0,
-           total_listening_minutes = 0, current_streak = 0, longest_streak = 0, last_streak_date = NULL,
+           current_streak = 0, longest_streak = 0, last_streak_date = NULL,
            presence_opt_in = FALSE, presence_opt_in_changed_at = clock_timestamp()
        WHERE discord_id = $1""",
 )

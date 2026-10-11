@@ -75,6 +75,9 @@ def build_bot() -> commands.Bot:
     )
     bot.runtime_state = runtime_state  # type: ignore[attr-defined]
     bot.notifier = None  # type: ignore[attr-defined]
+    from src.core.module_checks import register_module_checks
+
+    register_module_checks(bot)
     return bot
 
 
@@ -139,7 +142,20 @@ def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
 
 def register_cache_handlers(bot: commands.Bot) -> None:
     """Invalidate the bot's caches when the dashboard API changes data (see src/core/cache_listener.py)."""
+    from src.services.guild_modules_service import guild_modules_service
     from src.services.guild_settings_service import guild_settings_service
+
+    async def _modules_changed(ident: str | None = None) -> None:
+        if ident is not None and not ident.isdigit():
+            return
+        guild_id = int(ident) if ident is not None else None
+        guild_modules_service.invalidate_cache(guild_id)
+        cog = bot.get_cog('MassUnban')
+        resume = getattr(cog, 'resume_module_jobs', None)
+        if resume is not None:
+            await resume(guild_id)
+
+    cache_listener.register('modules', CacheHandler(on_notify=_modules_changed, reset=_modules_changed))
 
     def _cog_call(name: str, method: str, *args):
         cog = bot.get_cog(name)

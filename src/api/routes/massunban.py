@@ -146,6 +146,8 @@ async def get_job(job_id: int = JobId, access: GuildAccess = guild_access(BAN_ME
 
 @router.post('/jobs', status_code=202)
 async def request_job(body: JobRequest, access: GuildAccess = guild_access(BAN_MEMBERS, fresh=True)) -> dict:
+    from src.api.routes.modules import require_enabled
+
     start, end = _utc(body.start), _utc(body.end)
     if start >= end:
         raise ApiError(422, 'invalid_range', 'start must be before end.')
@@ -153,6 +155,7 @@ async def request_job(body: JobRequest, access: GuildAccess = guild_access(BAN_M
         raise ApiError(422, 'invalid_filters', 'include_unaudited cannot be combined with a moderator filter.')
     actor = access.principal.user_id
     async with db.transaction() as conn:
+        await require_enabled(conn, access.guild_id, 'massunban')
         # Serialise job creation per guild, then refuse if one is already in flight.
         await conn.execute(
             'SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))', f'massunban:{access.guild_id}'

@@ -70,8 +70,13 @@ def _award_sql(metric: str) -> str:
     )
     return f"""
 WITH input AS (
-    SELECT * FROM unnest($1::text[], $2::bigint[], $3::int[], $4::int[], $5::float8[], $6::bool[], $7::timestamptz[])
+    SELECT t.discord_id, t.guild_id, t.quantity,
+           CASE WHEN 'leveling' = ANY(COALESCE(gm.disabled, '{{}}'::text[])) THEN 0 ELSE t.xp_base END AS xp_base,
+           t.role_mult, t.touch_streak, t.consent_at
+    FROM unnest($1::text[], $2::bigint[], $3::int[], $4::int[], $5::float8[], $6::bool[], $7::timestamptz[])
         AS t(discord_id, guild_id, quantity, xp_base, role_mult, touch_streak, consent_at)
+    LEFT JOIN guild_modules gm ON gm.guild_id = t.guild_id
+    WHERE NOT ('activity' = ANY(COALESCE(gm.disabled, '{{}}'::text[])))
 ),
 today AS (SELECT (NOW() AT TIME ZONE 'UTC')::date AS d),
 locked AS (
@@ -148,6 +153,8 @@ FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::timestamptz[], $6
 JOIN users usr ON usr.discord_id = x.u AND usr.presence_opt_in
                 AND usr.presence_opt_in_changed_at IS NOT DISTINCT FROM x.c
 JOIN guild_settings gs ON gs.guild_id = x.g AND gs.presence_tracking_enabled
+LEFT JOIN guild_modules gm ON gm.guild_id = x.g
+WHERE NOT ('activity' = ANY(COALESCE(gm.disabled, '{}'::text[])))
 GROUP BY x.u, x.t, LEFT(x.n, 200)
 ON CONFLICT (user_id, activity_type, activity_name) DO UPDATE SET
     duration_minutes = user_activity_details.duration_minutes + EXCLUDED.duration_minutes,

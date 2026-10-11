@@ -578,9 +578,15 @@ class MarketplaceEnhanced(commands.Cog):
         by_seller: dict[int, list] = {}
         for listing in listings:
             by_seller.setdefault(int(listing['discord_id']), []).append(listing)
+        from src.services.guild_modules_service import guild_modules_service
+
+        enabled_guilds = []
+        for guild in self.bot.guilds:
+            if await guild_modules_service.enabled(guild.id, 'marketplace'):
+                enabled_guilds.append(guild)
         failures = 0
         for user_id, items in list(by_seller.items())[:25]:
-            seller = next((g.get_member(user_id) for g in self.bot.guilds if g.get_member(user_id)), None)
+            seller = next((g.get_member(user_id) for g in enabled_guilds if g.get_member(user_id)), None)
             if seller is None:
                 continue
             embed = await info_embed(

@@ -88,6 +88,10 @@ class Notifications(commands.Cog):
                 logger.warning('Daily bump failed for guild %s: %s', guild.id, type(exc).__name__)
 
     async def _daily_bump_for_guild(self, guild):
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'notifications'):
+            return
         settings = await guild_settings_service.get_settings(guild.id)
         if not settings.bump_reminder_enabled or settings.public_commands_channel_id is None:
             return

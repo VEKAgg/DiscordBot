@@ -11,33 +11,6 @@ from src.utils.logger import get_logger
 
 logger = get_logger('VEKA.guild_settings')
 
-# Default values for fallback when no guild-specific setting exists.
-# These mirror the hardcoded constants in config.py and will be used as
-# fallbacks until a guild configures its own channels via /setup.
-_DEFAULTS: dict[str, int | None] = {}
-
-
-def _load_defaults() -> dict[str, int | None]:
-    """Lazy-load defaults from config to avoid circular imports at module level."""
-    if _DEFAULTS:
-        return _DEFAULTS
-    from src.config.config import (
-        LEADERBOARD_CHANNEL_ID,
-        LOGS_CHANNEL_ID,
-        PUBLIC_BOT_COMMANDS_CHANNEL_ID,
-        STAFF_CHANNEL_ID,
-    )
-
-    _DEFAULTS.update(
-        {
-            'log_channel_id': LOGS_CHANNEL_ID,
-            'staff_channel_id': STAFF_CHANNEL_ID,
-            'public_commands_channel_id': PUBLIC_BOT_COMMANDS_CHANNEL_ID,
-            'leaderboard_channel_id': LEADERBOARD_CHANNEL_ID,
-        }
-    )
-    return _DEFAULTS
-
 
 @dataclass
 class GuildSettings:
@@ -67,14 +40,6 @@ class GuildSettings:
     created_at: object | None = None
     updated_at: object | None = None
 
-    def get_resolved(self, field_name: str) -> int | None:
-        """Get a field value, falling back to config defaults if not set."""
-        val = getattr(self, field_name, None)
-        if val is not None:
-            return val
-        defaults = _load_defaults()
-        return defaults.get(field_name)
-
 
 _OPTIONAL_ID_FIELDS = (
     'log_channel_id',
@@ -91,8 +56,8 @@ _OPTIONAL_ID_FIELDS = (
 
 
 def settings_from_row(row) -> GuildSettings:
-    """Build settings from a guild_settings row; columns added by later migrations may be absent."""
-    get = row.get if hasattr(row, 'get') else lambda k, d=None: row[k] if k in row else d
+    """Build typed settings from an asyncpg record or dictionary."""
+    get = row.get
     welcome_card = get('welcome_card_enabled', True)
     return GuildSettings(
         guild_id=row['guild_id'],
@@ -195,7 +160,7 @@ class GuildSettingsService:
     async def resolve_channel(self, guild: nextcord.Guild, channel_type: str) -> nextcord.abc.GuildChannel | None:
         """Resolve a channel ID from settings to a Discord channel object."""
         settings = await self.get_settings(guild.id)
-        channel_id = settings.get_resolved(channel_type)
+        channel_id = getattr(settings, channel_type, None)
         if channel_id is None:
             return None
         return guild.get_channel(channel_id)
