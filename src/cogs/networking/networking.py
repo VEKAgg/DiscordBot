@@ -46,6 +46,13 @@ class ConnectionRequestView(nextcord.ui.View):
         self.add_item(select)
 
     async def interaction_check(self, interaction: nextcord.Interaction) -> bool:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if interaction.guild and not await guild_modules_service.enabled(interaction.guild.id, 'networking'):
+            await interaction.response.send_message(
+                'This feature is turned off in this server by its admins.', ephemeral=True
+            )
+            return False
         # The prefix variant posts this picker publicly; only the invoker may use it, otherwise
         # another member could send requests in the invoker's name.
         if interaction.user is None or str(interaction.user.id) != self.requester_id:

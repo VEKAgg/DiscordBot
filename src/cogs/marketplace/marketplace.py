@@ -84,6 +84,10 @@ class Marketplace(commands.Cog):
             return None
 
     async def _ingest_forum_thread(self, thread: nextcord.Thread) -> None:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(thread.guild.id, 'marketplace'):
+            return
         channel = await guild_settings_service.resolve_channel(thread.guild, 'marketplace_channel_id')
         if not isinstance(channel, nextcord.ForumChannel) or thread.parent_id != channel.id:
             return

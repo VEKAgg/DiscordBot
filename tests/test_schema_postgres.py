@@ -68,6 +68,10 @@ async def test_fresh_database_gets_full_schema(migrated_db):
     names = {r['table_name'] for r in tables}
     for required in ('users', 'warnings', 'guild_settings', 'honeypots', 'massunban_jobs', 'feed_subscriptions'):
         assert required in names
+    assert not await migrated_db.fetchval(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = 'users' AND column_name = 'total_listening_minutes')"
+    )
 
 
 @pytest.mark.asyncio(loop_scope='module')
@@ -1415,3 +1419,31 @@ async def test_season_archive_waits_for_privacy_delete_and_does_not_resurrect(mi
 
     assert await migrated_db.fetchval('SELECT COUNT(*) FROM leaderboard_snapshots WHERE user_id = $1', uid) == 0
     assert await migrated_db.fetchval('SELECT 1 FROM season_archives WHERE season_month = $1', season) == 1
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_module_switches_gate_accounting_in_sql(migrated_db, monkeypatch):
+    from src.services import activity_service as svc
+
+    monkeypatch.setattr(svc, 'db', migrated_db)
+    guild, uid = 8401, 8402
+    await migrated_db.execute("INSERT INTO guild_modules (guild_id, disabled) VALUES ($1, ARRAY['leveling'])", guild)
+    await svc.award('message', [svc.Award(uid, guild, quantity=3, xp_base=30)])
+    row = await migrated_db.fetch_one(
+        'SELECT messages, xp_earned FROM user_activity_daily WHERE user_id = $1 AND guild_id = $2', uid, guild
+    )
+    assert row['messages'] == 3 and row['xp_earned'] == 0
+    await migrated_db.execute("UPDATE guild_modules SET disabled = ARRAY['activity'] WHERE guild_id = $1", guild)
+    await svc.award('message', [svc.Award(uid, guild, quantity=3, xp_base=30)])
+    assert (
+        await migrated_db.fetchval(
+            'SELECT messages FROM user_activity_daily WHERE user_id = $1 AND guild_id = $2', uid, guild
+        )
+        == 3
+    )
+    await migrated_db.execute("UPDATE guild_modules SET disabled = '{}' WHERE guild_id = $1", guild)
+    await svc.award('message', [svc.Award(uid, guild, quantity=1, xp_base=10)])
+    row = await migrated_db.fetch_one(
+        'SELECT messages, xp_earned FROM user_activity_daily WHERE user_id = $1 AND guild_id = $2', uid, guild
+    )
+    assert row['messages'] == 4 and row['xp_earned'] == 10

@@ -12,7 +12,6 @@ CHANNEL_SETTINGS: dict[str, tuple[str, str, str]] = {
     'alert': ('Alert Channel', 'alert_channel_id', 'Bot operational alerts channel'),
     'commands': ('Commands Channel', 'public_commands_channel_id', 'Public bot commands channel'),
     'welcome': ('Welcome Channel', 'welcome_channel_id', 'New member welcome channel'),
-    'radio': ('Radio Channel', 'radio_channel_id', 'Radio voice channel'),
     'leaderboard': ('Leaderboard Channel', 'leaderboard_channel_id', 'Auto-updating leaderboard channel'),
     'marketplace': ('Marketplace Channel', 'marketplace_channel_id', 'Where new marketplace listings are posted'),
 }
@@ -47,7 +46,6 @@ TOGGLE_SETTINGS: dict[str, tuple[str, str, str]] = {
 
 TEXT_TYPES: tuple[str, ...] = ('text', 'news')
 CHANNEL_TYPES: dict[str, tuple[str, ...]] = {
-    'radio': ('voice', 'stage_voice'),
     'marketplace': (*TEXT_TYPES, 'forum'),
 }
 
@@ -57,7 +55,53 @@ NUMBER_SETTINGS: dict[str, tuple[int, int]] = {
     'warn_ban_threshold': (1, 50),
     'honeypot_cooldown_seconds': (0, 3600),
 }
+NUMBER_LABELS = {
+    'warn_mute_threshold': ('Warnings before mute', 'Active warning count that triggers a mute.'),
+    'warn_ban_threshold': (
+        'Warnings before ban',
+        'Active warning count that triggers a ban; at least the mute threshold.',
+    ),
+    'honeypot_cooldown_seconds': ('Honeypot cooldown', 'Seconds between repeated triggers by the same member.'),
+}
 WELCOME_TEMPLATE_MAX = 1000
+
+
+TOGGLE_MODULES = {
+    'inactivity_alerts': 'activity',
+    'inactivity_dms': 'activity',
+    'bump_reminder': 'notifications',
+    'welcome_cards': 'welcome',
+    'presence_tracking': 'activity',
+}
+
+
+def settings_schema() -> dict:
+    """Public UI metadata from the same policy used to validate writes."""
+    return {
+        'channels': [
+            {'key': key, 'label': label, 'description': description, 'types': list(allowed_channel_types(key))}
+            for key, (label, _column, description) in CHANNEL_SETTINGS.items()
+        ],
+        'roles': [
+            {'key': key, 'label': label, 'description': description}
+            for key, (label, _column, description) in ROLE_SETTINGS.items()
+        ],
+        'toggles': [
+            {'key': key, 'label': label, 'description': description, 'module': TOGGLE_MODULES[key]}
+            for key, (label, _column, description) in TOGGLE_SETTINGS.items()
+        ],
+        'numbers': [
+            {
+                'key': key,
+                'label': NUMBER_LABELS[key][0],
+                'description': NUMBER_LABELS[key][1],
+                'min': bounds[0],
+                'max': bounds[1],
+            }
+            for key, bounds in NUMBER_SETTINGS.items()
+        ],
+        'welcome_template_max': WELCOME_TEMPLATE_MAX,
+    }
 
 
 def allowed_channel_types(setting_key: str) -> tuple[str, ...]:

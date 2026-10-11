@@ -15,6 +15,7 @@ from src.services.guild_settings_policy import allowed_channel_types as _allowed
 from src.services.guild_settings_policy import channel_type_error as _type_error_for
 from src.services.guild_settings_service import GuildSettings, guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
+from src.utils.roles import punitive_role_problem
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import audit_log
 from src.utils.security.rbac import require_staff
@@ -198,6 +199,18 @@ class Setup(commands.Cog):
                 return
 
             field_name = ROLE_SETTINGS[setting_type][1]
+            assert interaction.guild is not None
+            problem = punitive_role_problem(role, interaction.guild)
+            if problem is not None:
+                embed = await error_embed(
+                    title='Unsafe Role',
+                    description=f'**{role.mention}** cannot be used here: {problem}.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                    guild=interaction.guild,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
             await guild_settings_service.update_settings(interaction.guild.id, **{field_name: role.id})
             await _audit_setting(interaction.guild.id, interaction.user.id, field_name, role.id)
             embed = await success_embed(
@@ -342,10 +355,15 @@ class Setup(commands.Cog):
         elif setting_type in ROLE_SETTINGS:
             if ctx.message.role_mentions:
                 role = ctx.message.role_mentions[0]
+                assert ctx.guild is not None
+                problem = punitive_role_problem(role, ctx.guild)
+                if problem is not None:
+                    await safe_send(ctx, f'❌ {role.mention} cannot be used here: {problem}.')
+                    return
                 field_name = ROLE_SETTINGS[setting_type][1]
                 await guild_settings_service.update_settings(ctx.guild.id, **{field_name: role.id})
                 await _audit_setting(ctx.guild.id, ctx.author.id, field_name, role.id)
-                await safe_send(ctx, f'\u2705 **{ROLE_SETTINGS[setting_type][0]}** set to {role.mention}')
+                await safe_send(ctx, f'✅ **{ROLE_SETTINGS[setting_type][0]}** set to {role.mention}')
                 return
 
         await safe_send(ctx, f'\u274c Could not resolve `{target}`. Use a channel or role mention.')
@@ -463,6 +481,14 @@ class SetupValueView(nextcord.ui.View):
             await interaction.response.send_message('Nothing selected.', ephemeral=True)
             return
         target = chosen[0]
+        if self.setting_key in ROLE_SETTINGS:
+            assert isinstance(target, nextcord.Role)
+            problem = punitive_role_problem(target, self.guild)
+            if problem is not None:
+                await interaction.response.send_message(
+                    f'❌ {target.mention} cannot be used here: {problem}.', ephemeral=True
+                )
+                return
         await guild_settings_service.update_settings(self.guild.id, **{self.field_name: target.id})
         await _audit_setting(self.guild.id, interaction.user.id, self.field_name, target.id)
         embed = await success_embed(

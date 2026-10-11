@@ -13,7 +13,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.config import settings
 from src.api.discord_client import discord_client
 from src.api.errors import error_response, install_error_handlers
-from src.api.routes import feeds, guilds, health, honeypots, marketplace, massunban, me, moderation, privacy, stats
+from src.api.routes import (
+    feeds,
+    guilds,
+    health,
+    honeypots,
+    marketplace,
+    massunban,
+    me,
+    moderation,
+    modules,
+    privacy,
+    stats,
+)
 from src.api.routes import settings as settings_routes
 from src.core.runtime_state import runtime_state
 from src.database.database import db
@@ -116,6 +128,7 @@ def create_app() -> FastAPI:
 
     for router in (
         health.router,
+        modules.router,
         me.router,
         guilds.router,
         settings_routes.router,

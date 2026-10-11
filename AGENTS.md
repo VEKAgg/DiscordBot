@@ -60,11 +60,15 @@ The bot keeps running when the DB, a cog, or a background task fails:
 - Global singleton `from src.database.database import db`. **`$1`/`$2` parameter style.**
 - Methods: `fetch`, `fetch_one`/`fetchrow`, `fetchval`, `execute`, `execute_many` (all via `Database._run`). Connection-class failures (incl. `OSError`/timeouts) raise `DatabaseUnavailableError` and flip `runtime_state.db_available = False`; SQL errors raise `DatabaseQueryError` (a subclass, so `except DatabaseUnavailableError` still catches it) and leave the DB marked available. Only argument *types* are logged, never values; PostgreSQL errors are summarized by `_describe_pg_error` (class, SQLSTATE, table/column/constraint; primary message dropped for SQLSTATE classes `22`/`P0`) and never chained, because `str(exc)` includes `DETAIL` with row values. Pool has `command_timeout=30s`. Never assume a query succeeded.
 - Connection pool strips libpq-only keepalive params (`keepalives`, `tcp_keepalives_*`) that PostgreSQL would reject as unknown server settings.
-- **Migrations:** `.sql` files in `migrations/` (001–037; no `002`; `005_` and `005b_` coexist — the duplicate check compares the full prefix incl. letter suffix), applied in filename order on connect, tracked in `schema_migrations` by filename. **Never rename an applied migration**; if you must, add the old name to `LEGACY_MIGRATION_NAMES` in `src/database/migrations.py` (as for `005b`). Add new ones as `migrations/0NN_name.sql` with the next unused number. Make them idempotent (`IF NOT EXISTS`, guarded `DO $$` blocks) and use `TIMESTAMPTZ DEFAULT NOW()`. Discord IDs are `BIGINT`; `users.id` is an internal serial PK — don't mix them.
+- **Migrations:** `.sql` files in `migrations/` (001–039; no `002`; `005_` and `005b_` coexist — the duplicate check compares the full prefix incl. letter suffix), applied in filename order on connect, tracked in `schema_migrations` by filename. **Never rename an applied migration**; if you must, add the old name to `LEGACY_MIGRATION_NAMES` in `src/database/migrations.py` (as for `005b`). Add new ones as `migrations/0NN_name.sql` with the next unused number. Make them idempotent (`IF NOT EXISTS`, guarded `DO $$` blocks) and use `TIMESTAMPTZ DEFAULT NOW()`. Discord IDs are `BIGINT`; `users.id` is an internal serial PK — don't mix them.
 
 ### Per-guild settings
 
-Channel/role config is per guild in the `guild_settings` table, read via `from src.services.guild_settings_service import guild_settings_service` (`get_settings`, `update_settings`, `invalidate_cache`, `resolve_channel`; in-memory cache). Configured by staff with `/setup` / `!setup` (`src/cogs/admin/setup.py`). The channel-ID constants in `src/config/config.py` (`LOGS_CHANNEL_ID`, `STAFF_CHANNEL_ID`, `PUBLIC_BOT_COMMANDS_CHANNEL_ID`, `STAFF_BOT_COMMANDS_CHANNEL_ID`, `OWNER_DISCORD_ID`, …) are **deprecated fallbacks** only — new code should resolve channels through the service.
+Channel/role config is per guild in the `guild_settings` table, read via `from src.services.guild_settings_service import guild_settings_service` (`get_settings`, `update_settings`, `invalidate_cache`, `resolve_channel`; in-memory cache). Configured by staff with `/setup` / `!setup` (`src/cogs/admin/setup.py`). Server channels have no config/env fallbacks; resolve them through the service. `ADMIN_ALERT_CHANNEL_ID` remains a bot-operator operational alert destination, not a server feature channel.
+
+### Per-guild modules
+
+`src/services/module_registry.py` defines feature IDs and UI metadata; `guild_modules` (migration 038) stores disabled IDs and a monotonic version. Core/settings/privacy are locked on. Activity off stops collection; leveling off keeps counts but awards no XP; dependencies are declared without automatic toggles. The bot applies global prefix/application checks and guild gates to automation, with a bounded TTL cache, `modules:<guild_id>` NOTIFY invalidation and full-reset recovery. Unknown state fails closed for automation and commands report temporary unavailability (not an admin disable); outages retain last-known switches. Disabled bulk-unban workers pause; configuration, reads and privacy remain available. GET/PATCH `/v1/guilds/{id}/modules` use Manage Server, fresh write auth, strict booleans, required `If-Match`, transactional audit/NOTIFY, and string versions. `/v1/meta` exposes least-privilege invite permissions. Guild overview returns `bot_status`, permission `diagnostics` and aggregate `command_usage_7d`. Settings GET/PATCH include policy-derived `schema` metadata.
 
 ### Dashboard API (`src/api/`)
 
@@ -132,7 +136,7 @@ Decided 2026-10-11 (user delegated to the agents; see MIGRATION_NOTES): presence
 
 ## Known issues (open)
 
-1. The SvelteKit dashboard (`veka` repo) still reads the bot database directly; moving it onto the dashboard API is deferred (owner, 2026-10-11).
+1. The SvelteKit dashboard migration onto the bot API is in progress in `wt/dashboard-web`; shared plan/reviews live in the parent workspace's `.agent-notes/dashboard/`.
 2. The container still runs as root: the deploy mounts `.env` with mode 600 for the runner user, so a non-root user needs a deploy change first.
 3. `_is_staff_user` in `safety.py` fakes a context with `SimpleNamespace` to call RBAC — fragile coupling.
 4. `runtime_state.alert_state_cache` is still used ad hoc for export progress.
@@ -140,7 +144,6 @@ Decided 2026-10-11 (user delegated to the agents; see MIGRATION_NOTES): presence
 6. `mentorship_matches` is a read-only archive of the old model; binding legacy mentorships to a server needs explicit staff action (not built).
 7. Mass-unban date/moderator filters only match bans the bot recorded (Discord's ban list has no dates or moderators).
 8. Unique constraint on `profiles.user_id` is duplicated across migrations `005` and `006` (harmless).
-9. `src/services/quiz_service.py` is an unused stub (no cog).
 
 ## History
 

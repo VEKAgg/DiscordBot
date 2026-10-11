@@ -389,6 +389,10 @@ class Honeypot(commands.Cog):
         if message.author.bot or message.webhook_id is not None or not message.guild:
             return
 
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(message.guild.id, 'honeypot'):
+            return
         await self._load_cache()
 
         honeypot = self._honeypot_cache.get(message.channel.id)

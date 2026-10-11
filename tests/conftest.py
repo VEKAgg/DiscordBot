@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import nextcord
@@ -25,6 +26,21 @@ def _reset_runtime_state():
     runtime_state.last_recovery_time = original.last_recovery_time
     runtime_state.alert_state_cache = original.alert_state_cache.copy()
     yield runtime_state
+
+
+@pytest.fixture(autouse=True)
+def _reset_module_cache(monkeypatch):
+    """Existing cog tests use an unconfigured server; never reach a live DB for module checks."""
+    from src.services.guild_modules_service import guild_modules_service
+
+    guild_modules_service._cache.clear()
+    guild_modules_service._invalid.clear()
+    monkeypatch.setattr(
+        'src.services.guild_modules_service.db', SimpleNamespace(fetch_one=AsyncMock(return_value=None))
+    )
+    yield
+    guild_modules_service._cache.clear()
+    guild_modules_service._invalid.clear()
 
 
 @pytest.fixture
