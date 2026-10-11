@@ -16,6 +16,8 @@ from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed, veka_embed
+from src.utils.outbound import outbound
+from src.utils.roles import punitive_role_problem
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import require_mod, require_staff
 from src.utils.security.rbac import require_founder
@@ -57,6 +59,25 @@ async def _record_audit(guild: nextcord.Guild, moderator, target, action: str, r
         )
     except Exception:
         logger.warning('Failed to record audit row %s for %s', action, target.id, exc_info=True)
+
+
+async def record_warning(guild_id: int, user_id: int, moderator_id: int, reason: str) -> int:
+    """Insert a warning and return the member's active warning count (including this one)."""
+    assert db.pool is not None
+    async with db.pool.acquire() as conn, conn.transaction():
+        await conn.execute('SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))', f'warn:{guild_id}:{user_id}')
+        await conn.execute(
+            'INSERT INTO warnings (guild_id, user_id, moderator_id, reason) VALUES ($1, $2, $3, $4)',
+            guild_id,
+            user_id,
+            moderator_id,
+            reason,
+        )
+        return await conn.fetchval(
+            'SELECT COUNT(*) FROM warnings WHERE guild_id = $1 AND user_id = $2 AND active = TRUE',
+            guild_id,
+            user_id,
+        )
 
 
 class Moderation(commands.Cog):
@@ -118,12 +139,16 @@ class Moderation(commands.Cog):
                 ),
                 severity='CRITICAL' if active else 'INFO',
             )
-            try:
-                await staff_channel.send(
-                    content='@everyone', embed=embed, allowed_mentions=nextcord.AllowedMentions(everyone=True)
-                )
-            except Exception as e:
-                logger.error('Failed to send lockdown alert: %s', e)
+            outcome = await outbound.send(
+                staff_channel,
+                kind='lockdown_alert',
+                content='@everyone',
+                embed=embed,
+                allowed_mentions=nextcord.AllowedMentions(everyone=True),
+                essential=True,
+            )
+            if not outcome.ok:
+                logger.error('Failed to send lockdown alert: %s', outcome.status.value)
         else:
             logger.warning('Lockdown toggled in guild %s but no staff channel is configured', guild.id)
 
@@ -180,53 +205,34 @@ class Moderation(commands.Cog):
 
         reason = reason.strip()[:MAX_REASON_LENGTH] or 'No reason given'
 
-        # Insert warning
-        if runtime_state.db_available:
-            try:
-                await db.execute(
-                    """INSERT INTO warnings (guild_id, user_id, moderator_id, reason)
-                       VALUES ($1, $2, $3, $4)""",
-                    guild.id,
-                    user.id,
-                    moderator.id,
-                    reason,
-                )
-            except Exception:
-                logger.error('Failed to insert warning for %s in %s', user.id, guild.id, exc_info=True)
-                embed = await error_embed('DB Error', 'Failed to record the warning.', contributor_source=__name__)
-                await safe_send(target, embed=embed, ephemeral=True)
-                return
-
-            # Count active warnings
-            try:
-                active_count = await db.fetchval(
-                    'SELECT COUNT(*) FROM warnings WHERE guild_id = $1 AND user_id = $2 AND active = TRUE',
-                    guild.id,
-                    user.id,
-                )
-            except Exception:
-                active_count = 0
-        else:
+        # Insert the warning and count active ones atomically: a per-member advisory lock serialises
+        # concurrent warns, so each sees the count including its own (no missed escalation threshold).
+        if not runtime_state.db_available or db.pool is None:
             embed = await error_embed('DB Unavailable', 'Cannot issue warnings right now.', contributor_source=__name__)
             await safe_send(target, embed=embed, ephemeral=True)
             return
-
-        # DM the warned user
         try:
-            dm_embed = await veka_embed(
-                title=f'Warning — {guild.name}',
-                description=(
-                    f'You have been warned in **{guild.name}**.\n\n'
-                    f'**Reason:** {reason}\n'
-                    f'**Active warnings:** {active_count}'
-                ),
-                contributor_source=__name__,
-            )
-            await user.send(embed=dm_embed)
-        except nextcord.Forbidden:
-            logger.info('Could not DM user %s about warning', user.id)
+            active_count = await record_warning(guild.id, user.id, moderator.id, reason)
         except Exception:
-            logger.warning('Failed to DM warned user %s', user.id, exc_info=True)
+            logger.error('Failed to insert warning for %s in %s', user.id, guild.id, exc_info=True)
+            embed = await error_embed('DB Error', 'Failed to record the warning.', contributor_source=__name__)
+            await safe_send(target, embed=embed, ephemeral=True)
+            return
+        await _record_audit(guild, moderator, user, 'moderation_warn', reason=reason)
+
+        # DM the warned user (through the shared outbound guard)
+        dm_embed = await veka_embed(
+            title=f'Warning — {guild.name}',
+            description=(
+                f'You have been warned in **{guild.name}**.\n\n'
+                f'**Reason:** {reason}\n'
+                f'**Active warnings:** {active_count}'
+            ),
+            contributor_source=__name__,
+        )
+        dm = await outbound.dm(user, kind='warning_dm', embed=dm_embed, essential=True)
+        if not dm.ok:
+            logger.info('Could not DM user %s about warning (%s)', user.id, dm.status.value)
 
         # Auto-escalation
         settings = await guild_settings_service.get_settings(guild.id)
@@ -251,7 +257,14 @@ class Moderation(commands.Cog):
             muted_role_id = settings.muted_role_id
             if muted_role_id:
                 muted_role = guild.get_role(muted_role_id)
-                if muted_role:
+                problem = punitive_role_problem(muted_role, guild) if muted_role else None
+                if problem:
+                    escalation_msg = (
+                        f'\n\n:warning: Auto-mute skipped — the configured muted role is unsafe ({problem}).'
+                    )
+                    muted_role = None
+                    logger.warning('Auto-mute role %s in %s refused: %s', muted_role_id, guild.id, problem)
+                elif muted_role:
                     try:
                         await user.add_roles(muted_role, reason=f'Auto-mute: reached {active_count} warnings')
                         escalation_msg = f'\n\n:mute: **Auto-mute triggered** — {active_count} active warnings reached the mute threshold ({mute_threshold}).'
