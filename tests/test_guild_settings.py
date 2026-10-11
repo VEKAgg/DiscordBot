@@ -29,19 +29,6 @@ class TestGuildSettingsDataclass:
         assert settings.welcome_card_enabled is True
         assert settings.honeypot_channel_ids == []
 
-    def test_get_resolved_returns_set_value(self):
-        settings = GuildSettings(guild_id=1, log_channel_id=123)
-        assert settings.get_resolved('log_channel_id') == 123
-
-    @patch('src.services.guild_settings_service._load_defaults', return_value={'log_channel_id': 999})
-    def test_get_resolved_falls_back_to_config(self, _mock_defaults):
-        settings = GuildSettings(guild_id=1, log_channel_id=None)
-        assert settings.get_resolved('log_channel_id') == 999
-
-    def test_get_resolved_unknown_field(self):
-        settings = GuildSettings(guild_id=1)
-        assert settings.get_resolved('nonexistent_field') is None
-
 
 class TestGuildSettingsServiceCache:
     async def test_cache_hit_skips_db(self, service):

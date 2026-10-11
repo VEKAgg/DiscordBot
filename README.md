@@ -104,9 +104,6 @@ Copy `.env.example` to `.env`. Variables read by `src/config/config.py`:
 | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | ✅* | `localhost`/`5432`/`veka_bot`/`veka_bot_user`/`example` | Used if `DATABASE_URL` is unset |
 | `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS` | — | empty | Comma-separated Discord user IDs |
 | `ADMIN_ALERT_CHANNEL_ID` | — | none | Channel for operational alerts |
-| `MASSUNBAN_LOG_CHANNEL_ID` | — | none | Channel for the mass-unban progress message (default: the server's log channel) |
-| `LEADERBOARD_CHANNEL_ID` | — | hardcoded main-server channel | Fallback; prefer `/setupleaderboard` or `/setup` |
-| `RADIO_VOICE_CHANNEL_ID` | — | none | Fallback radio voice channel; prefer `/setup` |
 | `LIVE_ROLE_ID` | — | none | Role given to members while streaming |
 | `MAIN_GUILD_ID` | — | `1088553066334273537` | The main VEKA server |
 | `MAIN_SERVER_INVITE_URL` | — | `https://discord.gg/veka` | |
@@ -120,8 +117,8 @@ Copy `.env.example` to `.env`. Variables read by `src/config/config.py`:
 prefix is hardcoded to `!`. The marketplace channel is set per server with
 `/setup set marketplace` (text or forum channel).
 
-Channel and role IDs in `.env` are fallbacks only; configure each server with
-`/setup interactive` (or `/setup set`).
+Configure each server's channels and roles with `/setup interactive` (or `/setup set`)
+or the dashboard. There are no environment/config channel fallbacks.
 
 ---
 
@@ -311,7 +308,7 @@ mass-unban job items after 180 days and images of withdrawn listings after 30 da
 See `AGENTS.md` → *Known issues* for the current list. Highlights:
 
 - Mass-unban date/moderator filters only match bans the bot recorded.
-- The dashboard API is not wired into production yet, and the web app still reads the database directly.
+- The dashboard API is wired into production; the SvelteKit dashboard migration to API-only access is in progress in the dashboard worktrees.
 - The container runs as root.
 
 No license file is included; all rights reserved unless one is added.

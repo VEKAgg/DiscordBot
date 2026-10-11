@@ -25,7 +25,6 @@ from src.config.config import (
     INACTIVITY_MONTH_DAYS,
     INACTIVITY_WEEK_DAYS,
     IST_UTC_OFFSET,
-    LEADERBOARD_CHANNEL_ID,
     LEADERBOARD_TOP_N,
     LEADERBOARD_UPDATE_INTERVAL,
     LIVE_ROLE_ID,
@@ -320,6 +319,10 @@ class RPGManager(commands.Cog):
 
     async def _award_event(self, metric: str, member: nextcord.Member | nextcord.User, guild: nextcord.Guild, xp: int):
         """Award one message/command event."""
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'activity'):
+            return
         try:
             m = member if isinstance(member, nextcord.Member) else guild.get_member(member.id)
             await activity_service.award(
@@ -660,14 +663,22 @@ class RPGManager(commands.Cog):
         minutes = self._take_minutes()
         if minutes <= 0:
             return
+        from src.services.guild_modules_service import guild_modules_service
+
         tracking_guilds = set()
+        enabled_guilds = set()
         for guild in self.bot.guilds:
             try:
+                if not await guild_modules_service.enabled(guild.id, 'activity'):
+                    continue
+                enabled_guilds.add(guild.id)
                 if (await guild_settings_service.get_settings(guild.id)).presence_tracking_enabled:
                     tracking_guilds.add(guild.id)
             except Exception:
                 pass  # unreadable settings → treated as off
         awards, details = self.collect_tick(minutes, tracking_guilds)
+        awards = {metric: [a for a in rows if a.guild_id in enabled_guilds] for metric, rows in awards.items()}
+        details = [d for d in details if d[5] in enabled_guilds]
         try:
             # One transaction: totals, rollups and named details stay consistent, and presence rows are
             # written only where the server enabled tracking and the member hasn't opted out (locked row).
@@ -695,8 +706,12 @@ class RPGManager(commands.Cog):
                 logger.warning('Failed to update leaderboard in %s: %s', guild.id, type(exc).__name__)
 
     async def _update_guild_leaderboard(self, guild: nextcord.Guild) -> None:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'leaderboards'):
+            return
         settings = await guild_settings_service.get_settings(guild.id)
-        channel_id = settings.leaderboard_channel_id or (LEADERBOARD_CHANNEL_ID if guild.id == MAIN_GUILD_ID else None)
+        channel_id = settings.leaderboard_channel_id
         channel = guild.get_channel(channel_id) if channel_id else None
         if not isinstance(channel, nextcord.TextChannel):
             return
@@ -737,6 +752,10 @@ class RPGManager(commands.Cog):
                 logger.error('Activity role evaluation failed in %s', guild.id, exc_info=True)
 
     async def _evaluate_guild_activity_roles(self, guild: nextcord.Guild) -> None:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'activity_roles'):
+            return
         roles = {
             key: role
             for key, name in _ACTIVITY_ROLE_NAMES.items()
@@ -812,6 +831,10 @@ class RPGManager(commands.Cog):
                 logger.error('Inactivity check failed in %s', guild.id, exc_info=True)
 
     async def _guild_inactivity(self, guild: nextcord.Guild, budget: dict) -> None:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'activity'):
+            return
         """Inactive = no recorded activity in *this* server for INACTIVITY_WEEK_DAYS / _MONTH_DAYS (members
         never active count from when they joined). Each member is reported once per level until they are
         active again; one digest per day in the log channel."""
@@ -998,6 +1021,10 @@ class RPGManager(commands.Cog):
             await conn.execute('INSERT INTO season_archives (season_month) VALUES ($1) ON CONFLICT DO NOTHING', season)
 
     async def _announce_season(self, guild: nextcord.Guild, season: str) -> bool:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'leaderboards'):
+            return False
         """Post a server's champions. Returns True when there is nothing more to do (posted, or nothing to
         announce/no channel); False to retry on the next run."""
         channel = await guild_settings_service.resolve_channel(guild, 'leaderboard_channel_id')

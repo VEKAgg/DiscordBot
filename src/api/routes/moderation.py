@@ -34,6 +34,8 @@ AUDIT_ACTIONS = (
     'dashboard_massunban_started',
     'guild_setting_changed',
     'dashboard_settings_changed',
+    'dashboard_modules_changed',
+    'dashboard_marketplace_changed',
     'dashboard_warning_revoked',
     'dashboard_massunban_requested',
     'dashboard_massunban_cancelled',
@@ -129,7 +131,7 @@ def _audit_entry(row) -> dict:
     summary = details.get('reason') or details.get('field') or ''
     if details.get('job_id') is not None:
         summary = f'job #{details["job_id"]}'
-    if row['action'] == 'dashboard_settings_changed':
+    if row['action'] in ('dashboard_settings_changed', 'dashboard_modules_changed'):
         summary = ', '.join(sorted((details.get('changes') or {}).keys()))
     return {
         'id': row['id'],
