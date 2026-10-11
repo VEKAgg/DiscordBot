@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 from dataclasses import dataclass
 
 from fastapi import Depends, Path, Request
@@ -24,13 +25,26 @@ preauth_limiter = RateLimiter(settings.preauth_limit_per_minute)
 client_limiter = RateLimiter(settings.rate_limit_per_minute)
 
 
+def _trusted(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in settings.trusted_proxy_networks)
+
+
 def client_ip(request: Request) -> str:
+    """The caller's address for rate limiting. Behind trusted proxies (API_TRUSTED_PROXIES, IPs or CIDRs) this
+    is the right-most X-Forwarded-For entry that is not itself a trusted proxy; entries to its left are
+    client-supplied and can be forged, so they are never used."""
     peer = request.client.host if request.client else 'unknown'
-    if peer in settings.trusted_proxies:
-        forwarded = request.headers.get('x-forwarded-for', '')
-        if forwarded:
-            return forwarded.split(',')[0].strip()
-    return peer
+    if not _trusted(peer):
+        return peer
+    hops = [h.strip() for h in request.headers.get('x-forwarded-for', '').split(',') if h.strip()]
+    for hop in reversed(hops):
+        if not _trusted(hop):
+            return hop
+    return hops[0] if hops else peer
 
 
 @dataclass(frozen=True)
