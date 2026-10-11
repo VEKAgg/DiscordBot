@@ -267,16 +267,17 @@ def bot_operator_only():
 # ============================================================
 
 
-async def safe_send(target, content=None, *, embed=None, ephemeral=False):
+async def safe_send(target, content=None, *, embed=None, ephemeral=False, file=None):
     """Send a message safely, handling both Context and Interaction."""
+    extra = {'file': file} if file is not None else {}
     try:
         if isinstance(target, commands.Context):
-            await target.send(content=content, embed=embed)
+            await target.send(content=content, embed=embed, **extra)
         elif isinstance(target, nextcord.Interaction):
             if target.response.is_done():
-                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+                await target.followup.send(content=content, embed=embed, ephemeral=ephemeral, **extra)
             else:
-                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+                await target.response.send_message(content=content, embed=embed, ephemeral=ephemeral, **extra)
     except Exception as exc:
         logger.error('safe_send failed: %s', exc, exc_info=True)
 
