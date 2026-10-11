@@ -78,6 +78,10 @@ class Feeds(commands.Cog):
                     continue
 
             try:
+                from src.services.guild_modules_service import guild_modules_service
+
+                if not await guild_modules_service.enabled(sub['guild_id'], 'feeds'):
+                    continue
                 guild = self.bot.get_guild(sub['guild_id'])
                 channel = guild.get_channel(sub['channel_id']) if guild else None
                 if not isinstance(channel, nextcord.TextChannel) or self._channel_problem(guild, channel):

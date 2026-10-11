@@ -59,6 +59,10 @@ class Welcome(commands.Cog):
     async def _flush_batch(self, guild: nextcord.Guild, channel: nextcord.TextChannel) -> None:
         await asyncio.sleep(RAID_WINDOW_SECONDS)
         batch = self._batches.pop(guild.id, None)
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'welcome'):
+            return
         if batch is None or batch.count == 0:
             return
         shown = batch.sample
@@ -79,7 +83,9 @@ class Welcome(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: nextcord.Member):
         """Greet a new member with a welcome card and message."""
-        if member.bot:
+        from src.services.guild_modules_service import guild_modules_service
+
+        if member.bot or not await guild_modules_service.enabled(member.guild.id, 'welcome'):
             return
 
         try:

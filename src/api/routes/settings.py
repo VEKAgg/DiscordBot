@@ -33,6 +33,7 @@ from src.services.guild_settings_policy import (
     TOGGLE_SETTINGS,
     WELCOME_TEMPLATE_MAX,
     allowed_channel_types,
+    settings_schema,
 )
 
 router = APIRouter(prefix='/guilds/{guild_id}/settings', tags=['settings'])
@@ -88,9 +89,12 @@ def _serialize(row: dict) -> dict[str, Any]:
         'toggles': {key: bool(row.get(col)) for key, (_, col, _) in TOGGLE_SETTINGS.items()},
         'warn_mute_threshold': row.get('warn_mute_threshold') or 3,
         'warn_ban_threshold': row.get('warn_ban_threshold') or 5,
-        'honeypot_cooldown_seconds': row.get('honeypot_cooldown_seconds') or 60,
+        'honeypot_cooldown_seconds': row.get('honeypot_cooldown_seconds')
+        if row.get('honeypot_cooldown_seconds') is not None
+        else 60,
         'welcome_message_template': row.get('welcome_message_template') or 'Welcome {user} to {server}!',
         'version': _version(row.get('updated_at')),
+        'schema': settings_schema(),
     }
 
 
