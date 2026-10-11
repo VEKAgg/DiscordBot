@@ -3,12 +3,12 @@
 A professional networking and community bot built with
 [nextcord](https://github.com/nextcord/nextcord) and backed by PostgreSQL. It
 provides profiles and connections, a member directory, a marketplace, portfolios,
-mentorship, RSS feeds, XP/activity leaderboards, a 24/7 radio, and moderation
-tooling. It is designed to keep running in a degraded state when its database or
+mentorship, RSS feeds, XP/activity leaderboards, and moderation tooling (a
+spoken-word radio cog exists but is disabled). It is designed to keep running in a degraded state when its database or
 any single feature is unavailable.
 
 Contributor and agent guidance (conventions, architecture details, known issues)
-lives in [`AGENTS.md`](AGENTS.md). Audit status per finding: [`AUDIT_REPORT.md`](AUDIT_REPORT.md);
+lives in [`AGENTS.md`](AGENTS.md);
 deployment notes: [`MIGRATION_NOTES.md`](MIGRATION_NOTES.md).
 
 ---
@@ -39,28 +39,30 @@ deployment notes: [`MIGRATION_NOTES.md`](MIGRATION_NOTES.md).
 
 ## Features
 
-Loaded modules are listed in `EXTENSIONS` in `src/core/app.py` (22 cogs).
+Loaded modules are listed in `EXTENSIONS` in `src/core/app.py`.
 
 - 🤝 **Networking** — professional profiles, connection requests with a searchable member picker, and a member directory (`/profile`, `/connect`, `/directory`)
-- 🛒 **Marketplace** — listings, browsing/search, bumps, watchlist, offers, seller reputation and reviews, featured listings and stats (`/marketplace`, `/featured`, `/marketstats`, `/bump`); listings can be mirrored to a Directus CMS when `DIRECTUS_URL`/`DIRECTUS_SERVICE_TOKEN` are set
+- 🛒 **Marketplace** — listings, browsing/search, bumps, watchlist, offers, seller reputation and reviews, featured listings and stats (`/marketplace`, `/featured`, `/marketstats`, `/bump`); members can also just create a post in the server's marketplace **forum** — the bot picks it up as a listing (price read from `$123`/`123 USD`, otherwise held for review); listing images are stored durably by the bot because Discord image links expire; command-created listings can be mirrored to a Directus CMS when `DIRECTUS_URL`/`DIRECTUS_SERVICE_TOKEN` are set
 - 💼 **Portfolio** — add, list, view, delete and search projects (`/portfolio`)
-- 🎓 **Mentorship** — register/apply as a mentor, request, accept, complete or end mentorships, weekly check-ins (`/mentor`)
+- 🎓 **Mentorship** — opt-in mentor directory per server, request/accept/complete/cancel, one-time XP for completed mentorships, opt-in check-in reminders (`/mentor`)
 - 📚 **Feeds & resources** — per-guild RSS subscriptions with dedupe, plus a resource browser (`/feed`, `/resource`)
-- 🎮 **XP & activity** — XP from messages and voice with streak multipliers, levels, Pillow rank cards, category leaderboards with periods and monthly seasons, auto-updating leaderboard message, activity tracking (streaming, gaming, listening, coding) (`/level`, `/rank`, `/leaderboard`, `/activity`, `/most`)
-- 📊 **Server stats** — server overview, growth trend and activity tiers (`/stats`, `/serverstats`)
-- 📻 **Radio** — 24/7 streaming of fixed Icecast/SHOUTcast stations via FFmpeg, with stability monitoring and auto-recovery (`/radio`)
+- 🎮 **XP & activity** — XP from messages, commands and voice with streak multipliers, levels, Pillow rank cards; all-time leaderboards across servers, plus weekly/monthly/season boards per server; auto-updating leaderboard message; game/coding/streaming time in servers that turn activity tracking on (`/level`, `/rank`, `/leaderboard`, `/activity`, `/most`)
+- 🔒 **Privacy** — server admins decide whether game/coding/streaming tracking runs; members can opt out and delete their activity data (`/privacy`). Music is never tracked.
+- 📊 **Server stats** — this server's activity, growth trend and activity tiers (`/stats`, `/serverstats`)
+- 📻 **Radio** — **disabled**; when enabled, admins play a podcast episode or a public audio URL (`/radio podcast`, `/radio play`). No music stations (content policy).
 - ⚙️ **Per-guild setup** — channels and roles configured per server (`/setup`)
-- 👋 **Welcome cards** — generated on member join (`/welcome test`)
+- 👋 **Welcome cards** — generated on member join (`/welcome test`); during a join raid (more than 5 joins a minute) one batched welcome replaces individual cards
 - 🛡️ **Moderation** — warnings with auto-escalation to mute/ban, role-hierarchy checks, moderation stats (`/warn`, `/warnings`, `/clearwarnings`, `/modstats`)
 - 🚫 **Honeypot** — trap channels that softban/ban/timeout/role-assign posters, with logging config (`/honeypot`, `/logging`)
-- 🔓 **Mass unban** — resumable, rate-limit-aware bulk unbans with preview and double confirmation (`/massunban`)
-- 🩺 **Health & admin** — health, uptime, feature status, startup checks, cog reload, broadcast, lockdown (`/health`, `/uptime`, `/botinfo`, `/admin`)
+- 🔓 **Mass unban** — resumable, rate-limit-aware bulk unbans with preview and double confirmation; progress is one edited message; apology DMs are off unless requested per job (`/massunban`)
+- 🩺 **Health & admin** — health, uptime, feature status, startup checks, cog reload, broadcast, lockdown alert (`/health`, `/uptime`, `/botinfo`, `/admin`)
+- 🧹 **Maintenance** — nightly retention of raw logs (see *Data retention*)
+- 🖥️ **Dashboard API** — a separate FastAPI service (`python -m src.api`) for the web dashboard: Discord-OAuth-verified, permission-checked, versioned `/v1` endpoints (see `AGENTS.md` → *Dashboard API*)
 - 📤 **Chat export** — export channel history to `.txt` (`/exportchat`)
 
-**Not implemented** (planned, pending approval — see `AUDIT_REPORT.md`): marketplace
-transactions / "sold" flow, accepting or rejecting offers, watchlist price alerts,
-quizzes, workshops. `src/services/quiz_service.py` has no cog. XP, leaderboards,
-profiles and the marketplace are currently **global across guilds**.
+**Not implemented:** marketplace transactions / "sold" flow, accepting or rejecting
+offers, watchlist price alerts. XP/levels, profiles and the marketplace are shared
+across servers; leaderboards and stats inside a server are per server.
 
 ---
 
@@ -83,8 +85,8 @@ handlers) → `src/services/` (business logic) → `src/database/` (data access)
 - Commands use `@safe_command` / `@safe_slash_command(requires_db=True)` and
   `safe_send` from `src/utils/safety.py`.
 
-**Database:** migrations are plain `.sql` files in `migrations/` (001–026),
-applied in filename order on connect and tracked in `schema_migrations`. Query
+**Database:** migrations are plain `.sql` files in `migrations/`,
+applied in filename order on connect and tracked in `schema_migrations` (currently 001–031). Query
 errors are logged with the SQLSTATE, schema object names and a primary message
 (except for data exceptions and PL/pgSQL errors) — never parameter values or
 PostgreSQL `DETAIL` text.
@@ -102,24 +104,21 @@ Copy `.env.example` to `.env`. Variables read by `src/config/config.py`:
 | `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | ✅* | `localhost`/`5432`/`veka_bot`/`veka_bot_user`/`example` | Used if `DATABASE_URL` is unset |
 | `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS` | — | empty | Comma-separated Discord user IDs |
 | `ADMIN_ALERT_CHANNEL_ID` | — | none | Channel for operational alerts |
-| `MASSUNBAN_LOG_CHANNEL_ID` | — | none | Per-user mass-unban log channel |
-| `MARKETPLACE_CHANNEL_ID` | — | none | Fallback channel for new-listing posts |
-| `LEADERBOARD_CHANNEL_ID` | — | hardcoded main-server channel | Fallback; prefer `/setupleaderboard` or `/setup` |
-| `RADIO_VOICE_CHANNEL_ID` | — | none | Fallback radio voice channel; prefer `/setup` |
 | `LIVE_ROLE_ID` | — | none | Role given to members while streaming |
 | `MAIN_GUILD_ID` | — | `1088553066334273537` | The main VEKA server |
 | `MAIN_SERVER_INVITE_URL` | — | `https://discord.gg/veka` | |
 | `DIRECTUS_URL`, `DIRECTUS_SERVICE_TOKEN` | — | empty | Enable the marketplace → Directus mirror |
+| `RETENTION_ACTIVITY_LOG_DAYS`, `RETENTION_HONEYPOT_EVENTS_DAYS`, `RETENTION_MASSUNBAN_ITEMS_DAYS`, `RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS` | — | 90 / 180 / 180 / 30 | Optional retention overrides (days) |
 | `LOG_LEVEL` | — | `INFO` | |
 | `ENVIRONMENT` | — | `development` | |
 | `BOT_VERSION`, `COMMIT_SHA`, `GIT_BRANCH` | — | — | Set by the deploy workflow |
 
 \* Provide either `DATABASE_URL` or the `POSTGRES_*` variables. The command
-prefix is hardcoded to `!`. `RADIO_STREAM_URL` is still read but unused — radio
-stations are fixed in `src/cogs/radio/radio.py`.
+prefix is hardcoded to `!`. The marketplace channel is set per server with
+`/setup set marketplace` (text or forum channel).
 
-Channel and role IDs in `.env` are fallbacks only; configure each server with
-`/setup interactive` (or `/setup set`).
+Configure each server's channels and roles with `/setup interactive` (or `/setup set`)
+or the dashboard. There are no environment/config channel fallbacks.
 
 ---
 
@@ -146,7 +145,7 @@ docker logs veka-discord-bot
 
 ## Commands
 
-Most features have both a slash command and a `!` prefix command. Permission
+Many features have both a slash command and a `!` prefix command; XP/activity, stats, welcome, feeds, marketplace and export are slash-only. Permission
 notes: *Staff* = staff role or `STAFF_IDS`; *Admin* = Administrator/`ADMIN_IDS`;
 *owner outside main* = in other servers only the bot owner may use it; *main server only* = unavailable elsewhere.
 
@@ -185,25 +184,26 @@ notes: *Staff* = staff role or `STAFF_IDS`; *Admin* = Administrator/`ADMIN_IDS`;
 | `/marketplace offer` / `myoffers` | Make offers and view them |
 | `/marketplace review` / `seller` / `reviews` / `helpful` | Reviews and seller reputation |
 | `/marketplace stats`, `/marketstats`, `/featured` | Marketplace analytics and featured listings |
-| `!marketplace_push`, `!marketplace_sync` | (Admin) Directus backfill / sync |
+| `!marketplace_push`, `!marketplace_sync` | (Bot operators) Directus backfill / post missing listings to this server's marketplace channel, max 25 per run |
 
 ### Portfolio & Mentorship
 
 | Command | Description |
 |---|---|
 | `/portfolio add` / `list` / `view` / `delete` / `search` (also `!portfolio …`) | Manage and browse projects |
-| `/mentor register` / `apply` / `list` / `request` / `accept` / `complete` / `end` / `stats` | Mentorship (most also as `!mentor …`) |
+| `/mentor register` / `apply` / `list` / `request` / `accept` / `complete` / `end` / `cancel` / `engagements` / `history` / `stats` / `availability` / `reminders` (also `!mentor …`) | Mentorship; `end` takes an M-prefixed ID such as `M123` |
 
 ### XP, Activity & Stats
 
 | Command | Description |
 |---|---|
 | `/level [user]`, `/rank [user]` | Level, XP and rank card |
-| `/leaderboard show [category] [period]`, `/leaderboard season` | Leaderboards and seasons |
-| `/activity stats [user]`, `/activity summary [user]` | Activity details and 7-day summary |
-| `/most streamed` / `played` / `listened` / `coded` | Activity leaderboards |
+| `/leaderboard show [category] [period]`, `/leaderboard season` | This server's activity (all time, season, month, week) |
+| `/activity stats [user]`, `/activity summary [user]` | All-time totals; last 7 days in this server |
+| `/most streamed` / `played` / `coded` | Activity leaderboards (servers with activity tracking on) |
+| `/privacy status` / `optin` / `optout` / `delete` (also `!privacy …`) | Control and delete your tracked activity |
 | `/stats server`, `/stats demographics`, `/serverstats` | Server analytics |
-| `/setupleaderboard <channel>` | (Admin, main server only) Auto-updating leaderboard channel |
+| `/setupleaderboard <channel>` | (Manage Server) This server's auto-updating leaderboard channel |
 
 ### Feeds & Resources
 
@@ -227,19 +227,15 @@ After three failed polls, one warning is sent. Retries back off up to daily, and
 
 Migration 028 removes only known historical default seeds that still have no destination channel. Configured subscriptions are not deleted, including obsolete URLs: staff can pause, replace, or remove those. Article previews do not produce outage alerts. Feed quotas are serialized in the single bot process; running multiple polling instances against the same database is not supported.
 
-### Radio
+### Radio (disabled)
 
-| Command | Description |
-|---|---|
-| `/radio status`, `/radio list`, `!radiolist` | Status and station list |
-| `/radio station <name>`, `!radiostation <name>` | (Admin, owner outside main) Switch station |
-| `/radio start` / `stop` / `move <channel>` | (Admin, owner outside main) Control the stream |
+The radio cog is not loaded. When enabled: `/radio podcast <feed> [episode]`, `/radio play <url>`, `/radio stop`, `/radio status` (admins).
 
 ### Server setup & Welcome
 
 | Command | Description |
 |---|---|
-| `/setup show` / `set` / `reset` / `interactive` (also `!setup …`) | (Staff) Per-server channels and roles |
+| `/setup show` / `set` / `reset` / `option` / `interactive` (also `!setup …`) | (Staff) Per-server channels (incl. marketplace), roles and on/off options (`presence_tracking`, `inactivity_alerts`, `inactivity_dms`, `welcome_cards`) |
 | `/welcome test` | Preview your welcome card |
 
 ### Moderation & Safety
@@ -252,7 +248,7 @@ Migration 028 removes only known historical default seeds that still have no des
 | `/modstats`, `!modstats` | (Staff) Moderation activity, last 30 days |
 | `/honeypot status` / `create` / `list` / `view` / `edit` / `enable` / `disable` / `delete` / `test` (also `!honeypot …`) | (Admin) Honeypot traps |
 | `/logging setchannel` / `setrole` / `clearrole` / `view` (also `!logging …`) | (Admin) Honeypot alert logging |
-| `/massunban preview` / `run` / `status` / `cancel` / `recent` (also `!massunban …`) | (Admin) Bulk unbans; `include_unaudited` is slash-only |
+| `/massunban preview` / `run` / `status` / `cancel` / `recent` (also `!massunban …`) | (Admin) Bulk unbans; `notify_users` (`--notify`) opts in to capped apology DMs; `include_unaudited` is slash-only |
 
 ### Admin
 
@@ -260,9 +256,9 @@ Migration 028 removes only known historical default seeds that still have no des
 |---|---|
 | `/admin featurestatus`, `/admin startupchecks`, `/admin detailedstatus` | (Staff) Runtime status |
 | `/admin reloadcog <cog_name>` | (Bot operators) Reload a cog |
-| `/admin pingsquad`, `!pingsquad` | (Staff) Ping the notification squad |
+| `/admin pingsquad`, `!pingsquad` | (Staff) Ping the notification squad (once per 10 minutes per server) |
 | `/admin broadcast`, `!broadcast` | (Founder) Announce to a channel |
-| `/admin lockdown` / `panic`, `!lockdown` / `!panic` | (Founder) Toggle server lockdown |
+| `/admin lockdown` / `panic`, `!lockdown` / `!panic` | (Founder) Toggle a lockdown **alert** (pings staff; channel permissions are not changed) |
 | `/exportchat [channel] [limit]`, `/exportstop` | (Admin, owner outside main) Export chat history |
 
 ---
@@ -284,30 +280,35 @@ See `AGENTS.md` for conventions.
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`) runs on every push and PR: ruff, mypy,
-  pytest against a PostgreSQL 17 service, `pip-audit`, and a Docker build.
-- **Deploy** (`.github/workflows/deploy-discord-bot.yml`) runs only **after CI
-  succeeds** for a push to `main`/`production` whose commit message starts with
-  `Merge pull request`, and deploys exactly the commit CI tested. It runs on the
-  self-hosted runner (`self-hosted, X64, Linux, Veka`), writes `.env` from
-  repository secrets and variables, runs `docker compose up -d --build`, and
-  passes only if `is ready. DB available=True` appears in the logs within 60s
-  (with a warning if migrations are degraded).
+- **CI** (`.github/workflows/ci.yml`) runs on every pull request, manually, and as the
+  gate of the deploy workflow: ruff, mypy, pytest against a PostgreSQL 17 service,
+  `pip-audit`, and a Docker build.
+- **Deploy** (`.github/workflows/deploy.yml`) runs on every push to `main` (every
+  merged PR) and manually. It calls CI first, then deploys on the self-hosted runner
+  (`self-hosted, X64, Linux, Veka`) in the `production` environment: writes `.env`
+  from secrets and variables, `docker compose build`, `docker compose up -d
+  --force-recreate`, and passes only if `is ready. DB available=True` appears in the
+  logs within 60s (warning if migrations are degraded).
 
-Secrets: `DISCORD_TOKEN`, `DATABASE_URL`, optional `DIRECTUS_URL`,
-`DIRECTUS_SERVICE_TOKEN`. Variables: the `*_IDS` lists, channel IDs and
-`LOG_LEVEL`. Development happens on `dev`; open a PR `dev` → `main` to deploy.
+Development happens on `dev`; open a PR `dev` → `main` to deploy.
+
+## Bot-initiated messages and data retention
+
+All messages the bot sends on its own (alerts, digests, DMs, feed posts, listings)
+go through one guard with per-channel, per-server and global budgets, duplicate
+suppression, and a circuit breaker that pauses non-essential sends after repeated
+Discord errors and tells admins once. Unsolicited DMs are opt-in. A nightly job
+deletes raw activity logs after 90 days, honeypot events after 180 days, finished
+mass-unban job items after 180 days and images of withdrawn listings after 30 days.
 
 ---
 
 ## Known Issues
 
-See `AGENTS.md` → *Known issues* and `AUDIT_REPORT.md` for the current list. Highlights:
+See `AGENTS.md` → *Known issues* for the current list. Highlights:
 
-- XP, leaderboards, profiles and the marketplace are global across guilds.
-- Connection-request buttons don't survive a restart (not persistent views).
-- `/exportchat` buffers history in memory.
 - Mass-unban date/moderator filters only match bans the bot recorded.
+- The dashboard API is wired into production; the SvelteKit dashboard migration to API-only access is in progress in the dashboard worktrees.
 - The container runs as root.
 
 No license file is included; all rights reserved unless one is added.

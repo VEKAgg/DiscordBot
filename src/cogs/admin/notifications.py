@@ -4,7 +4,7 @@ Daily bump reminder and broadcast commands
 """
 
 import logging
-from datetime import time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta, timezone
 
 import nextcord
 from nextcord.ext import commands, tasks
@@ -13,13 +13,14 @@ from src.config.config import (
     DAILY_BUMP_HOUR,
     DAILY_BUMP_MINUTE,
     IST_UTC_OFFSET,
-    MAIN_GUILD_ID,
     NOTIFICATION_SQUAD_ROLE_NAME,
 )
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import safe_send
+from src.utils.outbound import outbound
+from src.utils.safety import DatabaseUnavailableError, safe_background_task, safe_send
 from src.utils.security.rbac import require_founder, require_staff
+from src.utils.ttlcache import TTLDict
 
 logger = logging.getLogger('VEKA.admin.notifications')
 
@@ -50,9 +51,20 @@ def _squad_ping(guild: nextcord.Guild) -> tuple[str, nextcord.AllowedMentions]:
     return role.mention, nextcord.AllowedMentions(everyone=False, users=False, roles=[role])
 
 
+SQUAD_PING_COOLDOWN_SECONDS = 600  # one notification-squad role ping per guild per 10 minutes
+
+
 class Notifications(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self._squad_pings: TTLDict[int, bool] = TTLDict(ttl=SQUAD_PING_COOLDOWN_SECONDS, maxsize=5000)
+
+    def _claim_squad_ping(self, guild_id: int) -> bool:
+        """True if this guild may ping the squad now (and starts its cooldown)."""
+        if guild_id in self._squad_pings:
+            return False
+        self._squad_pings.set(guild_id, True)
+        return True
 
     async def cog_ready(self):
         if not self.daily_bump.is_running():
@@ -64,14 +76,30 @@ class Notifications(commands.Cog):
     # ==================== DAILY BUMP REMINDER ====================
 
     @tasks.loop(time=_BUMP_TIME)
+    @safe_background_task(name='daily_bump')
     async def daily_bump(self):
-        """Send the bump reminder in the main guild at DAILY_BUMP_HOUR:MINUTE IST."""
-        channel = await _public_channel(self.bot.get_guild(MAIN_GUILD_ID))
-        if not channel:
-            logger.warning('Daily bump: public bot commands channel not configured for main guild %s', MAIN_GUILD_ID)
-            return
+        """Visit each guild; only explicitly opted-in, configured guilds may send."""
+        for guild in tuple(self.bot.guilds):
+            try:
+                await self._daily_bump_for_guild(guild)
+            except DatabaseUnavailableError:
+                raise  # shared DB outage: do not query every remaining guild or hide task health failures
+            except Exception as exc:
+                logger.warning('Daily bump failed for guild %s: %s', guild.id, type(exc).__name__)
 
-        mention, allowed = _squad_ping(channel.guild)
+    async def _daily_bump_for_guild(self, guild):
+        from src.services.guild_modules_service import guild_modules_service
+
+        if not await guild_modules_service.enabled(guild.id, 'notifications'):
+            return
+        settings = await guild_settings_service.get_settings(guild.id)
+        if not settings.bump_reminder_enabled or settings.public_commands_channel_id is None:
+            return
+        # Explicit channel only: deprecated main-server fallbacks must not enable reminders.
+        channel = guild.get_channel(settings.public_commands_channel_id)
+        if not isinstance(channel, nextcord.TextChannel) or channel.guild.id != guild.id:
+            return
+        mention, allowed = _squad_ping(guild)
         embed = await info_embed(
             title='Daily Bump Reminder',
             description=(
@@ -85,11 +113,18 @@ class Notifications(commands.Cog):
         )
         embed.set_footer(text=f'Daily reminder at {DAILY_BUMP_HOUR}:{DAILY_BUMP_MINUTE:02d} IST')
 
-        try:
-            await channel.send(content=mention, embed=embed, allowed_mentions=allowed)
-            logger.info('Daily bump reminder sent')
-        except Exception as e:
-            logger.error('Failed to send daily bump reminder: %s', e)
+        outcome = await outbound.send(
+            channel,
+            kind='bump_reminder',
+            content=mention,
+            embed=embed,
+            allowed_mentions=allowed,
+            dedupe_key=f'bump-reminder:{guild.id}:{datetime.now(UTC).date().isoformat()}',
+        )
+        if outcome.ok:
+            logger.info('Daily bump reminder sent for guild %s', guild.id)
+        else:
+            logger.info('Daily bump reminder not sent for guild %s: %s', guild.id, outcome.status.value)
 
     @daily_bump.before_loop
     async def before_daily_bump(self):
@@ -104,6 +139,15 @@ class Notifications(commands.Cog):
             embed = await error_embed(
                 'Channel Not Configured',
                 'No public bot commands channel is configured for this server. Use `/setup set` first.',
+                contributor_source=__name__,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        if not self._claim_squad_ping(channel.guild.id):
+            embed = await error_embed(
+                'Cooldown',
+                f'The notification squad can be pinged once every {SQUAD_PING_COOLDOWN_SECONDS // 60} minutes.',
                 contributor_source=__name__,
             )
             await safe_send(interaction, embed=embed, ephemeral=True)
@@ -133,6 +177,12 @@ class Notifications(commands.Cog):
         channel = await _public_channel(ctx.guild)
         if not channel:
             await ctx.send('No public bot commands channel is configured for this server. Use `!setup` first.')
+            return
+
+        if not self._claim_squad_ping(channel.guild.id):
+            await ctx.send(
+                f'The notification squad can be pinged once every {SQUAD_PING_COOLDOWN_SECONDS // 60} minutes.'
+            )
             return
 
         mention, allowed = _squad_ping(channel.guild)

@@ -10,29 +10,47 @@ import logging
 import nextcord
 from nextcord.ext import commands
 
+from src.services.guild_settings_policy import CHANNEL_SETTINGS, ROLE_SETTINGS, TOGGLE_SETTINGS
+from src.services.guild_settings_policy import allowed_channel_types as _allowed_type_names
+from src.services.guild_settings_policy import channel_type_error as _type_error_for
 from src.services.guild_settings_service import GuildSettings, guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
+from src.utils.roles import punitive_role_problem
 from src.utils.safety import safe_send, safe_slash_command
+from src.utils.security import audit_log
 from src.utils.security.rbac import require_staff
 
 logger = logging.getLogger('VEKA.admin.setup')
 
-# Channel setting types: key -> (display_name, field_name, description)
-CHANNEL_SETTINGS = {
-    'log': ('Log Channel', 'log_channel_id', 'Moderation and audit log channel'),
-    'staff': ('Staff Channel', 'staff_channel_id', 'Staff discussion channel'),
-    'alert': ('Alert Channel', 'alert_channel_id', 'Bot operational alerts channel'),
-    'commands': ('Commands Channel', 'public_commands_channel_id', 'Public bot commands channel'),
-    'welcome': ('Welcome Channel', 'welcome_channel_id', 'New member welcome channel'),
-    'radio': ('Radio Channel', 'radio_channel_id', 'Radio voice channel'),
-    'leaderboard': ('Leaderboard Channel', 'leaderboard_channel_id', 'Auto-updating leaderboard channel'),
-}
+ALL_SETTINGS = {**CHANNEL_SETTINGS, **ROLE_SETTINGS}
+
+
+def allowed_channel_types(setting_key: str) -> tuple[nextcord.ChannelType, ...]:
+    return tuple(getattr(nextcord.ChannelType, name) for name in _allowed_type_names(setting_key))
+
+
+def channel_type_error(setting_key: str, channel: nextcord.abc.GuildChannel) -> str | None:
+    """Return a user-facing error if ``channel`` can't be used for ``setting_key``."""
+    return _type_error_for(setting_key, channel.type.name)
+
+
+async def _audit_setting(guild_id: int, user_id: int, field_name: str, value: int | None) -> None:
+    """Record a settings change (audit M-06). Never blocks the change itself."""
+    try:
+        await audit_log.record(
+            user_id=str(user_id),
+            action='guild_setting_changed',
+            details={'field': field_name, 'value': str(value) if value is not None else None, 'source': 'discord'},
+            guild_id=str(guild_id),
+            severity='info',
+        )
+    except Exception:
+        logger.warning('Failed to audit setting change %s in %s', field_name, guild_id, exc_info=True)
+
 
 ROLE_SETTINGS = {
     'muted': ('Muted Role', 'muted_role_id', 'Role assigned to muted users'),
 }
-
-ALL_SETTINGS = {**CHANNEL_SETTINGS, **ROLE_SETTINGS}
 
 
 def _format_channel(guild: nextcord.Guild, channel_id: int | None) -> str:
@@ -58,7 +76,10 @@ def _build_settings_embed(guild: nextcord.Guild, settings: GuildSettings) -> lis
         f'**Welcome Channel**: {_format_channel(guild, settings.welcome_channel_id)}',
         f'**Radio Channel**: {_format_channel(guild, settings.radio_channel_id)}',
         f'**Leaderboard Channel**: {_format_channel(guild, settings.leaderboard_channel_id)}',
+        f'**Marketplace Channel**: {_format_channel(guild, settings.marketplace_channel_id)}',
         f'**Muted Role**: {_format_role(guild, settings.muted_role_id)}',
+        f'**Inactivity DMs**: {"On" if settings.inactivity_dm_enabled else "Off"}',
+        f'**Welcome Cards**: {"On" if settings.welcome_card_enabled else "Off"}',
     ]
 
 
@@ -91,8 +112,8 @@ class Setup(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @setup_group.subcommand(name='show', description='Show all configured channels and roles for this server')
-    @safe_slash_command()
     @require_staff()
+    @safe_slash_command()
     async def setup_show(self, interaction: nextcord.Interaction):
         """Display all configured channels and roles."""
         assert interaction.guild is not None  # /setup is guild-only (contexts=[guild])
@@ -108,8 +129,8 @@ class Setup(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @setup_group.subcommand(name='set', description='Set a channel or role for this server')
-    @safe_slash_command()
     @require_staff()
+    @safe_slash_command()
     async def setup_set(
         self,
         interaction: nextcord.Interaction,
@@ -117,8 +138,16 @@ class Setup(commands.Cog):
             description='Setting to configure',
             choices=list(ALL_SETTINGS.keys()),
         ),
-        channel: nextcord.TextChannel | nextcord.VoiceChannel | None = nextcord.SlashOption(
-            description='Channel (for channel settings)', required=False
+        channel: nextcord.abc.GuildChannel | None = nextcord.SlashOption(
+            description='Channel (for channel settings)',
+            required=False,
+            channel_types=[
+                nextcord.ChannelType.text,
+                nextcord.ChannelType.news,
+                nextcord.ChannelType.forum,
+                nextcord.ChannelType.voice,
+                nextcord.ChannelType.stage_voice,
+            ],
         ),
         role: nextcord.Role | None = nextcord.SlashOption(description='Role (for role settings)', required=False),
     ):
@@ -135,8 +164,21 @@ class Setup(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
+            type_error = channel_type_error(setting_type, channel)
+            if type_error:
+                embed = await error_embed(
+                    title='Wrong Channel Type',
+                    description=type_error,
+                    contributor_source=__name__,
+                    user=interaction.user,
+                    guild=interaction.guild,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
+
             field_name = CHANNEL_SETTINGS[setting_type][1]
             await guild_settings_service.update_settings(interaction.guild.id, **{field_name: channel.id})
+            await _audit_setting(interaction.guild.id, interaction.user.id, field_name, channel.id)
             embed = await success_embed(
                 title='Setting Updated',
                 description=f'**{CHANNEL_SETTINGS[setting_type][0]}** set to {channel.mention}',
@@ -157,7 +199,20 @@ class Setup(commands.Cog):
                 return
 
             field_name = ROLE_SETTINGS[setting_type][1]
+            assert interaction.guild is not None
+            problem = punitive_role_problem(role, interaction.guild)
+            if problem is not None:
+                embed = await error_embed(
+                    title='Unsafe Role',
+                    description=f'**{role.mention}** cannot be used here: {problem}.',
+                    contributor_source=__name__,
+                    user=interaction.user,
+                    guild=interaction.guild,
+                )
+                await safe_send(interaction, embed=embed, ephemeral=True)
+                return
             await guild_settings_service.update_settings(interaction.guild.id, **{field_name: role.id})
+            await _audit_setting(interaction.guild.id, interaction.user.id, field_name, role.id)
             embed = await success_embed(
                 title='Setting Updated',
                 description=f'**{ROLE_SETTINGS[setting_type][0]}** set to {role.mention}',
@@ -179,8 +234,8 @@ class Setup(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @setup_group.subcommand(name='reset', description='Clear a channel or role setting back to default')
-    @safe_slash_command()
     @require_staff()
+    @safe_slash_command()
     async def setup_reset(
         self,
         interaction: nextcord.Interaction,
@@ -208,6 +263,7 @@ class Setup(commands.Cog):
             return
 
         await guild_settings_service.update_settings(interaction.guild.id, **{field_name: None})
+        await _audit_setting(interaction.guild.id, interaction.user.id, field_name, None)
         embed = await success_embed(
             title='Setting Reset',
             description=f'**{label}** has been cleared. The bot will fall back to the default configuration.',
@@ -217,9 +273,30 @@ class Setup(commands.Cog):
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @setup_group.subcommand(name='interactive', description='Configure channels and roles using interactive dropdowns')
-    @safe_slash_command()
+    @setup_group.subcommand(name='option', description='Turn an on/off server option on or off')
     @require_staff()
+    @safe_slash_command(requires_db=True)
+    async def setup_option(
+        self,
+        interaction: nextcord.Interaction,
+        option: str = nextcord.SlashOption(description='Option', choices=list(TOGGLE_SETTINGS.keys())),
+        enabled: bool = nextcord.SlashOption(description='On or off'),
+    ):
+        label, field_name, _ = TOGGLE_SETTINGS[option]
+        await guild_settings_service.update_settings(interaction.guild.id, **{field_name: enabled})
+        await _audit_setting(interaction.guild.id, interaction.user.id, field_name, int(enabled))
+        embed = await success_embed(
+            title='Setting Updated',
+            description=f'**{label}** is now **{"on" if enabled else "off"}**.',
+            contributor_source=__name__,
+            user=interaction.user,
+            guild=interaction.guild,
+        )
+        await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @setup_group.subcommand(name='interactive', description='Configure channels and roles using interactive dropdowns')
+    @require_staff()
+    @safe_slash_command()
     async def setup_interactive(self, interaction: nextcord.Interaction):
         """Open an interactive UI to configure channels and roles via dropdowns."""
         assert interaction.guild is not None and isinstance(interaction.user, nextcord.Member)
@@ -266,19 +343,44 @@ class Setup(commands.Cog):
         if setting_type in CHANNEL_SETTINGS:
             if ctx.message.channel_mentions:
                 channel = ctx.message.channel_mentions[0]
+                type_error = channel_type_error(setting_type, channel)
+                if type_error:
+                    await safe_send(ctx, f'\u274c {type_error}')
+                    return
                 field_name = CHANNEL_SETTINGS[setting_type][1]
                 await guild_settings_service.update_settings(ctx.guild.id, **{field_name: channel.id})
+                await _audit_setting(ctx.guild.id, ctx.author.id, field_name, channel.id)
                 await safe_send(ctx, f'\u2705 **{CHANNEL_SETTINGS[setting_type][0]}** set to {channel.mention}')
                 return
         elif setting_type in ROLE_SETTINGS:
             if ctx.message.role_mentions:
                 role = ctx.message.role_mentions[0]
+                assert ctx.guild is not None
+                problem = punitive_role_problem(role, ctx.guild)
+                if problem is not None:
+                    await safe_send(ctx, f'❌ {role.mention} cannot be used here: {problem}.')
+                    return
                 field_name = ROLE_SETTINGS[setting_type][1]
                 await guild_settings_service.update_settings(ctx.guild.id, **{field_name: role.id})
-                await safe_send(ctx, f'\u2705 **{ROLE_SETTINGS[setting_type][0]}** set to {role.mention}')
+                await _audit_setting(ctx.guild.id, ctx.author.id, field_name, role.id)
+                await safe_send(ctx, f'✅ **{ROLE_SETTINGS[setting_type][0]}** set to {role.mention}')
                 return
 
         await safe_send(ctx, f'\u274c Could not resolve `{target}`. Use a channel or role mention.')
+
+    @setup_prefix.command(name='option')
+    @require_staff()
+    async def setup_option_prefix(self, ctx: commands.Context, option: str, value: str):
+        """Turn an option on or off. Usage: !setup option <inactivity_dms|welcome_cards> <on|off>"""
+        if option not in TOGGLE_SETTINGS or value.lower() not in ('on', 'off'):
+            names = ', '.join(TOGGLE_SETTINGS)
+            await safe_send(ctx, f'\u274c Usage: `!setup option <{names}> <on|off>`')
+            return
+        label, field_name, _ = TOGGLE_SETTINGS[option]
+        enabled = value.lower() == 'on'
+        await guild_settings_service.update_settings(ctx.guild.id, **{field_name: enabled})
+        await _audit_setting(ctx.guild.id, ctx.author.id, field_name, int(enabled))
+        await safe_send(ctx, f'\u2705 **{label}** is now **{value.lower()}**.')
 
     @setup_prefix.command(name='reset')
     @require_staff()
@@ -295,6 +397,7 @@ class Setup(commands.Cog):
             return
 
         await guild_settings_service.update_settings(ctx.guild.id, **{field_name: None})
+        await _audit_setting(ctx.guild.id, ctx.author.id, field_name, None)
         await safe_send(ctx, f'\u2705 **{label}** has been cleared.')
 
 
@@ -359,11 +462,7 @@ class SetupValueView(nextcord.ui.View):
         if setting_key in ROLE_SETTINGS:
             picker = nextcord.ui.RoleSelect(placeholder=f'Select the {self.label}...')
         else:
-            channel_types = (
-                [nextcord.ChannelType.voice, nextcord.ChannelType.stage_voice]
-                if setting_key == 'radio'
-                else [nextcord.ChannelType.text, nextcord.ChannelType.news]
-            )
+            channel_types = list(allowed_channel_types(setting_key))
             picker = nextcord.ui.ChannelSelect(placeholder=f'Select the {self.label}...', channel_types=channel_types)
         picker.callback = self._on_pick  # type: ignore[method-assign]
         self.picker = picker
@@ -382,7 +481,16 @@ class SetupValueView(nextcord.ui.View):
             await interaction.response.send_message('Nothing selected.', ephemeral=True)
             return
         target = chosen[0]
+        if self.setting_key in ROLE_SETTINGS:
+            assert isinstance(target, nextcord.Role)
+            problem = punitive_role_problem(target, self.guild)
+            if problem is not None:
+                await interaction.response.send_message(
+                    f'❌ {target.mention} cannot be used here: {problem}.', ephemeral=True
+                )
+                return
         await guild_settings_service.update_settings(self.guild.id, **{self.field_name: target.id})
+        await _audit_setting(self.guild.id, interaction.user.id, self.field_name, target.id)
         embed = await success_embed(
             title='Setting Updated',
             description=f'**{self.label}** set to {target.mention}',
@@ -396,6 +504,7 @@ class SetupValueView(nextcord.ui.View):
     @nextcord.ui.button(label='Reset', style=nextcord.ButtonStyle.secondary)
     async def reset_button(self, _button: nextcord.ui.Button, interaction: nextcord.Interaction):
         await guild_settings_service.update_settings(self.guild.id, **{self.field_name: None})
+        await _audit_setting(self.guild.id, interaction.user.id, self.field_name, None)
         embed = await success_embed(
             title='Setting Reset',
             description=f'**{self.label}** has been cleared. The bot will fall back to the default configuration.',

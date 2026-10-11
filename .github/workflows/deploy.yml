@@ -45,25 +45,31 @@ jobs:
           INTERN_IDS: ${{ vars.INTERN_IDS }}
           DONATOR_IDS: ${{ vars.DONATOR_IDS }}
           ACTIVE_PRO_IDS: ${{ vars.ACTIVE_PRO_IDS }}
-          MARKETPLACE_CHANNEL_ID: ${{ vars.MARKETPLACE_CHANNEL_ID }}
           ADMIN_ALERT_CHANNEL_ID: ${{ vars.ADMIN_ALERT_CHANNEL_ID }}
-          RADIO_VOICE_CHANNEL_ID: ${{ vars.RADIO_VOICE_CHANNEL_ID }}
-          LEADERBOARD_CHANNEL_ID: ${{ vars.LEADERBOARD_CHANNEL_ID }}
-          RADIO_STREAM_URL: ${{ vars.RADIO_STREAM_URL || 'https://www.youtube.com/watch?v=jfKfPfyJRdk' }}
           MAIN_SERVER_INVITE_URL: ${{ vars.MAIN_SERVER_INVITE_URL || 'https://discord.gg/veka' }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           FEED_MAX_SUBSCRIPTIONS: ${{ vars.FEED_MAX_SUBSCRIPTIONS || '25' }}
           FEED_MAX_POSTS_PER_POLL: ${{ vars.FEED_MAX_POSTS_PER_POLL || '3' }}
           FEED_MAX_POSTS_PER_GUILD_PER_CYCLE: ${{ vars.FEED_MAX_POSTS_PER_GUILD_PER_CYCLE || '15' }}
+          # Dashboard API (docs/DASHBOARD_API_DEPLOY.md). API_BIND_ADDRESS/API_PUBLISHED_PORT are read by
+          # docker compose for the published port; the rest by the API process.
+          API_SERVICE_TOKEN: ${{ secrets.API_SERVICE_TOKEN }}
+          API_CORS_ORIGINS: ${{ vars.API_CORS_ORIGINS }}
+          API_TRUSTED_PROXIES: ${{ vars.API_TRUSTED_PROXIES }}
+          API_RATE_LIMIT: ${{ vars.API_RATE_LIMIT || '120' }}
+          API_PREAUTH_LIMIT: ${{ vars.API_PREAUTH_LIMIT || '60' }}
+          API_BIND_ADDRESS: ${{ vars.API_BIND_ADDRESS || '127.0.0.1' }}
+          API_PUBLISHED_PORT: ${{ vars.API_PUBLISHED_PORT || '8080' }}
         shell: bash
         run: |
           umask 077
           {
             for name in DISCORD_TOKEN DATABASE_URL DIRECTUS_URL DIRECTUS_SERVICE_TOKEN \
                         ADMIN_IDS OWNER_IDS FOUNDER_IDS STAFF_IDS INTERN_IDS DONATOR_IDS ACTIVE_PRO_IDS \
-                        MARKETPLACE_CHANNEL_ID ADMIN_ALERT_CHANNEL_ID RADIO_VOICE_CHANNEL_ID LEADERBOARD_CHANNEL_ID \
-                        RADIO_STREAM_URL MAIN_SERVER_INVITE_URL LOG_LEVEL \
-                        FEED_MAX_SUBSCRIPTIONS FEED_MAX_POSTS_PER_POLL FEED_MAX_POSTS_PER_GUILD_PER_CYCLE; do
+                        ADMIN_ALERT_CHANNEL_ID MAIN_SERVER_INVITE_URL LOG_LEVEL \
+                        FEED_MAX_SUBSCRIPTIONS FEED_MAX_POSTS_PER_POLL FEED_MAX_POSTS_PER_GUILD_PER_CYCLE \
+                        API_SERVICE_TOKEN API_CORS_ORIGINS API_TRUSTED_PROXIES API_RATE_LIMIT API_PREAUTH_LIMIT \
+                        API_BIND_ADDRESS API_PUBLISHED_PORT; do
               printf '%s=%s\n' "$name" "${!name}"
             done
             printf 'COMMIT_SHA=%s\nBOT_VERSION=%s\nGIT_BRANCH=%s\nENVIRONMENT=production\n' \
@@ -100,6 +106,23 @@ jobs:
           done
           echo "::error title=Deploy failed::Bot did not become ready within $MAX_WAIT seconds"
           docker logs veka-discord-bot 2>&1 | tail -50 || true
+          exit 1
+
+      - name: Dashboard API health check
+        # Runs inside the container, so it works whatever API_BIND_ADDRESS is.
+        shell: bash
+        run: |
+          for _ in $(seq 1 12); do
+            # /v1/ready is 200 only when the API can query the database (503 otherwise, which urlopen raises).
+            if docker exec veka-api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/ready', timeout=3)" >/dev/null 2>&1; then
+              echo "Dashboard API is ready"
+              exit 0
+            fi
+            echo "Waiting for the dashboard API..."
+            sleep 5
+          done
+          echo "::error title=Dashboard API not ready::API could not reach the database within 60 seconds (the bot itself is running)"
+          docker logs veka-api 2>&1 | tail -50 || true
           exit 1
 
       - name: Prune dangling images

@@ -11,33 +11,6 @@ from src.utils.logger import get_logger
 
 logger = get_logger('VEKA.guild_settings')
 
-# Default values for fallback when no guild-specific setting exists.
-# These mirror the hardcoded constants in config.py and will be used as
-# fallbacks until a guild configures its own channels via /setup.
-_DEFAULTS: dict[str, int | None] = {}
-
-
-def _load_defaults() -> dict[str, int | None]:
-    """Lazy-load defaults from config to avoid circular imports at module level."""
-    if _DEFAULTS:
-        return _DEFAULTS
-    from src.config.config import (
-        LEADERBOARD_CHANNEL_ID,
-        LOGS_CHANNEL_ID,
-        PUBLIC_BOT_COMMANDS_CHANNEL_ID,
-        STAFF_CHANNEL_ID,
-    )
-
-    _DEFAULTS.update(
-        {
-            'log_channel_id': LOGS_CHANNEL_ID,
-            'staff_channel_id': STAFF_CHANNEL_ID,
-            'public_commands_channel_id': PUBLIC_BOT_COMMANDS_CHANNEL_ID,
-            'leaderboard_channel_id': LEADERBOARD_CHANNEL_ID,
-        }
-    )
-    return _DEFAULTS
-
 
 @dataclass
 class GuildSettings:
@@ -51,23 +24,75 @@ class GuildSettings:
     welcome_channel_id: int | None = None
     radio_channel_id: int | None = None
     leaderboard_channel_id: int | None = None
+    marketplace_channel_id: int | None = None
+    leaderboard_message_id: int | None = None
     muted_role_id: int | None = None
     honeypot_channel_ids: list[int] = field(default_factory=list)
     warn_mute_threshold: int = 3
     warn_ban_threshold: int = 5
     honeypot_cooldown_seconds: int = 60
     welcome_message_template: str = 'Welcome {user} to {server}!'
+    bump_reminder_enabled: bool = False
     welcome_card_enabled: bool = True
+    inactivity_dm_enabled: bool = False
+    presence_tracking_enabled: bool = False
+    inactivity_alerts_enabled: bool = True
     created_at: object | None = None
     updated_at: object | None = None
 
-    def get_resolved(self, field_name: str) -> int | None:
-        """Get a field value, falling back to config defaults if not set."""
-        val = getattr(self, field_name, None)
-        if val is not None:
-            return val
-        defaults = _load_defaults()
-        return defaults.get(field_name)
+
+_OPTIONAL_ID_FIELDS = (
+    'log_channel_id',
+    'staff_channel_id',
+    'alert_channel_id',
+    'public_commands_channel_id',
+    'welcome_channel_id',
+    'radio_channel_id',
+    'leaderboard_channel_id',
+    'marketplace_channel_id',
+    'leaderboard_message_id',
+    'muted_role_id',
+)
+
+
+def settings_from_row(row) -> GuildSettings:
+    """Build typed settings from an asyncpg record or dictionary."""
+    get = row.get
+    welcome_card = get('welcome_card_enabled', True)
+    return GuildSettings(
+        guild_id=row['guild_id'],
+        **{name: get(name) for name in _OPTIONAL_ID_FIELDS},
+        honeypot_channel_ids=list(get('honeypot_channel_ids') or []),
+        warn_mute_threshold=get('warn_mute_threshold') or 3,
+        warn_ban_threshold=get('warn_ban_threshold') or 5,
+        honeypot_cooldown_seconds=get('honeypot_cooldown_seconds') or 60,
+        welcome_message_template=get('welcome_message_template') or 'Welcome {user} to {server}!',
+        bump_reminder_enabled=bool(get('bump_reminder_enabled') or False),
+        welcome_card_enabled=True if welcome_card is None else bool(welcome_card),
+        inactivity_dm_enabled=bool(get('inactivity_dm_enabled') or False),
+        presence_tracking_enabled=bool(get('presence_tracking_enabled') or False),
+        inactivity_alerts_enabled=get('inactivity_alerts_enabled') is not False,
+        created_at=get('created_at'),
+        updated_at=get('updated_at'),
+    )
+
+
+# Column names that may be interpolated into UPDATE statements.
+_WRITABLE_FIELDS = frozenset(
+    {
+        *_OPTIONAL_ID_FIELDS,
+        'honeypot_channel_ids',
+        'warn_mute_threshold',
+        'warn_ban_threshold',
+        'honeypot_cooldown_seconds',
+        'welcome_message_template',
+        'bump_reminder_enabled',
+        'welcome_card_enabled',
+        'inactivity_dm_enabled',
+        'presence_tracking_enabled',
+        'inactivity_alerts_enabled',
+    }
+)
 
 
 class GuildSettingsService:
@@ -87,25 +112,7 @@ class GuildSettingsService:
         )
 
         if row:
-            settings = GuildSettings(
-                guild_id=row['guild_id'],
-                log_channel_id=row['log_channel_id'],
-                staff_channel_id=row['staff_channel_id'],
-                alert_channel_id=row['alert_channel_id'],
-                public_commands_channel_id=row['public_commands_channel_id'],
-                welcome_channel_id=row['welcome_channel_id'],
-                radio_channel_id=row['radio_channel_id'],
-                leaderboard_channel_id=row['leaderboard_channel_id'],
-                muted_role_id=row['muted_role_id'],
-                honeypot_channel_ids=list(row['honeypot_channel_ids']) if row['honeypot_channel_ids'] else [],
-                warn_mute_threshold=row.get('warn_mute_threshold') or 3,
-                warn_ban_threshold=row.get('warn_ban_threshold') or 5,
-                honeypot_cooldown_seconds=row.get('honeypot_cooldown_seconds') or 60,
-                welcome_message_template=row.get('welcome_message_template') or 'Welcome {user} to {server}!',
-                welcome_card_enabled=row.get('welcome_card_enabled', True),
-                created_at=row['created_at'],
-                updated_at=row['updated_at'],
-            )
+            settings = settings_from_row(row)
         else:
             # Insert and return defaults
             settings = GuildSettings(guild_id=guild_id)
@@ -127,12 +134,10 @@ class GuildSettingsService:
         values: list[object] = []
         idx = 1
         for key, value in kwargs.items():
-            if key == 'honeypot_channel_ids':
-                set_parts.append(f'{key} = ${idx}')
-                values.append(value)
-            else:
-                set_parts.append(f'{key} = ${idx}')
-                values.append(value)
+            if key not in _WRITABLE_FIELDS:
+                raise ValueError(f'Unknown guild setting: {key}')
+            set_parts.append(f'{key} = ${idx}')
+            values.append(value)
             idx += 1
 
         set_parts.append('updated_at = NOW()')
@@ -155,7 +160,7 @@ class GuildSettingsService:
     async def resolve_channel(self, guild: nextcord.Guild, channel_type: str) -> nextcord.abc.GuildChannel | None:
         """Resolve a channel ID from settings to a Discord channel object."""
         settings = await self.get_settings(guild.id)
-        channel_id = settings.get_resolved(channel_type)
+        channel_id = getattr(settings, channel_type, None)
         if channel_id is None:
             return None
         return guild.get_channel(channel_id)

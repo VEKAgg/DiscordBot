@@ -3,6 +3,7 @@ Enhanced Marketplace Features
 Search, notifications, and engagement features to keep users active
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -11,10 +12,13 @@ import nextcord
 from nextcord.ext import commands, tasks
 
 from src.database.database import db, get_user
+from src.services.marketplace_service import normalize_search_filters, validate_price
+from src.utils.embed_limits import text_units
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.marketplace.fraud_detection import fraud_detector
+from src.utils.outbound import outbound
 from src.utils.safety import safe_send, safe_slash_command
-from src.utils.security import InputValidator, sanitize
+from src.utils.security import sanitize
 
 logger = logging.getLogger('VEKA.marketplace.enhanced')
 
@@ -78,6 +82,9 @@ class MarketplaceEnhanced(commands.Cog):
 
             await safe_send(interaction, embed=embed, ephemeral=False)
 
+        except ValueError as exc:
+            embed = await error_embed('Invalid Search', str(exc), contributor_source=__name__, user=interaction.user)
+            await safe_send(interaction, embed=embed, ephemeral=True)
         except Exception as e:
             logger.error(f'Search error: {str(e)}')
             embed = await error_embed(
@@ -217,11 +224,10 @@ class MarketplaceEnhanced(commands.Cog):
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
-            offered_price = InputValidator.validate_price(price)
-            if offered_price is None:
-                embed = await error_embed(
-                    'Invalid Price', 'Invalid price format.', contributor_source=__name__, user=interaction.user
-                )
+            try:
+                offered_price = validate_price(price)
+            except ValueError as exc:
+                embed = await error_embed('Invalid Price', str(exc), contributor_source=__name__, user=interaction.user)
                 await safe_send(interaction, embed=embed, ephemeral=True)
                 return
 
@@ -259,8 +265,12 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             embed = await success_embed(
-                title='Offer Sent',
-                description=f'Your offer of **${offered_price}** has been sent! The seller has 3 days to respond.',
+                title='Offer Recorded',
+                description=(
+                    f'Your pending offer of **${offered_price}** is recorded for three days. '
+                    'The seller can view it with `/marketplace myoffers`. '
+                    'This does not create a purchase, payment or completed transaction; DM delivery is not guaranteed.'
+                ),
                 contributor_source=__name__,
                 user=interaction.user,
             )
@@ -279,7 +289,7 @@ class MarketplaceEnhanced(commands.Cog):
                         seller_embed.add_field(name='Message', value=message[:500], inline=False)
                     seller_embed.add_field(name='Original Price', value=f'${listing["price"]}', inline=True)
                     seller_embed.add_field(name='Expires', value='3 days', inline=True)
-                    await seller.send(embed=seller_embed)
+                    await outbound.dm(seller, kind='marketplace_offer', embed=seller_embed)
                 except Exception:
                     pass
 
@@ -484,6 +494,8 @@ class MarketplaceEnhanced(commands.Cog):
     # ==================== SHARED LOGIC ====================
 
     def _parse_search_query(self, query: str) -> dict:
+        if not query.strip() or text_units(query) > 1000:
+            raise ValueError('Search query must be 1–1000 characters.')
         filters = {}
         parts = query.split('|')
         if parts:
@@ -492,10 +504,16 @@ class MarketplaceEnhanced(commands.Cog):
             part = part.strip()
             if ':' in part:
                 key, value = part.split(':', 1)
-                filters[key.strip()] = value.strip()
-        return filters
+                key = key.strip().lower()
+                if key in filters:
+                    raise ValueError(f'Duplicate search filter: {key}.')
+                filters[key] = value.strip()
+            else:
+                raise ValueError('Use filter:value after each | separator.')
+        return normalize_search_filters(filters)
 
     async def _run_search(self, filters: dict) -> list[dict]:
+        filters = normalize_search_filters(filters)
         search_term = filters.get('term', '')
 
         sql = """SELECT l.*, u.discord_id, c.name as category_name, c.emoji,
@@ -538,55 +556,81 @@ class MarketplaceEnhanced(commands.Cog):
         if 'min_rating' in filters:
             param_count += 1
             sql += f' AND s.average_rating >= ${param_count}'
-            params.append(float(filters['min_rating']))
+            params.append(filters['min_rating'])
 
         sort = filters.get('sort', 'newest')
         if sort == 'price_low':
-            sql += ' ORDER BY l.price ASC'
+            sql += ' ORDER BY l.price ASC NULLS LAST, l.id DESC'
         elif sort == 'price_high':
-            sql += ' ORDER BY l.price DESC'
+            sql += ' ORDER BY l.price DESC NULLS LAST, l.id DESC'
         elif sort == 'popular':
-            sql += ' ORDER BY l.views DESC'
+            sql += ' ORDER BY l.views DESC, l.id DESC'
         else:
-            sql += ' ORDER BY l.created_at DESC'
+            sql += ' ORDER BY COALESCE(GREATEST(l.created_at, l.last_bumped_at), l.created_at) DESC, l.id DESC'
 
         sql += ' LIMIT 20'
         return await db.fetch_many(sql, *params)
 
     # ==================== BACKGROUND TASKS ====================
 
+    async def _notify_sellers(self, listings, *, expired: bool):
+        """One bounded digest per seller; never try users absent from all bot guilds."""
+        by_seller: dict[int, list] = {}
+        for listing in listings:
+            by_seller.setdefault(int(listing['discord_id']), []).append(listing)
+        from src.services.guild_modules_service import guild_modules_service
+
+        enabled_guilds = []
+        for guild in self.bot.guilds:
+            if await guild_modules_service.enabled(guild.id, 'marketplace'):
+                enabled_guilds.append(guild)
+        failures = 0
+        for user_id, items in list(by_seller.items())[:25]:
+            seller = next((g.get_member(user_id) for g in enabled_guilds if g.get_member(user_id)), None)
+            if seller is None:
+                continue
+            embed = await info_embed(
+                title='Listings Expired' if expired else 'Listings Expiring Soon',
+                description='Use `/marketplace bump` to refresh a listing or `/marketplace withdraw` to remove it.',
+                contributor_source=__name__,
+                user=seller,
+            )
+            for item in items[:10]:
+                embed.add_field(name=item['title'][:100], value=f'Listing ID: `{item["id"]}`', inline=False)
+            if len(items) > 10:
+                embed.set_footer(text=f'{len(items)} listings affected; showing the first 10.')
+            try:
+                outcome = await outbound.dm(seller, kind='marketplace_expiry', embed=embed)
+                failures = 0 if outcome.ok else failures + 1
+                if failures >= 3:
+                    break
+            except (nextcord.Forbidden, nextcord.HTTPException):
+                failures += 1
+                if failures >= 3:
+                    break
+            await asyncio.sleep(5)
+
     @tasks.loop(hours=6)
     async def check_price_drops(self):
         """Warn sellers once, a few days before a listing expires (age counts from the last bump)."""
         try:
             expiring = await db.fetch_many(
-                f"""UPDATE marketplace_listings l SET expiry_warned_at = NOW()
-                   FROM users u
-                   WHERE l.seller_id = u.id AND l.status = 'active' AND l.is_expired = FALSE
+                f"""WITH candidates AS (
+                       SELECT l.id FROM marketplace_listings l
+                       WHERE l.status = 'active' AND l.is_expired = FALSE
+                         AND {_LISTING_AGE_SQL} < NOW() - INTERVAL '{LISTING_WARN_DAYS} days'
+                         AND {_LISTING_AGE_SQL} >= NOW() - INTERVAL '{LISTING_EXPIRY_DAYS} days'
+                         AND (l.expiry_warned_at IS NULL OR l.expiry_warned_at < {_LISTING_AGE_SQL})
+                       ORDER BY l.created_at LIMIT 25
+                   ) UPDATE marketplace_listings l SET expiry_warned_at = NOW()
+                   FROM users u WHERE l.seller_id = u.id AND l.id IN (SELECT id FROM candidates)
+                     AND l.status = 'active' AND l.is_expired = FALSE
                      AND {_LISTING_AGE_SQL} < NOW() - INTERVAL '{LISTING_WARN_DAYS} days'
-                     AND {_LISTING_AGE_SQL} >= NOW() - INTERVAL '{LISTING_EXPIRY_DAYS} days'
                      AND (l.expiry_warned_at IS NULL OR l.expiry_warned_at < {_LISTING_AGE_SQL})
                    RETURNING l.id, l.title, u.discord_id"""
             )
 
-            for listing in expiring:
-                seller = self.bot.get_user(int(listing['discord_id']))
-                if seller:
-                    try:
-                        embed = nextcord.Embed(
-                            title='⏰ Listing Expiring Soon',
-                            description=(
-                                f'Your listing **{listing["title"]}** expires in about '
-                                f'{LISTING_EXPIRY_DAYS - LISTING_WARN_DAYS} days.'
-                            ),
-                            color=nextcord.Color.orange(),
-                        )
-                        embed.add_field(
-                            name='Action', value=f'Use `/marketplace bump {listing["id"]}` to refresh it!', inline=False
-                        )
-                        await seller.send(embed=embed)
-                    except Exception:
-                        pass
+            await self._notify_sellers(expiring, expired=False)
 
         except Exception as e:
             logger.error(f'Listing expiry warning error: {str(e)}')
@@ -604,24 +648,7 @@ class MarketplaceEnhanced(commands.Cog):
             )
 
             if expired_rows:
-                for row in expired_rows:
-                    seller = self.bot.get_user(int(row['discord_id']))
-                    if seller:
-                        try:
-                            embed = nextcord.Embed(
-                                title='Listing Expired',
-                                description=f'Your listing **{row["title"]}** has expired after 30 days.',
-                                color=nextcord.Color.orange(),
-                            )
-                            embed.add_field(
-                                name='Action',
-                                value=f'Use `/marketplace bump {row["id"]}` to refresh it, or re-list with `/marketplace post`.',
-                                inline=False,
-                            )
-                            await seller.send(embed=embed)
-                        except Exception:
-                            pass
-
+                await self._notify_sellers(expired_rows, expired=True)
                 logger.info('Flagged %d expired listings', len(expired_rows))
 
         except Exception as e:

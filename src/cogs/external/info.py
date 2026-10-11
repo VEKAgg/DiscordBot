@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import nextcord
 from nextcord.ext import commands
 
+from src.utils.embed_limits import bounded_items, clip_text
 from src.utils.embeds import info_embed
 from src.utils.guild_gate import owner_in_external_only
 from src.utils.safety import safe_send, safe_slash_command
@@ -53,13 +54,13 @@ class ExternalInfo(commands.Cog):
 
         # Roles
         roles = [r.mention for r in user.roles if r != user.guild.default_role]
-        roles_text = ', '.join(roles) if roles else 'None'
+        roles_text = bounded_items(roles, 900)
         top_role = user.top_role.mention if user.top_role != user.guild.default_role else 'None'
 
         description = (
             f'**User**: {user.mention}\n'
             f'**ID**: `{user.id}`\n'
-            f'**Display Name**: {user.display_name}\n'
+            f'**Display Name**: {clip_text(user.display_name, 100)}\n'
             f'**Joined**: {joined_text} ({joined_age})\n'
             f'**Account Created**: {created_text}\n'
             f'**Top Role**: {top_role}\n'
@@ -68,8 +69,8 @@ class ExternalInfo(commands.Cog):
         )
 
         embed = await info_embed(
-            title=f'Member Info: {user.display_name}',
-            description=description,
+            title=f'Member Info: {clip_text(user.display_name, 100)}',
+            description=clip_text(description, 3900),
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
@@ -97,10 +98,10 @@ class ExternalInfo(commands.Cog):
             return
 
         # Counts
-        text_channels = len([c for c in guild.text_channels])
-        voice_channels = len([c for c in guild.voice_channels])
+        text_channels = len(guild.text_channels)
+        voice_channels = len(guild.voice_channels)
         categories = len(guild.categories)
-        total_members = guild.member_count
+        total_members = guild.member_count if guild.member_count is not None else 'Unknown'
         online_members = sum(1 for m in guild.members if m.status != nextcord.Status.offline)
 
         # Boost info
@@ -123,10 +124,10 @@ class ExternalInfo(commands.Cog):
             created_age = f'{delta.days} days ago'
 
         description = (
-            f'**Name**: {guild.name}\n'
+            f'**Name**: {clip_text(guild.name, 100)}\n'
             f'**ID**: `{guild.id}`\n'
             f'**Owner**: {owner_text}\n'
-            f'**Members**: {total_members} (Online: {online_members})\n'
+            f'**Members**: {total_members} (Online in cache: {online_members})\n'
             f'**Channels**: {text_channels + voice_channels} (Text: {text_channels}, Voice: {voice_channels}, Categories: {categories})\n'
             f'**Roles**: {len(guild.roles)}\n'
             f'**Boost Level**: Level {boost_level} ({boost_count} boosts)\n'
@@ -134,8 +135,8 @@ class ExternalInfo(commands.Cog):
         )
 
         embed = await info_embed(
-            title=f'Server Info: {guild.name}',
-            description=description,
+            title=f'Server Info: {clip_text(guild.name, 100)}',
+            description=clip_text(description, 3900),
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
