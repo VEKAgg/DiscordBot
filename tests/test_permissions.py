@@ -32,6 +32,32 @@ PRIVILEGED_SLASH_COMMANDS = {
     'radio play',
     'radio podcast',
     'setupleaderboard',
+    'honeypot status',
+    'honeypot create',
+    'honeypot list',
+    'honeypot view',
+    'honeypot delete',
+    'honeypot enable',
+    'honeypot disable',
+    'honeypot edit',
+    'honeypot test',
+    'logging setchannel',
+    'logging setrole',
+    'logging clearrole',
+    'logging view',
+    'warn',
+    'warnings',
+    'clearwarnings',
+    'modstats',
+    'admin pingsquad',
+    'admin panic',
+    'admin lockdown',
+    'admin broadcast',
+    'setup show',
+    'setup set',
+    'setup reset',
+    'setup option',
+    'setup interactive',
     'exportchat',
     'feed add',
     'feed remove',
@@ -192,3 +218,22 @@ async def test_connect_picker_rejects_other_members(mock_guild, mock_interaction
 
     mock_interaction.user.id = 555
     assert await view.interaction_check(mock_interaction) is True
+
+
+def test_founder_role_name_is_capped_outside_main_guild():
+    """Any server can create a role called "Founder"; outside the main guild it grants at most ADMIN."""
+    from types import SimpleNamespace
+
+    from src.config.config import MAIN_GUILD_ID
+    from src.utils.security.rbac import Role, rbac
+
+    def ctx(guild_id):
+        member = SimpleNamespace(
+            id=424242,
+            roles=[SimpleNamespace(name='Founder')],
+            guild_permissions=SimpleNamespace(administrator=False),
+        )
+        return SimpleNamespace(guild=SimpleNamespace(id=guild_id, owner_id=1), author=member)
+
+    assert rbac.get_user_role(ctx(MAIN_GUILD_ID)) == Role.FOUNDER
+    assert rbac.get_user_role(ctx(MAIN_GUILD_ID + 1)) == Role.ADMIN
