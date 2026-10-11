@@ -8,7 +8,7 @@ multipliers, manages dynamic activity roles, and maintains a leaderboard.
 import logging
 import math
 import time
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from datetime import time as dt_time
 
 import aiohttp
@@ -34,14 +34,17 @@ from src.config.config import (
     RPG_POINTS,
     XP_MULTIPLIERS,
 )
-from src.core.lifecycle import has_running_loop, spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
-from src.services import inactivity_service
+from src.services import activity_service
+from src.services.activity_service import Award
 from src.services.guild_settings_service import guild_settings_service
-from src.utils.embeds import alert_embed, error_embed, info_embed, success_embed
-from src.utils.guild_gate import main_server_only
-from src.utils.safety import admin_only, safe_send, safe_slash_command
+from src.utils.embeds import alert_embed, info_embed, success_embed
+from src.utils.http import get_session
+from src.utils.outbound import SendStatus, outbound
+from src.utils.roles import punitive_role_problem
+from src.utils.safety import manage_guild_only, safe_send, safe_slash_command
+from src.utils.ttlcache import TTLDict
 
 logger = logging.getLogger('VEKA.rpg')
 
@@ -60,14 +63,30 @@ _ACTIVITY_ROLE_NAMES = {
 _ACTIVITY_ROLE_THRESHOLDS = sorted(ACTIVITY_ROLES.items(), key=lambda kv: kv[1])
 
 # Leaderboard category column mapping
-_LEADERBOARD_CATEGORIES = {
-    'xp': 'points',
-    'chat': 'total_messages',
-    'voice': 'total_voice_minutes',
-    'gaming': 'total_gaming_minutes',
-    'streaming': 'total_streaming_minutes',
-    'coding': 'total_gaming_minutes',  # coding time stored in gaming column
+_LEADERBOARD_CATEGORIES = activity_service.LEADERBOARD_CATEGORIES
+_DAILY_COLUMNS = activity_service.DAILY_COLUMNS
+_PRESENCE_COLUMNS = activity_service.PRESENCE_COLUMNS
+_SEASON_CATEGORIES = {
+    'xp': 'xp_earned',
+    'chat': 'messages',
+    'voice': 'voice_minutes',
+    'gaming': 'gaming_minutes',
+    'streaming': 'streaming_minutes',
+    'coding': 'coding_minutes',
 }
+_PERIOD_LABELS = {'week': 'past 7 days', 'month': 'past 30 days', 'season': 'this season'}
+
+XP_SESSION_CAP_MINUTES = 60  # XP stops after this many continuous minutes of one kind (totals don't)
+PRESENCE_XP_PER_MINUTE = 1
+
+
+_period_start = activity_service.period_start
+
+
+def _notified_since(notices: dict, user_id: int, level: str, last_active: date) -> bool:
+    """Already reported at this level since the member was last active in the server."""
+    when = notices.get((user_id, level))
+    return when is not None and when >= last_active
 
 
 PREV_LABEL = '\u25c0 Previous'
@@ -198,410 +217,217 @@ def _streak_multiplier(streak: int) -> float:
 
 
 class RPGManager(commands.Cog):
-    """XP tracking, activity roles, and leaderboard."""
+    """XP tracking, activity roles, and leaderboard.
+
+    Tracking model (see AGENTS.md "Activity tracking"):
+    - Messages and commands are awarded as they happen (message XP has a per-user cooldown).
+    - Voice and presence minutes are *sampled*: ``activity_tick`` runs every minute and credits each
+      eligible member from the live gateway state. Nothing lives only in memory, so a restart or deploy
+      loses at most a minute and members already in voice/playing at startup are counted.
+    - Totals record real minutes; only XP is capped (60 consecutive minutes per kind).
+    - Presence-derived tracking (games, coding apps, streaming) only in servers that enabled it
+      (``guild_settings.presence_tracking_enabled``), skipping members who ran ``/privacy optout``.
+      Listening/Spotify is never tracked.
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._message_cooldowns: dict[int, float] = {}  # user_id -> last_message_time
-        self._voice_join_times: dict[int, float] = {}  # user_id -> join_timestamp
-        self._leaderboard_message: nextcord.Message | None = None
-        # Activity duration tracking (streaming / gaming / listening)
-        self._activity_start_times: dict[str, dict[int, float]] = {
-            'streaming': {},
-            'gaming': {},
-            'listening': {},
-        }
-        # Detailed activity tracking: (user_id, activity_type, activity_name) -> start_time
-        self._detailed_activity_start: dict[tuple[int, str, str], float] = {}
-        # Cache of active activities per user for diffing
-        self._user_active_activities: dict[int, dict[str, set[str]]] = {}
-
-    async def _get_leaderboard_channel_id(self) -> int | None:
-        """Resolve leaderboard channel ID from guild settings, falling back to config."""
-        try:
-            settings = await guild_settings_service.get_settings(MAIN_GUILD_ID)
-            if settings.leaderboard_channel_id:
-                return settings.leaderboard_channel_id
-        except Exception:
-            pass
-        return LEADERBOARD_CHANNEL_ID
+        self._message_cooldowns: TTLDict[int, bool] = TTLDict(ttl=MESSAGE_XP_COOLDOWN, maxsize=50_000)
+        self._leaderboard_messages: dict[int, nextcord.Message | nextcord.PartialMessage] = {}  # guild → message
+        # Members who ever changed their tracking choice: discord ID -> (allowed, changed_at). Everyone
+        # else is allowed with consent generation None. changed_at is the generation a batch carries.
+        self._consent: dict[int, tuple[bool, datetime | None]] = {}
+        self._opt_in_loaded = False
+        # (user_id, kind) -> consecutive minutes credited; rebuilt each tick, so it only holds active users.
+        self._consecutive: dict[tuple[int, str], int] = {}
+        self._last_tick: float | None = None
+        self._tick_carry = 0.0
 
     def _loops(self):
         return (
             self.update_leaderboard,
             self.evaluate_activity_roles,
             self.check_inactivity,
-            self.flush_activity_details,
+            self.activity_tick,
             self.monthly_season_archive,
         )
 
     async def cog_ready(self):
         """Start background tasks (called from on_ready via run_cog_ready_hooks; nextcord has no cog_load)."""
-        # Restore the leaderboard message reference first so the first update edits instead of reposting.
-        channel_id = await self._get_leaderboard_channel_id()
-        if channel_id:
-            await self._restore_leaderboard_message()
+        await self.load_opt_ins()
+        await self.ensure_previous_season_archived()
         for loop in self._loops():
             if not loop.is_running():
                 loop.start()
 
     def cog_unload(self):
-        """Stop background tasks and flush remaining activity durations (called synchronously by nextcord)."""
+        """Stop background tasks (called synchronously by nextcord)."""
         for loop in self._loops():
             loop.cancel()
-        if has_running_loop():
-            spawn(self._flush_all_detailed_activities(), name='rpg:flush_on_unload')
 
     # ============================================================
-    # DB helpers
+    # Presence consent (member opt-out)
     # ============================================================
 
-    async def _ensure_user(self, discord_id: int) -> None:
-        """Ensure a user row exists."""
-        await db.execute(
-            """
-            INSERT INTO users (discord_id) VALUES ($1)
-            ON CONFLICT (discord_id) DO NOTHING
-            """,
-            str(discord_id),
+    async def load_opt_ins(self) -> None:
+        rows = await db.fetch(
+            """SELECT discord_id, presence_opt_in, presence_opt_in_changed_at FROM users
+               WHERE presence_opt_in_changed_at IS NOT NULL OR NOT presence_opt_in"""
         )
+        self._consent = {
+            int(r['discord_id']): (bool(r['presence_opt_in']), r['presence_opt_in_changed_at'])
+            for r in rows
+            if str(r['discord_id']).isdigit()
+        }
+        self._opt_in_loaded = True
 
-    async def _update_streak(self, user_id: int) -> None:
-        """Update the user's daily activity streak."""
+    async def reload_opt_in(self, user_id: int) -> None:
+        """Re-read one member's choice (the dashboard API or another process changed it)."""
+        row = await db.fetch_one(
+            'SELECT presence_opt_in, presence_opt_in_changed_at FROM users WHERE discord_id = $1', str(user_id)
+        )
+        if row is None:
+            self._consent.pop(user_id, None)
+        else:
+            self.set_opt_in(user_id, bool(row['presence_opt_in']), row['presence_opt_in_changed_at'])
+
+    def set_opt_in(self, user_id: int, enabled: bool, changed_at: datetime | None = None) -> None:
+        """Record a member's choice (``enabled`` = tracking allowed) after the database was updated."""
+        self._consent[user_id] = (enabled, changed_at)
+        if not enabled:
+            for key in [k for k in self._consecutive if k[0] == user_id and k[1] != 'voice']:
+                self._consecutive.pop(key, None)
+
+    def is_opted_in(self, user_id: int) -> bool:
+        """Tracking allowed for this member (default yes; no after /privacy optout or delete)."""
+        return self._consent.get(user_id, (True, None))[0]
+
+    # ============================================================
+    # Awards
+    # ============================================================
+
+    @staticmethod
+    def _role_multiplier(member: nextcord.Member | None) -> float:
+        multiplier = 1.0
+        for role in getattr(member, 'roles', None) or []:
+            key = role.name.lower().replace(' ', '_')
+            if key in XP_MULTIPLIERS:
+                multiplier = max(multiplier, XP_MULTIPLIERS[key])
+        return multiplier
+
+    async def _award_event(self, metric: str, member: nextcord.Member | nextcord.User, guild: nextcord.Guild, xp: int):
+        """Award one message/command event."""
         try:
-            row = await db.fetch_one(
-                'SELECT current_streak, longest_streak, last_streak_date FROM users WHERE discord_id = $1',
-                str(user_id),
+            m = member if isinstance(member, nextcord.Member) else guild.get_member(member.id)
+            await activity_service.award(
+                metric,
+                [
+                    Award(
+                        user_id=member.id,
+                        guild_id=guild.id,
+                        quantity=1,
+                        xp_base=xp,
+                        role_multiplier=self._role_multiplier(m),
+                        touch_streak=True,
+                    )
+                ],
             )
-            if not row:
-                return
-
-            today = datetime.now(UTC).date()
-            last_date = row.get('last_streak_date')
-            current = row.get('current_streak') or 0
-            longest = row.get('longest_streak') or 0
-
-            if last_date == today:
-                return  # Already counted today
-
-            if last_date == today - timedelta(days=1):
-                # Consecutive day
-                current += 1
-                longest = max(longest, current)
-            else:
-                # Streak broken or first day
-                current = 1
-
-            await db.execute(
-                'UPDATE users SET current_streak = $1, longest_streak = $2, last_streak_date = $3 WHERE discord_id = $4',
-                current,
-                longest,
-                today,
-                str(user_id),
-            )
-        except Exception:
-            logger.debug('Failed to update streak for user %s', user_id, exc_info=True)
-
-    async def _award_points(
-        self,
-        user_id: int,
-        activity_type: str,
-        base_points: int,
-        guild_id: int = 0,
-        channel_id: int = 0,
-        quantity: int = 1,
-    ) -> int:
-        """Award points to a user with role-based and streak multipliers. Returns actual points awarded."""
-        try:
-            await self._ensure_user(user_id)
-
-            # Fetch user to check role for multiplier and streak
-            user_row = await db.fetch_one(
-                'SELECT points, current_streak, last_streak_date FROM users WHERE discord_id = $1',
-                str(user_id),
-            )
-            if not user_row:
-                return 0
-
-            multiplier = 1.0
-            guild = self.bot.get_guild(guild_id) if guild_id else None
-            if guild:
-                member = guild.get_member(user_id)
-                if member:
-                    for role in getattr(member, 'roles', []):
-                        role_lower = role.name.lower().replace(' ', '_')
-                        if role_lower in XP_MULTIPLIERS:
-                            multiplier = max(multiplier, XP_MULTIPLIERS[role_lower])
-
-            # Streak multiplier
-            current_streak = user_row.get('current_streak') or 0
-            streak_mult = _streak_multiplier(current_streak)
-            multiplier *= streak_mult
-
-            actual_points = max(1, int(base_points * quantity * multiplier))
-
-            await db.execute(
-                """
-                UPDATE users
-                SET points = points + $1,
-                    experience = experience + $1,
-                    last_active = NOW(),
-                    inactive_week_notified = FALSE,
-                    inactive_month_notified = FALSE
-                WHERE discord_id = $2
-                """,
-                actual_points,
-                str(user_id),
-            )
-
-            # Update level
-            new_points = (user_row['points'] or 0) + actual_points
-            new_level = calculate_level(new_points)
-            await db.execute(
-                'UPDATE users SET level = $1 WHERE discord_id = $2',
-                new_level,
-                str(user_id),
-            )
-
-            # Update activity totals
-            if activity_type == 'message':
-                await db.execute(
-                    'UPDATE users SET total_messages = total_messages + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-            elif activity_type == 'voice':
-                await db.execute(
-                    'UPDATE users SET total_voice_minutes = total_voice_minutes + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-            elif activity_type == 'command':
-                await db.execute(
-                    'UPDATE users SET total_commands = total_commands + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-            elif activity_type == 'gaming':
-                await db.execute(
-                    'UPDATE users SET total_gaming_minutes = total_gaming_minutes + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-            elif activity_type == 'streaming':
-                await db.execute(
-                    'UPDATE users SET total_streaming_minutes = total_streaming_minutes + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-            elif activity_type == 'coding':
-                await db.execute(
-                    'UPDATE users SET total_gaming_minutes = total_gaming_minutes + $1 WHERE discord_id = $2',
-                    quantity,
-                    str(user_id),
-                )
-
-            # Daily rollup upsert
-            if guild_id:
-                metric_map = {
-                    'message': 'messages',
-                    'voice': 'voice_minutes',
-                    'gaming': 'gaming_minutes',
-                    'streaming': 'streaming_minutes',
-                    'coding': 'coding_minutes',
-                }
-                metric_col = metric_map.get(activity_type)
-                if metric_col:
-                    try:
-                        await db.execute(
-                            f"""
-                            INSERT INTO user_activity_daily (user_id, guild_id, activity_date, xp_earned, {metric_col})
-                            VALUES ($1, $2, CURRENT_DATE, $3, $4)
-                            ON CONFLICT (user_id, guild_id, activity_date)
-                            DO UPDATE SET
-                                xp_earned = user_activity_daily.xp_earned + EXCLUDED.xp_earned,
-                                {metric_col} = user_activity_daily.{metric_col} + EXCLUDED.{metric_col},
-                                updated_at = NOW()
-                            """,
-                            user_id,
-                            guild_id,
-                            actual_points,
-                            quantity,
-                        )
-                    except Exception:
-                        logger.debug('Failed to upsert daily activity for user %s', user_id, exc_info=True)
-
-            # Log activity
-            await db.execute(
-                """
-                INSERT INTO user_activity_log (user_id, activity_type, points_awarded, channel_id, guild_id)
-                VALUES ($1, $2, $3, $4, $5)
-                """,
-                str(user_id),
-                activity_type,
-                actual_points,
-                channel_id,
-                guild_id,
-            )
-
-            return actual_points
         except Exception as exc:
-            logger.warning('Failed to award %s points to user %s: %s', activity_type, user_id, exc)
-            return 0
+            logger.warning('Failed to award %s to user %s: %s', metric, member.id, type(exc).__name__)
 
-    async def _get_user_rank(self, user_id: int) -> int | None:
-        """Get a user's rank (1-indexed) from the leaderboard."""
+    async def _get_user_rank(self, user_id: int, guild_id: int | None = None) -> int | None:
+        """XP rank (1-indexed): in ``guild_id`` from that server's activity, else across all servers."""
         try:
-            rank = await db.fetchval(
+            if guild_id is None:
+                return await db.fetchval(
+                    """
+                    SELECT COUNT(*) + 1 FROM users
+                    WHERE points > (SELECT COALESCE(points, 0) FROM users WHERE discord_id = $1)
+                    """,
+                    str(user_id),
+                )
+            return await db.fetchval(
                 """
-                SELECT COUNT(*) + 1 FROM users
-                WHERE points > (SELECT COALESCE(points, 0) FROM users WHERE discord_id = $1)
+                WITH totals AS (
+                    SELECT user_id, SUM(xp_earned) AS xp FROM user_activity_daily
+                    WHERE guild_id = $1 GROUP BY user_id
+                )
+                SELECT COUNT(*) + 1 FROM totals
+                WHERE xp > COALESCE((SELECT xp FROM totals WHERE user_id = $2), 0)
                 """,
-                str(user_id),
+                guild_id,
+                user_id,
             )
-            return rank
         except Exception:
             return None
 
-    async def _get_leaderboard_data(self) -> list[dict]:
-        """Fetch top N users for the leaderboard."""
-        try:
-            rows = await db.fetch(
-                """
-                SELECT discord_id, username, points, experience, level
-                FROM users
-                WHERE points > 0
-                ORDER BY points DESC
-                LIMIT $1
-                """,
-                LEADERBOARD_TOP_N,
-            )
-            return [dict(row) for row in rows]
-        except Exception:
-            return []
+    async def _guild_xp(self, user_id: int, guild_id: int) -> int:
+        value = await db.fetchval(
+            'SELECT COALESCE(SUM(xp_earned), 0) FROM user_activity_daily WHERE guild_id = $1 AND user_id = $2',
+            guild_id,
+            user_id,
+        )
+        return int(value or 0)
 
-    async def _restore_leaderboard_message(self):
-        """Restore the leaderboard message reference from the channel."""
-        channel_id = await self._get_leaderboard_channel_id()
-        if not channel_id:
-            return
+    async def _get_stat_leaderboard(
+        self, column: str, period: str | None = None, limit: int = 10, guild_id: int | None = None
+    ) -> list[dict]:
+        """Top users for a stat (see activity_service.leaderboard). Rows: discord_id, value."""
         try:
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                channel = await self.bot.fetch_channel(channel_id)
-            # Look for the most recent bot message in the channel
-            async for message in channel.history(limit=10):  # type: ignore[union-attr]
-                if message.author == self.bot.user:
-                    self._leaderboard_message = message
-                    return
-        except Exception as exc:
-            logger.debug('Could not restore leaderboard message: %s', exc)
+            return await activity_service.leaderboard(column, period, guild_id=guild_id, limit=limit)
+        except Exception:
+            logger.debug('Stat leaderboard query failed for %s/%s', column, period, exc_info=True)
+            return []
 
     # ============================================================
     # Build leaderboard embed
     # ============================================================
 
     async def _build_leaderboard_embed(self, guild: nextcord.Guild | None = None) -> nextcord.Embed | None:
-        """Build the full leaderboard embed with all stat categories."""
-        xp_data = await self._get_leaderboard_data()
+        """A server's auto-updating leaderboard: its all-time XP plus this month's activity there."""
+        if guild is None:
+            return None
+        xp_data = await self._get_stat_leaderboard('points', None, limit=LEADERBOARD_TOP_N, guild_id=guild.id)
         if not xp_data:
             return None
 
-        embed = nextcord.Embed(
-            title='\U0001f3c6 Community Leaderboard',
-            color=nextcord.Color.gold(),
-        )
+        embed = nextcord.Embed(title=f'\U0001f3c6 {guild.name} Leaderboard', color=nextcord.Color.gold())
         embed.set_author(name='VEKA Bot', url='https://veka.gg')
         embed.timestamp = datetime.now(UTC)
 
-        # XP leaderboard with bold top 3
         medals = ['\U0001f947', '\U0001f948', '\U0001f949']
         lines = []
         for i, row in enumerate(xp_data):
             uid = int(row['discord_id'])
-            member = guild.get_member(uid) if guild else None
-            name = member.display_name if member else row.get('username') or f'User {uid}'
-            level = row.get('level') or calculate_level(row.get('points', 0))
-            if i < 3:
-                lines.append(f'{medals[i]} **{name}** \u2014 Level **{level}** | **{row["points"]:,}** XP')
-            else:
-                lines.append(f'`#{i + 1}` {name} \u2014 Level {level} | {row["points"]:,} XP')
-        embed.add_field(name='\u2b50 XP (All Time)', value='\n'.join(lines), inline=False)
+            member = guild.get_member(uid)
+            name = member.display_name if member else f'User {uid}'
+            xp = int(row.get('value') or 0)
+            lines.append(
+                f'{medals[i]} **{name}** \u2014 **{xp:,}** XP' if i < 3 else f'`#{i + 1}` {name} \u2014 {xp:,} XP'
+            )
+        embed.add_field(name='\u2b50 XP (all time, this server)', value='\n'.join(lines), inline=False)
 
-        # Stat leaderboards with bold top 3
         stat_configs = [
             ('total_messages', '\U0001f4ac Messages'),
-            ('total_voice_minutes', '\U0001f50a Voice Minutes'),
-            ('total_streaming_minutes', '\U0001f4fa Streaming Minutes'),
-            ('total_gaming_minutes', '\U0001f3ae Gaming Minutes'),
-            ('total_listening_minutes', '\U0001f3b5 Listening Minutes'),
+            ('total_voice_minutes', '\U0001f50a Voice minutes'),
+            ('total_streaming_minutes', '\U0001f4fa Streaming minutes'),
+            ('total_gaming_minutes', '\U0001f3ae Gaming minutes'),
+            ('total_coding_minutes', '\U0001f4bb Coding minutes'),
         ]
-
         for column, title in stat_configs:
-            rows = await self._get_stat_leaderboard(column)
+            rows = await self._get_stat_leaderboard(column, 'month', guild_id=guild.id)
             if not rows:
                 continue
             stat_lines = []
             for i, row in enumerate(rows):
                 uid = int(row['discord_id'])
-                member = guild.get_member(uid) if guild else None
+                member = guild.get_member(uid)
                 name = member.display_name if member else f'User {uid}'
-                val = row.get(column) or 0
-                if i < 3:
-                    stat_lines.append(f'{medals[i]} **{name}**: **{val:,}**')
-                else:
-                    stat_lines.append(f'`#{i + 1}` {name}: {val:,}')
-            embed.add_field(name=title, value='\n'.join(stat_lines), inline=False)
-
+                val = int(row.get('value') or 0)
+                stat_lines.append(f'{medals[i]} **{name}**: **{val:,}**' if i < 3 else f'`#{i + 1}` {name}: {val:,}')
+            embed.add_field(name=f'{title} (this month)', value='\n'.join(stat_lines), inline=False)
+        embed.set_footer(text='Games, coding and streaming count only if this server enabled activity tracking')
         return embed
-
-    async def _get_stat_leaderboard(self, column: str, period: str | None = None, limit: int = 10) -> list[dict]:
-        """Fetch top N users for a given stat column, optionally filtered by period."""
-        try:
-            if period == 'month':
-                rows = await db.fetch(
-                    """
-                    SELECT u.discord_id, SUM(a.points_awarded) AS stat_val
-                    FROM users u
-                    JOIN user_activity_log a ON a.user_id = u.discord_id
-                    WHERE a.activity_type = $1
-                      AND a.created_at >= NOW() - INTERVAL '30 days'
-                    GROUP BY u.discord_id
-                    ORDER BY stat_val DESC
-                    LIMIT $2
-                    """,
-                    column.replace('total_', '').replace('_minutes', ''),
-                    limit,
-                )
-            elif period == 'week':
-                rows = await db.fetch(
-                    """
-                    SELECT u.discord_id, SUM(a.points_awarded) AS stat_val
-                    FROM users u
-                    JOIN user_activity_log a ON a.user_id = u.discord_id
-                    WHERE a.activity_type = $1
-                      AND a.created_at >= NOW() - INTERVAL '7 days'
-                    GROUP BY u.discord_id
-                    ORDER BY stat_val DESC
-                    LIMIT $2
-                    """,
-                    column.replace('total_', '').replace('_minutes', ''),
-                    limit,
-                )
-            else:
-                rows = await db.fetch(
-                    f"""
-                    SELECT discord_id, {column}
-                    FROM users
-                    WHERE {column} > 0
-                    ORDER BY {column} DESC
-                    LIMIT $1
-                    """,
-                    limit,
-                )
-            return [dict(row) for row in rows]
-        except Exception:
-            return []
 
     # ============================================================
     # Event listeners for XP
@@ -609,329 +435,238 @@ class RPGManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: nextcord.Message):
-        """Award XP for messages (with cooldown) and track daily streaks."""
+        """Award XP for messages (with cooldown); also counts toward the daily streak."""
         if message.author.bot or not message.guild:
             return
-
-        user_id = message.author.id
-        now = time.monotonic()
-
-        # Cooldown check
-        # None = no prior message; a 0.0 default would break while host uptime < cooldown (monotonic clock).
-        last_time = self._message_cooldowns.get(user_id)
-        if last_time is not None and (now - last_time) < MESSAGE_XP_COOLDOWN:
+        if message.author.id in self._message_cooldowns:
             return
-
-        self._message_cooldowns[user_id] = now
-
-        # Track streak
-        await self._update_streak(user_id)
-
-        await self._award_points(
-            user_id,
-            'message',
-            RPG_POINTS['message'],
-            guild_id=message.guild.id,
-            channel_id=message.channel.id,
-        )
+        self._message_cooldowns.set(message.author.id, True)
+        await self._award_event('message', message.author, message.guild, RPG_POINTS['message'])
 
     @commands.Cog.listener()
-    async def on_voice_state_update(
-        self,
-        member: nextcord.Member,
-        before: nextcord.VoiceState | None,
-        after: nextcord.VoiceState | None,
-    ):
-        """Track voice channel time for XP."""
-        if member.bot:
+    async def on_application_command_completion(self, interaction: nextcord.Interaction):
+        """Slash commands (nextcord dispatches ``application_command_completion``; there is no
+        ``application_command`` event, so the old listener never fired)."""
+        if not interaction.guild or interaction.user is None or interaction.user.bot:
             return
-
-        user_id = member.id
-        # nextcord passes VoiceState objects for both sides; join/leave is signalled by .channel being None.
-        before_channel = before.channel if before else None
-        after_channel = after.channel if after else None
-
-        # User joined a voice channel
-        if before_channel is None and after_channel is not None:
-            self._voice_join_times[user_id] = time.monotonic()
-            # Track streak for voice activity
-            await self._update_streak(user_id)
-
-        # User left a voice channel
-        elif before_channel is not None and after_channel is None:
-            join_time = self._voice_join_times.pop(user_id, None)
-            if join_time:
-                minutes = int((time.monotonic() - join_time) / 60)
-                if minutes >= 1:
-                    await self._award_points(
-                        user_id,
-                        'voice',
-                        RPG_POINTS['voice_per_minute'],
-                        guild_id=member.guild.id,
-                        channel_id=before_channel.id,
-                        quantity=min(minutes, 60),
-                    )
-
-        # User moved channels — track as if they left and rejoined
-        elif before_channel is not None and after_channel is not None and before_channel != after_channel:
-            join_time = self._voice_join_times.pop(user_id, None)
-            if join_time:
-                minutes = int((time.monotonic() - join_time) / 60)
-                if minutes >= 1:
-                    await self._award_points(
-                        user_id,
-                        'voice',
-                        RPG_POINTS['voice_per_minute'],
-                        guild_id=member.guild.id,
-                        channel_id=before.channel.id if before.channel else 0,
-                        quantity=min(minutes, 60),
-                    )
-            self._voice_join_times[user_id] = time.monotonic()
+        await self._award_event('command', interaction.user, interaction.guild, RPG_POINTS['command'])
 
     @commands.Cog.listener()
-    async def on_application_command(self, interaction: nextcord.Interaction):
-        """Award XP for slash command usage."""
-        if not interaction.guild or interaction.user.bot:
+    async def on_command_completion(self, ctx: commands.Context):
+        """Prefix commands."""
+        if not ctx.guild or ctx.author.bot:
             return
-
-        await self._award_points(
-            interaction.user.id,
-            'command',
-            RPG_POINTS['command'],
-            guild_id=interaction.guild.id,
-            channel_id=interaction.channel.id if interaction.channel else 0,
-        )
+        await self._award_event('command', ctx.author, ctx.guild, RPG_POINTS['command'])
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: nextcord.Member, after: nextcord.Member):
-        """Track activity durations (streaming/gaming/listening) and live role."""
-        if after.bot:
+        """Live role while streaming. Nothing is stored (stream links are not copied into profiles;
+        members add links themselves)."""
+        if after.bot or not LIVE_ROLE_ID:
             return
-
         was_streaming = self._is_streaming(before)
         is_streaming = self._is_streaming(after)
-        is_gaming = self._has_activity_type(after, nextcord.ActivityType.playing)
-        is_listening = self._has_activity_type(after, nextcord.ActivityType.listening)
-
-        # --- Live role (streaming start/stop) ---
-        if LIVE_ROLE_ID and was_streaming != is_streaming:
-            live_role = after.guild.get_role(LIVE_ROLE_ID)
-            if live_role:
-                try:
-                    if is_streaming and live_role not in after.roles:
-                        await after.add_roles(live_role, reason='Started streaming')
-                        logger.info('Added live role to %s', after)
-                        stream_url = self._get_stream_url(after)
-                        if stream_url:
-                            from src.services.networking_service import NetworkingService
-
-                            svc = NetworkingService()
-                            await svc.append_profile_link(str(after.id), stream_url)
-                    elif not is_streaming and live_role in after.roles:
-                        await after.remove_roles(live_role, reason='Stopped streaming')
-                        logger.info('Removed live role from %s', after)
-                except Exception as exc:
-                    logger.warning('Failed to update live role for %s: %s', after, exc)
-
-        # --- Activity duration tracking ---
-        await self._track_activity_duration(after, 'streaming', is_streaming)
-        await self._track_activity_duration(after, 'gaming', is_gaming)
-        await self._track_activity_duration(after, 'listening', is_listening)
-
-        # --- Detailed activity tracking (games, listening, coding) ---
+        if was_streaming == is_streaming:
+            return
+        live_role = after.guild.get_role(LIVE_ROLE_ID)
+        if not live_role:
+            return
         try:
-            game_names = self._get_game_names(after)
-            streaming_games = self._get_streaming_game_names(after)
-            listening_details = self._get_listening_details(after)
-            coding_apps = self._get_coding_apps(after)
-
-            await self._track_detailed_activity(after, 'game', game_names)
-            await self._track_detailed_activity(after, 'streaming_game', streaming_games)
-            await self._track_detailed_activity(after, 'coding', coding_apps)
-
-            # For listening, track each song/artist as a separate entry
-            listening_names = set()
-            for detail in listening_details:
-                if 'song' in detail:
-                    listening_names.add(detail['song'])
-                if 'artist' in detail:
-                    listening_names.add(detail['artist'])
-                listening_names.add(detail.get('name', 'Unknown'))
-            await self._track_detailed_activity(after, 'listening', listening_names)
+            if is_streaming and live_role not in after.roles:
+                await after.add_roles(live_role, reason='Started streaming')
+            elif not is_streaming and live_role in after.roles:
+                await after.remove_roles(live_role, reason='Stopped streaming')
         except Exception as exc:
-            logger.debug('Failed to track detailed activities for %s: %s', after, exc)
+            logger.warning('Failed to update live role for %s: %s', after.id, type(exc).__name__)
 
     @staticmethod
     def _is_streaming(member: nextcord.Member) -> bool:
-        for activity in member.activities:
-            if activity.type == nextcord.ActivityType.streaming:
-                return True
-        return False
+        return any(a.type == nextcord.ActivityType.streaming for a in member.activities)
 
     @staticmethod
     def _get_stream_url(member: nextcord.Member) -> str | None:
         for activity in member.activities:
             if activity.type == nextcord.ActivityType.streaming:
-                return activity.url
+                return getattr(activity, 'url', None)
         return None
 
     @staticmethod
-    def _has_activity_type(member: nextcord.Member, activity_type: nextcord.ActivityType) -> bool:
-        return any(a.type == activity_type for a in member.activities)
-
-    # ============================================================
-    # Activity detail extraction helpers
-    # ============================================================
-
-    @staticmethod
-    def _get_game_names(member: nextcord.Member) -> set[str]:
-        """Extract game names from Playing activities."""
-        games = set()
-        for activity in member.activities:
-            if activity.type == nextcord.ActivityType.playing and activity.name:
-                games.add(activity.name)
-        return games
-
-    @staticmethod
-    def _get_streaming_game_names(member: nextcord.Member) -> set[str]:
-        """Extract game names from activities when user is also streaming."""
-        games: set[str] = set()
-        is_streaming = any(a.type == nextcord.ActivityType.streaming for a in member.activities)
-        if not is_streaming:
-            return games
-        for activity in member.activities:
-            if activity.type == nextcord.ActivityType.playing and activity.name:
-                games.add(activity.name)
-        return games
-
-    @staticmethod
-    def _get_listening_details(member: nextcord.Member) -> list[dict]:
-        """Extract listening details from Spotify activity."""
-        details = []
-        for activity in member.activities:
-            if activity.type == nextcord.ActivityType.listening:
-                info = {'name': activity.name or 'Unknown'}
-                # Spotify activities have additional metadata
-                if hasattr(activity, 'details') and activity.details:
-                    info['song'] = activity.details
-                if hasattr(activity, 'state') and activity.state:
-                    info['artist'] = activity.state
-                if hasattr(activity, 'assets') and activity.assets:
-                    large_text = activity.assets.get('large_text')
-                    if large_text:
-                        info['album'] = large_text
-                details.append(info)
-        return details
-
-    @staticmethod
     def _is_coding_activity(activity_name: str) -> bool:
-        """Check if an activity name matches a known coding app."""
         name_lower = activity_name.lower()
         return any(coding_app in name_lower for coding_app in CODING_APPS)
 
-    def _get_coding_apps(self, member: nextcord.Member) -> set[str]:
-        """Extract coding app names from activities."""
-        apps = set()
+    @classmethod
+    def presence_snapshot(cls, member: nextcord.Member) -> dict[str, set[str]]:
+        """What a member is doing right now: {'gaming': games, 'coding': apps, 'streaming': games}.
+
+        A "Playing" activity that matches a coding app counts as coding, not gaming. Listening
+        (Spotify) is deliberately ignored.
+        """
+        games: set[str] = set()
+        coding: set[str] = set()
+        streaming = False
         for activity in member.activities:
-            if activity.type == nextcord.ActivityType.playing and activity.name:
-                if self._is_coding_activity(activity.name):
-                    apps.add(activity.name)
-            elif activity.type == nextcord.ActivityType.custom and activity.name:
-                if self._is_coding_activity(activity.name):
-                    apps.add(activity.name)
-        return apps
+            name = getattr(activity, 'name', None)
+            if activity.type == nextcord.ActivityType.streaming:
+                streaming = True
+            elif activity.type == nextcord.ActivityType.playing and name:
+                (coding if cls._is_coding_activity(name) else games).add(name)
+            elif activity.type == nextcord.ActivityType.custom and name and cls._is_coding_activity(name):
+                coding.add(name)
+        snapshot: dict[str, set[str]] = {}
+        if games:
+            snapshot['gaming'] = games
+        if coding:
+            snapshot['coding'] = coding
+        if streaming:
+            snapshot['streaming'] = games or {'(stream)'}
+        return snapshot
 
-    async def _store_activity_detail(self, user_id: int, activity_type: str, activity_name: str, minutes: int) -> None:
-        """Upsert activity detail to the database."""
-        if minutes < 1 or not activity_name:
-            return
-        try:
-            await db.execute(
-                """
-                INSERT INTO user_activity_details (user_id, activity_type, activity_name, duration_minutes, last_seen)
-                VALUES ($1, $2, $3, $4, NOW())
-                ON CONFLICT (user_id, activity_type, activity_name)
-                DO UPDATE SET
-                    duration_minutes = user_activity_details.duration_minutes + $4,
-                    last_seen = NOW()
-                """,
-                str(user_id),
-                activity_type,
-                activity_name,
-                minutes,
-            )
-        except Exception as exc:
-            logger.debug('Failed to store activity detail for %s: %s', user_id, exc)
+    # ============================================================
+    # Activity tick — voice and presence sampling
+    # ============================================================
 
-    async def _track_detailed_activity(
-        self, member: nextcord.Member, activity_type: str, activity_names: set[str]
-    ) -> None:
-        """Track start/stop of named activities and persist elapsed minutes."""
-        uid = member.id
+    @staticmethod
+    def voice_eligibility(member: nextcord.Member) -> tuple[bool, bool]:
+        """(counts_minutes, earns_xp) for a member in voice.
+
+        Rules: the AFK channel and deafened members (self or server) count nothing; a member alone
+        (no other non-deafened human in the channel) counts minutes but earns no XP.
+        """
+        voice = member.voice
+        channel = voice.channel if voice else None
+        if channel is None:
+            return False, False
+        afk = member.guild.afk_channel
+        if afk is not None and channel.id == afk.id:
+            return False, False
+        if voice.self_deaf or voice.deaf:
+            return False, False
+        # Company = another human who can hear (deafened members don't count as company).
+        others = sum(
+            1
+            for m in channel.members
+            if not m.bot and m.id != member.id and not (m.voice and (m.voice.self_deaf or m.voice.deaf))
+        )
+        return True, others > 0
+
+    def _take_minutes(self) -> int:
+        """Whole minutes elapsed since the previous tick (fractions carried over)."""
         now = time.monotonic()
+        if self._last_tick is None:
+            self._last_tick = now
+            return 0  # nothing observed yet; the first minute is credited one tick later
+        elapsed = now - self._last_tick + self._tick_carry
+        self._last_tick = now
+        minutes = int(elapsed // 60)
+        self._tick_carry = elapsed - minutes * 60
+        return min(minutes, 5)  # a stalled loop must not credit a long gap in one go
 
-        # Get previously active activities of this type
-        prev = self._user_active_activities.get(uid, {}).get(activity_type, set())
-        curr = activity_names
+    def _xp_minutes(self, key: tuple[int, str], minutes: int, seen: dict[tuple[int, str], int]) -> int:
+        """XP-eligible minutes for this tick, capping each continuous session at XP_SESSION_CAP minutes."""
+        before = self._consecutive.get(key, 0)
+        seen[key] = before + minutes
+        return max(0, min(minutes, XP_SESSION_CAP_MINUTES - before))
 
-        # Activities that stopped
-        for name in prev - curr:
-            key = (uid, activity_type, name)
-            start = self._detailed_activity_start.pop(key, None)
-            if start:
-                minutes = int((now - start) / 60)
-                await self._store_activity_detail(uid, activity_type, name, minutes)
-                # Award XP for coding (1 XP per minute, max 60 per session)
-                if activity_type == 'coding' and minutes >= 1:
-                    await self._award_points(
-                        uid,
-                        'coding',
-                        1,
-                        guild_id=member.guild.id,
-                        quantity=min(minutes, 60),
+    def collect_tick(
+        self, minutes: int, tracking_guilds: set[int] | None = None
+    ) -> tuple[dict[str, list[Award]], list[activity_service.Detail]]:
+        """Build this tick's awards from the gateway cache (pure; no I/O)."""
+        awards: dict[str, list[Award]] = {'voice': [], 'gaming': [], 'coding': [], 'streaming': []}
+        details: list[activity_service.Detail] = []
+        seen: dict[tuple[int, str], int] = {}
+
+        # Voice: a user can only be in one voice channel at a time.
+        for guild in self.bot.guilds:
+            for channel in list(guild.voice_channels) + list(getattr(guild, 'stage_channels', [])):
+                for member in channel.members:
+                    if member.bot:
+                        continue
+                    counts, earns_xp = self.voice_eligibility(member)
+                    if not counts:
+                        continue
+                    xp_minutes = self._xp_minutes((member.id, 'voice'), minutes, seen) if earns_xp else 0
+                    awards['voice'].append(
+                        Award(
+                            user_id=member.id,
+                            guild_id=guild.id,
+                            quantity=minutes,
+                            xp_base=xp_minutes * RPG_POINTS['voice_per_minute'],
+                            role_multiplier=self._role_multiplier(member),
+                            touch_streak=True,
+                        )
                     )
 
-        # Activities that started
-        for name in curr - prev:
-            key = (uid, activity_type, name)
-            self._detailed_activity_start[key] = now
+        # Presence: only in servers that turned tracking on, skipping members who opted out; each member is
+        # credited once per tick (main guild first) so a member of several servers isn't counted twice.
+        guilds = sorted(
+            (g for g in self.bot.guilds if g.id in (tracking_guilds or set())), key=lambda g: g.id != MAIN_GUILD_ID
+        )
+        credited: set[int] = set()
+        for guild in guilds:
+            for member in guild.members:
+                user_id = member.id
+                if member.bot or user_id in credited or not member.activities:
+                    continue
+                allowed, consent_at = self._consent.get(user_id, (True, None))
+                if not allowed:
+                    continue
+                snapshot = self.presence_snapshot(member)
+                if not snapshot:
+                    continue
+                credited.add(user_id)
+                self._collect_presence(member, snapshot, consent_at, minutes, seen, awards, details)
 
-        # Update cache
-        if uid not in self._user_active_activities:
-            self._user_active_activities[uid] = {}
-        self._user_active_activities[uid][activity_type] = curr
+        # Sessions not seen this tick ended: their XP cap resets.
+        self._consecutive = seen
+        return awards, details
 
-    async def _track_activity_duration(self, member: nextcord.Member, category: str, is_active: bool) -> None:
-        """Record start/stop of an activity and persist elapsed minutes. Awards XP for gaming/streaming."""
-        uid = member.id
-        bucket = self._activity_start_times[category]
-
-        if is_active and uid not in bucket:
-            bucket[uid] = time.monotonic()
-        elif not is_active and uid in bucket:
-            start = bucket.pop(uid)
-            minutes = int((time.monotonic() - start) / 60)
-            if minutes < 1:
-                return
-            column = f'total_{category}_minutes'
-            try:
-                await db.execute(
-                    f'UPDATE users SET {column} = {column} + $1 WHERE discord_id = $2',
-                    minutes,
-                    str(uid),
-                )
-            except Exception as exc:
-                logger.debug('Failed to update %s for %s: %s', column, member, exc)
-
-            # Award XP for gaming and streaming (1 XP per minute, max 60 per session)
-            if category in ('gaming', 'streaming'):
-                await self._award_points(
-                    uid,
-                    category,
-                    1,
+    def _collect_presence(self, member, snapshot, consent_at, minutes, seen, awards, details) -> None:
+        user_id = member.id
+        for kind, names in snapshot.items():
+            xp_minutes = self._xp_minutes((user_id, kind), minutes, seen)
+            awards[kind].append(
+                Award(
+                    user_id=user_id,
                     guild_id=member.guild.id,
-                    quantity=min(minutes, 60),
+                    quantity=minutes,
+                    xp_base=xp_minutes * PRESENCE_XP_PER_MINUTE,
+                    role_multiplier=self._role_multiplier(member),
+                    consent_at=consent_at,
                 )
+            )
+            detail_type = {'gaming': 'game', 'coding': 'coding', 'streaming': 'streaming_game'}[kind]
+            for name in names:
+                if name != '(stream)':
+                    details.append((user_id, detail_type, name, minutes, consent_at, member.guild.id))
+
+    @tasks.loop(minutes=1)
+    async def activity_tick(self):
+        """Credit voice minutes, and presence minutes in servers that enabled tracking, from the live state."""
+        if not runtime_state.db_available:
+            self._last_tick = None  # don't credit the outage window later
+            return
+        minutes = self._take_minutes()
+        if minutes <= 0:
+            return
+        tracking_guilds = set()
+        for guild in self.bot.guilds:
+            try:
+                if (await guild_settings_service.get_settings(guild.id)).presence_tracking_enabled:
+                    tracking_guilds.add(guild.id)
+            except Exception:
+                pass  # unreadable settings → treated as off
+        awards, details = self.collect_tick(minutes, tracking_guilds)
+        try:
+            # One transaction: totals, rollups and named details stay consistent, and presence rows are
+            # written only where the server enabled tracking and the member hasn't opted out (locked row).
+            await activity_service.award_tick(awards, details)
+        except Exception:
+            logger.warning('Activity tick: award failed', exc_info=True)
+
+    @activity_tick.before_loop
+    async def before_activity_tick(self):
+        await self.bot.wait_until_ready()
 
     # ============================================================
     # Background tasks
@@ -939,31 +674,34 @@ class RPGManager(commands.Cog):
 
     @tasks.loop(seconds=LEADERBOARD_UPDATE_INTERVAL)
     async def update_leaderboard(self):
-        """Periodically update the leaderboard embed."""
-        channel_id = await self._get_leaderboard_channel_id()
-        if not channel_id or not runtime_state.db_available:
+        """Edit each server's auto-updating leaderboard message (posted once if missing)."""
+        if not runtime_state.db_available:
             return
+        for guild in list(self.bot.guilds):
+            try:
+                await self._update_guild_leaderboard(guild)
+            except Exception as exc:
+                logger.warning('Failed to update leaderboard in %s: %s', guild.id, type(exc).__name__)
 
-        try:
-            channel = self.bot.get_channel(channel_id)
-            if channel is None:
-                channel = await self.bot.fetch_channel(channel_id)
-
-            embed = await self._build_leaderboard_embed(guild=channel.guild if channel else None)
-            if not embed:
-                return
-
-            if self._leaderboard_message:
-                try:
-                    await self._leaderboard_message.edit(embed=embed)
-                    return
-                except Exception:
-                    pass  # Message deleted or inaccessible, send a new one
-
-            # Send new leaderboard message
-            self._leaderboard_message = await channel.send(embed=embed)  # type: ignore[union-attr]
-        except Exception as exc:
-            logger.warning('Failed to update leaderboard: %s', exc)
+    async def _update_guild_leaderboard(self, guild: nextcord.Guild) -> None:
+        settings = await guild_settings_service.get_settings(guild.id)
+        channel_id = settings.leaderboard_channel_id or (LEADERBOARD_CHANNEL_ID if guild.id == MAIN_GUILD_ID else None)
+        channel = guild.get_channel(channel_id) if channel_id else None
+        if not isinstance(channel, nextcord.TextChannel):
+            return
+        embed = await self._build_leaderboard_embed(guild=guild)
+        if not embed:
+            return
+        existing = self._leaderboard_messages.get(guild.id)
+        if existing is None and settings.leaderboard_message_id:
+            existing = channel.get_partial_message(settings.leaderboard_message_id)
+        outcome = await outbound.upsert_status(
+            f'leaderboard:{guild.id}', channel, kind='leaderboard', embed=embed, message=existing
+        )
+        if outcome.message is not None:
+            if outcome.status == SendStatus.SENT:
+                await guild_settings_service.update_settings(guild.id, leaderboard_message_id=outcome.message.id)
+            self._leaderboard_messages[guild.id] = outcome.message
 
     @update_leaderboard.before_loop
     async def before_update_leaderboard(self):
@@ -971,326 +709,294 @@ class RPGManager(commands.Cog):
 
     @tasks.loop(hours=6)
     async def evaluate_activity_roles(self):
-        """Evaluate and assign/remove activity roles based on activity."""
+        """In every server that has the activity roles, give each member the highest one their XP *in that
+        server* earns; remove them after ACTIVITY_ROLE_INACTIVITY_DAYS without activity there. Roles are
+        re-checked for safety before every assignment."""
         if not runtime_state.db_available:
             return
+        for guild in list(self.bot.guilds):
+            try:
+                await self._evaluate_guild_activity_roles(guild)
+            except Exception:
+                logger.error('Activity role evaluation failed in %s', guild.id, exc_info=True)
 
-        try:
-            # Get all members with points > 0
-            rows = await db.fetch(
-                """
-                SELECT discord_id, points, last_active FROM users
-                WHERE points > 0
-                """
-            )
-
-            now = datetime.now(UTC)
-            inactivity_cutoff = now - timedelta(days=ACTIVITY_ROLE_INACTIVITY_DAYS)
-
-            # Activity roles live in the main guild only (was bot.guilds[0], an arbitrary guild; M-12).
-            main_guild = self.bot.get_guild(MAIN_GUILD_ID)
-            if main_guild is None:
-                logger.warning('Activity role evaluation skipped: main guild %s not available', MAIN_GUILD_ID)
-                return
-
-            for row in rows:
-                if not str(row['discord_id']).isdigit():
-                    continue
-                user_id = int(row['discord_id'])
-                points = row.get('points', 0) or 0
-                last_active = row.get('last_active')
-
-                member = main_guild.get_member(user_id)
-                if not member:
-                    continue
-
-                # Determine the highest activity role the user qualifies for
-                target_role_name = None
-                for role_key, threshold in reversed(_ACTIVITY_ROLE_THRESHOLDS):
-                    if points >= threshold:
-                        target_role_name = _ACTIVITY_ROLE_NAMES[role_key]
+    async def _evaluate_guild_activity_roles(self, guild: nextcord.Guild) -> None:
+        roles = {
+            key: role
+            for key, name in _ACTIVITY_ROLE_NAMES.items()
+            if (role := nextcord.utils.get(guild.roles, name=name)) is not None
+        }
+        if not roles:
+            return
+        safe = {key: role for key, role in roles.items() if punitive_role_problem(role, guild) is None}
+        if len(safe) != len(roles):
+            logger.warning('Activity roles in %s skipped: unsafe (privileged or above the bot)', guild.id)
+        cutoff = datetime.now(UTC).date() - timedelta(days=ACTIVITY_ROLE_INACTIVITY_DAYS)
+        rows = await db.fetch(
+            """SELECT user_id, SUM(xp_earned) AS xp, MAX(activity_date) AS last_day
+               FROM user_activity_daily WHERE guild_id = $1 GROUP BY user_id""",
+            guild.id,
+        )
+        stats = {r['user_id']: (int(r['xp'] or 0), r['last_day']) for r in rows}
+        all_roles = set(roles.values())
+        candidates = {m.id for r in all_roles for m in r.members} | set(stats)
+        for user_id in candidates:
+            member = guild.get_member(user_id)
+            if member is None or member.bot:
+                continue
+            xp, last_day = stats.get(user_id, (0, None))
+            target = None
+            if last_day is not None and last_day >= cutoff:
+                for key, threshold in reversed(_ACTIVITY_ROLE_THRESHOLDS):
+                    if xp >= threshold and key in safe:
+                        target = safe[key]
                         break
-
-                # Check inactivity — if last_active is older than cutoff, remove all activity roles
-                is_inactive = False
-                if last_active:
-                    if last_active.tzinfo is None:
-                        last_active = last_active.replace(tzinfo=UTC)
-                    if last_active < inactivity_cutoff:
-                        is_inactive = True
-                elif points > 0:
-                    # If no last_active but has points, check created_at as fallback
-                    is_inactive = True
-
-                if is_inactive:
-                    target_role_name = None
-
-                # Find the activity roles on the guild
-                guild = member.guild
-                current_activity_roles = []
-                for role_name in _ACTIVITY_ROLE_NAMES.values():
-                    discord_role = nextcord.utils.get(guild.roles, name=role_name)
-                    if discord_role and discord_role in member.roles:
-                        current_activity_roles.append(discord_role)
-
-                # Determine which role to keep/add
-                target_discord_role = None
-                if target_role_name:
-                    target_discord_role = nextcord.utils.get(guild.roles, name=target_role_name)
-
-                # Remove roles that shouldn't be there
-                for role in current_activity_roles:
-                    if role != target_discord_role:
-                        try:
-                            await member.remove_roles(role, reason='Activity role update')
-                        except Exception as exc:
-                            logger.debug('Failed to remove role %s from %s: %s', role.name, member, exc)
-
-                # Add the target role if not already present
-                if target_discord_role and target_discord_role not in current_activity_roles:
+            for role in all_roles & set(member.roles):
+                if role != target:
                     try:
-                        await member.add_roles(target_discord_role, reason='Activity role update')
+                        await member.remove_roles(role, reason='Activity role update')
                     except Exception as exc:
-                        logger.debug('Failed to add role %s to %s: %s', target_discord_role.name, member, exc)
-
-                # Update tracking table
-                await db.execute(
-                    """
-                    INSERT INTO user_rpg_roles (user_id, active_role, last_evaluated)
-                    VALUES ($1, $2, NOW())
-                    ON CONFLICT (user_id) DO UPDATE SET active_role = $2, last_evaluated = NOW()
-                    """,
-                    str(user_id),
-                    target_role_name or '',
-                )
-
-            logger.info('Activity role evaluation complete')
-        except Exception as exc:
-            logger.error('Activity role evaluation failed: %s', exc, exc_info=True)
+                        logger.debug('Failed to remove role %s from %s: %s', role.id, member.id, type(exc).__name__)
+            if target is not None and target not in member.roles:
+                try:
+                    await member.add_roles(target, reason='Activity role update')
+                except Exception as exc:
+                    logger.debug('Failed to add role %s to %s: %s', target.id, member.id, type(exc).__name__)
 
     @evaluate_activity_roles.before_loop
     async def before_evaluate_activity_roles(self):
         await self.bot.wait_until_ready()
 
     # ------------------------------------------------------------
-    # Inactivity monitoring — daily at 9:00 AM IST
+    # Inactivity monitoring — daily at INACTIVITY_CHECK_HOUR (IST), every server
     # ------------------------------------------------------------
 
     @tasks.loop(minutes=1)
     async def check_inactivity(self):
-        """Run inactivity check once per day at the configured IST hour."""
+        """Run the inactivity pass once per day at the configured IST time."""
         now = datetime.now(timezone(timedelta(hours=IST_UTC_OFFSET)))
         if now.hour != INACTIVITY_CHECK_HOUR or now.minute != INACTIVITY_CHECK_MINUTE:
             return
         if not runtime_state.db_available:
             return
-
         try:
-            guild = self.bot.get_guild(MAIN_GUILD_ID)
-            if guild is None:
-                return
-            logs_channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
-            if not isinstance(logs_channel, nextcord.TextChannel):
-                logger.warning('Inactivity check skipped: no log channel configured for main guild')
-                return
-
-            inactive_users = await inactivity_service.get_inactive_users(
-                INACTIVITY_WEEK_DAYS,
-                INACTIVITY_MONTH_DAYS,
-            )
-            if not inactive_users:
-                return
-
-            dms_sent = 0
-            for entry in inactive_users:
-                if not str(entry['discord_id']).isdigit():
-                    continue
-                user_id = int(entry['discord_id'])
-                member = guild.get_member(user_id)
-                if member is None or member.bot:
-                    continue
-
-                days = entry['days_inactive']
-                last_seen = entry['last_active']
-
-                # 1-week threshold — log to logs channel
-                if entry['notify_week']:
-                    embed = await alert_embed(
-                        '⏰ Inactivity Alert — 1 Week',
-                        f'{member.mention} has been inactive for **{days} days**.\n'
-                        f'Last active: {last_seen.strftime("%Y-%m-%d %H:%M UTC")}',
-                    )
-                    await logs_channel.send(embed=embed)
-                    await inactivity_service.mark_week_notified(entry['discord_id'])
-
-                # 1-month threshold — DM the user + log to logs channel.
-                # Capped per run so the first run after enabling doesn't mass-DM the backlog.
-                if entry['notify_month'] and dms_sent < INACTIVITY_MAX_DMS_PER_RUN:
-                    dms_sent += 1
-                    try:
-                        dm_embed = await info_embed(
-                            '👋 We miss you!',
-                            (
-                                f"Hey there! We noticed you haven't been around **VEKA** in a while — "
-                                f'about **{days} days** to be exact.\n\n'
-                                "Everything okay? We'd love to see you back in the community. "
-                                "If there's anything going on or you need help with anything, "
-                                'feel free to reach out to our mods!'
-                            ),
-                        )
-                        await member.send(embed=dm_embed)
-                    except nextcord.Forbidden:
-                        logger.debug('Cannot DM %s — DMs disabled', member)
-                    except Exception as exc:
-                        logger.warning('Failed to DM inactive user %s: %s', member, exc)
-
-                    embed = await alert_embed(
-                        '⚠️ Inactivity Alert — 1 Month',
-                        (
-                            f'{member.mention} has been inactive for **{days} days**.\n'
-                            f'Last active: {last_seen.strftime("%Y-%m-%d %H:%M UTC")}\n'
-                            'A friendly DM has been sent to the user.'
-                        ),
-                    )
-                    await logs_channel.send(embed=embed)
-                    await inactivity_service.mark_month_notified(entry['discord_id'])
-
-            logger.info('Inactivity check complete — %d users processed', len(inactive_users))
+            await self._run_inactivity_check()
         except Exception as exc:
             logger.error('Inactivity check failed: %s', exc, exc_info=True)
+
+    async def _run_inactivity_check(self) -> None:
+        """One pass over every server with inactivity alerts on and a log channel. DMs are capped across
+        all servers per run."""
+        budget = {'dm_attempts': 0}
+        for guild in list(self.bot.guilds):
+            try:
+                await self._guild_inactivity(guild, budget)
+            except Exception:
+                logger.error('Inactivity check failed in %s', guild.id, exc_info=True)
+
+    async def _guild_inactivity(self, guild: nextcord.Guild, budget: dict) -> None:
+        """Inactive = no recorded activity in *this* server for INACTIVITY_WEEK_DAYS / _MONTH_DAYS (members
+        never active count from when they joined). Each member is reported once per level until they are
+        active again; one digest per day in the log channel."""
+        settings = await guild_settings_service.get_settings(guild.id)
+        if not settings.inactivity_alerts_enabled:
+            return
+        logs_channel = await guild_settings_service.resolve_channel(guild, 'log_channel_id')
+        if not isinstance(logs_channel, nextcord.TextChannel):
+            return
+        today = datetime.now(UTC).date()
+        last_rows = await db.fetch(
+            'SELECT user_id, MAX(activity_date) AS last_day FROM user_activity_daily WHERE guild_id = $1 GROUP BY user_id',
+            guild.id,
+        )
+        last_active = {r['user_id']: r['last_day'] for r in last_rows}
+        notices = {
+            (r['user_id'], r['level']): r['notified_at'].date()
+            for r in await db.fetch(
+                'SELECT user_id, level, notified_at FROM inactivity_notices WHERE guild_id = $1', guild.id
+            )
+        }
+        week: list[tuple[int, str]] = []
+        month: list[tuple[int, str]] = []
+        dm_delivered: list[int] = []
+        dms_allowed = settings.inactivity_dm_enabled
+        for member in guild.members:
+            if member.bot:
+                continue
+            last = last_active.get(member.id) or (member.joined_at.date() if member.joined_at else None)
+            if last is None:
+                continue
+            days = (today - last).days
+            if days >= INACTIVITY_MONTH_DAYS and not _notified_since(notices, member.id, 'month', last):
+                dm_note = ''
+                if dms_allowed and budget['dm_attempts'] < INACTIVITY_MAX_DMS_PER_RUN:
+                    budget['dm_attempts'] += 1
+                    dm_embed = await info_embed(
+                        '👋 We miss you!',
+                        (
+                            f"Hey there! We noticed you haven't been around **{guild.name}** in a while — "
+                            f'about **{days} days** to be exact.\n\n'
+                            "Everything okay? We'd love to see you back in the community. "
+                            "If there's anything going on or you need help with anything, "
+                            'feel free to reach out to our mods!'
+                        ),
+                    )
+                    outcome = await outbound.dm(member, kind='inactivity_dm', embed=dm_embed)
+                    if outcome.ok:
+                        dm_delivered.append(member.id)
+                        dm_note = ' (DM sent)'
+                    elif outcome.status in (SendStatus.BREAKER_OPEN, SendStatus.DROPPED_BUDGET):
+                        dms_allowed = False
+                month.append((member.id, f'{member.mention} — {days} days{dm_note}'))
+            elif INACTIVITY_WEEK_DAYS <= days < INACTIVITY_MONTH_DAYS and not _notified_since(
+                notices, member.id, 'week', last
+            ):
+                week.append((member.id, f'{member.mention} — {days} days'))
+
+        if not week and not month:
+            return
+        parts = []
+        if month:
+            parts.append(f'**Inactive 1 month+ ({len(month)})**\n' + '\n'.join(line for _, line in month[:25]))
+        if week:
+            parts.append(f'**Inactive 1 week+ ({len(week)})**\n' + '\n'.join(line for _, line in week[:25]))
+        hidden = max(0, len(month) - 25) + max(0, len(week) - 25)
+        description = '\n\n'.join(parts) + (f'\n\n…and {hidden} more' if hidden else '')
+        embed = await alert_embed('⏰ Daily inactivity digest', description[:4000])
+        outcome = await outbound.send(
+            logs_channel,
+            kind='inactivity_digest',
+            guild_id=guild.id,
+            embed=embed,
+            allowed_mentions=nextcord.AllowedMentions.none(),
+        )
+        # Mark only what was delivered (a dropped digest is retried tomorrow); never DM anyone twice.
+        marks = (
+            [(uid, 'week') for uid, _ in week] + [(uid, 'month') for uid, _ in month]
+            if outcome.ok
+            else [(uid, 'month') for uid in dm_delivered]
+        )
+        if marks:
+            await db.execute(
+                """INSERT INTO inactivity_notices (guild_id, user_id, level, notified_at)
+                   SELECT $1, u, l, NOW() FROM unnest($2::bigint[], $3::text[]) AS x(u, l)
+                   ON CONFLICT (guild_id, user_id, level) DO UPDATE SET notified_at = NOW()""",
+                guild.id,
+                [m[0] for m in marks],
+                [m[1] for m in marks],
+            )
 
     @check_inactivity.before_loop
     async def before_check_inactivity(self):
         await self.bot.wait_until_ready()
 
-    # ------------------------------------------------------------
-    # Activity detail flushing — every 5 minutes
-    # ------------------------------------------------------------
-
-    @tasks.loop(minutes=5)
-    async def flush_activity_details(self):
-        """Periodically flush in-memory activity durations to the database."""
-        await self._flush_all_detailed_activities()
-
-    async def _flush_all_detailed_activities(self) -> None:
-        """Flush all tracked detailed activity durations to the database."""
-        now = time.monotonic()
-        keys_to_flush = list(self._detailed_activity_start.keys())
-
-        for key in keys_to_flush:
-            start = self._detailed_activity_start.get(key)
-            if start is None:
-                continue
-            uid, activity_type, activity_name = key
-            minutes = int((now - start) / 60)
-            if minutes >= 1:
-                await self._store_activity_detail(uid, activity_type, activity_name, minutes)
-                # Reset start time, keeping tracking active
-                self._detailed_activity_start[key] = now
-
-    @flush_activity_details.before_loop
-    async def before_flush_activity_details(self):
-        await self.bot.wait_until_ready()
-
     @tasks.loop(time=dt_time(hour=0, minute=5, tzinfo=UTC))
     async def monthly_season_archive(self):
-        """Archive leaderboard at the start of each month (daily tick at 00:05 UTC, acts on the 1st)."""
-        now = datetime.now(UTC)
-        if now.day != 1:
-            return
-
+        """On the 1st (UTC), snapshot last month's per-server standings and announce the main guild's."""
         if not runtime_state.db_available:
             return
-
         try:
-            # Archive previous month
-            prev_month_date = now.replace(day=1) - timedelta(days=1)
-            prev_month = prev_month_date.strftime('%Y-%m')
-
-            # XP is global, so archive once, for the main guild (iterating every guild posted duplicate
-            # announcements into the main guild's fallback channel).
-            guild_ids = [MAIN_GUILD_ID] if self.bot.get_guild(MAIN_GUILD_ID) else []
-            for guild_id in guild_ids:
-                # Check if already archived
-                existing = await db.fetchval(
-                    'SELECT COUNT(*) FROM leaderboard_snapshots WHERE guild_id = $1 AND season_month = $2',
-                    guild_id,
-                    prev_month,
-                )
-                if existing and existing > 0:
-                    continue
-
-                categories = {
-                    'xp': 'SELECT discord_id, points AS score FROM users WHERE points > 0 ORDER BY points DESC LIMIT 25',
-                    'chat': 'SELECT discord_id, total_messages AS score FROM users WHERE total_messages > 0 ORDER BY total_messages DESC LIMIT 25',
-                    'voice': 'SELECT discord_id, total_voice_minutes AS score FROM users WHERE total_voice_minutes > 0 ORDER BY total_voice_minutes DESC LIMIT 25',
-                    'gaming': 'SELECT discord_id, total_gaming_minutes AS score FROM users WHERE total_gaming_minutes > 0 ORDER BY total_gaming_minutes DESC LIMIT 25',
-                    'streaming': 'SELECT discord_id, total_streaming_minutes AS score FROM users WHERE total_streaming_minutes > 0 ORDER BY total_streaming_minutes DESC LIMIT 25',
-                    'coding': 'SELECT discord_id, total_gaming_minutes AS score FROM users WHERE total_gaming_minutes > 0 ORDER BY total_gaming_minutes DESC LIMIT 25',
-                }
-
-                for cat, query in categories.items():
-                    rows = await db.fetch(query)
-                    for i, row in enumerate(rows):
-                        await db.execute(
-                            """
-                            INSERT INTO leaderboard_snapshots (guild_id, season_month, category, user_id, rank, score)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            """,
-                            guild_id,
-                            prev_month,
-                            cat,
-                            int(row['discord_id']),
-                            i + 1,
-                            row['score'],
-                        )
-
-                # Send announcement to leaderboard channel
-                lb_guild = self.bot.get_guild(guild_id)
-                channel = (
-                    await guild_settings_service.resolve_channel(lb_guild, 'leaderboard_channel_id')
-                    if lb_guild
-                    else None
-                )
-                if isinstance(channel, nextcord.TextChannel):
-                    if channel:
-                        # Get top 3 XP
-                        top3 = await db.fetch(
-                            'SELECT discord_id, points, level FROM users WHERE points > 0 ORDER BY points DESC LIMIT 3'
-                        )
-                        if top3:
-                            medals = ['\U0001f947', '\U0001f948', '\U0001f949']
-                            podium = []
-                            for i, row in enumerate(top3):
-                                uid = int(row['discord_id'])
-                                member = (
-                                    self.bot.get_guild(guild_id).get_member(uid)
-                                    if self.bot.get_guild(guild_id)
-                                    else None
-                                )
-                                name = member.display_name if member else f'User {uid}'
-                                level = row.get('level') or calculate_level(row.get('points', 0))
-                                podium.append(
-                                    f'{medals[i]} **{name}** \u2014 Level **{level}** | **{row["points"]:,}** XP'
-                                )
-
-                            embed = await success_embed(
-                                title=f'\U0001f3c6 Season {prev_month} Champions!',
-                                description=(
-                                    'A new month has begun! Here are the champions of last season:\n\n'
-                                    + '\n'.join(podium)
-                                    + '\n\nCongratulations to all participants! The new season starts now.'
-                                ),
-                                contributor_source=__name__,
-                            )
-                            try:
-                                await channel.send(embed=embed)
-                            except Exception:
-                                logger.warning('Failed to send season announcement in guild %s', guild_id)
-
-            logger.info('Monthly season archive completed for %s', prev_month)
+            await self.ensure_previous_season_archived()
         except Exception:
             logger.error('Failed to run monthly season archive', exc_info=True)
+
+    async def ensure_previous_season_archived(self) -> None:
+        """Archive last month if it isn't complete yet; in the first 3 days of a month, announce it in every
+        server that has a leaderboard channel and hasn't had its announcement yet. Runs daily and on startup,
+        so a restart or DB outage on the 1st doesn't lose the month."""
+        now = datetime.now(UTC)
+        last_month = (now.replace(day=1) - timedelta(days=1)).date()
+        season = last_month.strftime('%Y-%m')
+        if not await db.fetchval('SELECT 1 FROM season_archives WHERE season_month = $1', season):
+            await self.archive_season(last_month)
+        if now.day > 3:
+            return
+        done = {
+            r['guild_id']
+            for r in await db.fetch('SELECT guild_id FROM season_announcements WHERE season_month = $1', season)
+        }
+        for guild in list(self.bot.guilds):
+            if guild.id in done:
+                continue
+            try:
+                if await self._announce_season(guild, season):
+                    await db.execute(
+                        'INSERT INTO season_announcements (guild_id, season_month) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+                        guild.id,
+                        season,
+                    )
+            except Exception:
+                logger.warning('Season announcement failed in %s', guild.id, exc_info=True)
+
+    async def archive_season(self, day_in_month: date) -> None:
+        """Snapshot one month's top 25 per category for every guild, all categories and the completion
+        marker in one transaction (a partial archive is rolled back and retried)."""
+        month_start = day_in_month.replace(day=1)
+        next_month = (month_start + timedelta(days=32)).replace(day=1)
+        season = month_start.strftime('%Y-%m')
+        pool = db.pool
+        if pool is None:
+            raise RuntimeError('database unavailable')
+        async with pool.acquire() as conn, conn.transaction():
+            for category, column in _SEASON_CATEGORIES.items():
+                presence = column in ('gaming_minutes', 'streaming_minutes', 'coding_minutes')
+                await conn.execute(
+                    f"""
+                    INSERT INTO leaderboard_snapshots (guild_id, season_month, category, user_id, rank, score)
+                    SELECT guild_id, $1, $2, user_id, rnk, score FROM (
+                        SELECT d.guild_id, d.user_id, SUM(d.{column})::bigint AS score,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY d.guild_id ORDER BY SUM(d.{column}) DESC, d.user_id
+                               ) AS rnk
+                        FROM user_activity_daily d
+                        {'JOIN users u ON u.discord_id = d.user_id::text AND u.presence_opt_in' if presence else ''}
+                        WHERE d.activity_date >= $3 AND d.activity_date < $4
+                        GROUP BY d.guild_id, d.user_id
+                        HAVING SUM(d.{column}) > 0
+                    ) ranked
+                    WHERE rnk <= 25
+                    ON CONFLICT (guild_id, season_month, category, user_id) DO NOTHING
+                    """,
+                    season,
+                    category,
+                    month_start,
+                    next_month,
+                )
+            await conn.execute('INSERT INTO season_archives (season_month) VALUES ($1) ON CONFLICT DO NOTHING', season)
+
+    async def _announce_season(self, guild: nextcord.Guild, season: str) -> bool:
+        """Post a server's champions. Returns True when there is nothing more to do (posted, or nothing to
+        announce/no channel); False to retry on the next run."""
+        channel = await guild_settings_service.resolve_channel(guild, 'leaderboard_channel_id')
+        if not isinstance(channel, nextcord.TextChannel):
+            return True
+        top3 = await db.fetch(
+            """SELECT user_id, score FROM leaderboard_snapshots
+               WHERE guild_id = $1 AND season_month = $2 AND category = 'xp' AND rank <= 3 ORDER BY rank""",
+            guild.id,
+            season,
+        )
+        if not top3:
+            return True
+        medals = ['\U0001f947', '\U0001f948', '\U0001f949']
+        podium = []
+        for i, row in enumerate(top3):
+            member = guild.get_member(row['user_id'])
+            name = member.display_name if member else f'User {row["user_id"]}'
+            podium.append(f'{medals[i]} **{name}** \u2014 **{row["score"]:,}** XP this season')
+        embed = await success_embed(
+            title=f'\U0001f3c6 Season {season} Champions!',
+            description=(
+                "A new month has begun! Here are last season's champions in this server:\n\n"
+                + '\n'.join(podium)
+                + '\n\nCongratulations to all participants! The new season starts now.'
+            ),
+            contributor_source=__name__,
+        )
+        outcome = await outbound.send(
+            channel, kind='season_announcement', embed=embed, essential=True, dedupe_key=f'season:{guild.id}:{season}'
+        )
+        return outcome.ok
 
     @monthly_season_archive.before_loop
     async def before_monthly_season_archive(self):
@@ -1300,11 +1006,12 @@ class RPGManager(commands.Cog):
     # Commands
     # ============================================================
 
-    @nextcord.slash_command(
-        name='level',
-        description='Check your level, XP, and rank',
-    )
-    @safe_slash_command()
+    async def _user_row(self, user_id: int, columns: str) -> dict | None:
+        row = await db.fetch_one(f'SELECT {columns} FROM users WHERE discord_id = $1', str(user_id))
+        return dict(row) if row else None
+
+    @nextcord.slash_command(name='level', description='Check your level, XP, and rank')
+    @safe_slash_command(requires_db=True)
     async def level_command(
         self,
         interaction: nextcord.Interaction,
@@ -1312,50 +1019,27 @@ class RPGManager(commands.Cog):
             description='User to check (defaults to you)', required=False
         ),
     ):
-        """Show level, XP, and rank for yourself or another user."""
+        """Show level, XP and global rank for yourself or another user."""
         target = user or interaction.user
-        await self._ensure_user(target.id)
+        row = await self._user_row(target.id, 'points, level') or {}
+        points = row.get('points') or 0
+        level = calculate_level(points)
+        rank = await self._get_user_rank(target.id) if points else None
 
-        try:
-            row = await db.fetch_one(
-                'SELECT points, level FROM users WHERE discord_id = $1',
-                str(target.id),
-            )
-        except Exception:
-            embed = await error_embed(
-                title='Error',
-                description='Could not fetch user data.',
-                contributor_source=__name__,
-                user=interaction.user,
-                guild=interaction.guild,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        points = row['points'] if row else 0
-        level = row['level'] if row else calculate_level(points or 0)
-        next_level_pts = points_to_next_level(points or 0)
-        rank = await self._get_user_rank(target.id)
-        progress = _progress_bar(points or 0)
-
-        rank_text = f'#{rank}' if rank else 'Unranked'
-
-        # Determine rank tier icon
-        rank_icon = '\U0001f3c5'  # medal
+        rank_icon = '\U0001f3c5'
         if rank and rank <= 3:
             rank_icon = ['\U0001f947', '\U0001f948', '\U0001f949'][rank - 1]
         elif rank and rank <= 10:
-            rank_icon = '\u2b50'  # star
+            rank_icon = '⭐'
 
         description = (
             f'{rank_icon} **{target.display_name}**\n\n'
             f'**Level**: {level}\n'
-            f'**XP**: {points or 0:,}\n'
-            f'**Rank**: {rank_text}\n\n'
-            f'{progress}\n'
-            f'`{next_level_pts:,} XP to next level`'
+            f'**XP**: {points:,}\n'
+            f'**Rank** (all servers): {f"#{rank}" if rank else "Unranked"}\n\n'
+            f'{_progress_bar(points)}\n'
+            f'`{points_to_next_level(points):,} XP to next level`'
         )
-
         embed = await success_embed(
             title='Level Status',
             description=description,
@@ -1363,11 +1047,11 @@ class RPGManager(commands.Cog):
             user=interaction.user,
             guild=interaction.guild,
         )
-        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
+        embed.set_thumbnail(url=target.display_avatar.url)
         await safe_send(interaction, embed=embed)
 
     @nextcord.slash_command(name='rank', description='View your rank card')
-    @safe_slash_command()
+    @safe_slash_command(requires_db=True)
     async def rank_command(
         self,
         interaction: nextcord.Interaction,
@@ -1377,38 +1061,18 @@ class RPGManager(commands.Cog):
     ):
         """Generate and send a visual rank card."""
         await interaction.response.defer()
-
         target = user or interaction.user
-        await self._ensure_user(target.id)
+        row = await self._user_row(target.id, 'points, current_streak') or {}
+        points = row.get('points') or 0
+        rank = await self._get_user_rank(target.id) if points else None
 
-        try:
-            row = await db.fetch_one(
-                'SELECT points, level, current_streak FROM users WHERE discord_id = $1',
-                str(target.id),
-            )
-        except Exception:
-            embed = await error_embed(
-                title='Error',
-                description='Could not fetch user data.',
-                contributor_source=__name__,
-            )
-            await interaction.followup.send(embed=embed)
-            return
-
-        points = row['points'] if row else 0
-        level = row['level'] if row else calculate_level(points or 0)
-        streak = (row.get('current_streak') or 0) if row else 0
-        rank = await self._get_user_rank(target.id)
-        next_level_pts = points_to_next_level(points or 0)
-
-        # Download avatar
         avatar_bytes = None
         try:
-            avatar_url = target.avatar.url if target.avatar else target.default_avatar.url
-            async with aiohttp.ClientSession() as session:
-                async with session.get(str(avatar_url)) as resp:
-                    if resp.status == 200:
-                        avatar_bytes = await resp.read()
+            async with get_session().get(
+                str(target.display_avatar.url), timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    avatar_bytes = await resp.read()
         except Exception:
             logger.debug('Failed to download avatar for %s', target.id, exc_info=True)
 
@@ -1417,28 +1081,23 @@ class RPGManager(commands.Cog):
         buffer = await generate_rank_card(
             username=target.display_name,
             avatar_bytes=avatar_bytes,
-            level=level,
-            current_xp=points or 0,
-            xp_needed=(points or 0) + next_level_pts,
+            level=calculate_level(points),
+            current_xp=points,
+            xp_needed=points + points_to_next_level(points),
             rank=rank or 0,
-            streak=streak,
+            streak=row.get('current_streak') or 0,
         )
+        await interaction.followup.send(file=nextcord.File(fp=buffer, filename='rank_card.png'))
 
-        file = nextcord.File(fp=buffer, filename='rank_card.png')
-        await interaction.followup.send(file=file)
-
-    @nextcord.slash_command(
-        name='leaderboard',
-        description='View the community XP and activity leaderboards',
-    )
+    @nextcord.slash_command(name='leaderboard', description='View the community XP and activity leaderboards')
     async def leaderboard_group(self, interaction: nextcord.Interaction) -> None:
-        """Leaderboard command group."""
         embed = await info_embed(
             title='Leaderboard Commands',
             description=(
                 '**Available subcommands:**\n\n'
-                '\u2022 `/leaderboard show [category] [period]` \u2014 View a paginated leaderboard\n'
-                '\u2022 `/leaderboard season` \u2014 View current and past season standings'
+                '• `/leaderboard show [category] [period]` — All time (all servers) or this server '
+                'for the past week, past month or this season\n'
+                "• `/leaderboard season` — This server's current and previous season"
             ),
             contributor_source=__name__,
             user=interaction.user,
@@ -1447,195 +1106,106 @@ class RPGManager(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @leaderboard_group.subcommand(name='show', description='View a paginated leaderboard')
-    @safe_slash_command()
+    @safe_slash_command(requires_db=True)
     async def leaderboard_show_command(
         self,
         interaction: nextcord.Interaction,
         category: str = nextcord.SlashOption(
             description='Category to rank by',
             required=False,
-            choices=['xp', 'chat', 'voice', 'streaming', 'gaming'],
+            choices=['xp', 'chat', 'voice', 'streaming', 'gaming', 'coding'],
         ),
         period: str = nextcord.SlashOption(
             description='Time period',
             required=False,
-            choices=['alltime', 'month', 'week'],
+            choices=['alltime', 'season', 'month', 'week'],
         ),
     ):
-        """Show paginated leaderboard for a given category and period."""
+        """This server's activity: all time (everything recorded here) or the past week/month/season."""
         await interaction.response.defer()
-
         category = category or 'xp'
         period = period or 'alltime'
-        period_label = {'alltime': 'All Time', 'month': 'Past Month', 'week': 'Past Week'}
-        medals = ['\U0001f947', '\U0001f948', '\U0001f949']
-
-        if category == 'xp':
-            data = await self._get_leaderboard_data()
-            if not data:
-                embed = await info_embed(
-                    title='Leaderboard',
-                    description='No activity recorded yet. Start chatting to earn XP!',
-                    contributor_source=__name__,
-                    user=interaction.user,
-                    guild=interaction.guild,
-                )
-                await interaction.followup.send(embed=embed)
-                return
-
-            # Build pages (10 per page)
-            pages = []
-            page_lines: list[str] = []
-            for i, row in enumerate(data):
-                uid = int(row['discord_id'])
-                member = interaction.guild.get_member(uid) if interaction.guild else None
-                name = member.display_name if member else row.get('username') or f'User {uid}'
-                level = row.get('level') or calculate_level(row.get('points', 0))
-                if i < 3:
-                    page_lines.append(f'{medals[i]} **{name}** \u2014 Level **{level}** | **{row["points"]:,}** XP')
-                else:
-                    page_lines.append(f'`#{i + 1}` {name} \u2014 Level {level} | {row["points"]:,} XP')
-                if len(page_lines) == 10:
-                    pages.append('\n'.join(page_lines))
-                    page_lines = []
-            if page_lines:
-                pages.append('\n'.join(page_lines))
-
-            # Add user's own rank at the bottom of the last page
-            user_rank = await self._get_user_rank(interaction.user.id)
-            user_row = await db.fetch_one(
-                'SELECT points, level FROM users WHERE discord_id = $1',
-                str(interaction.user.id),
-            )
-            if user_row and pages:
-                user_level = user_row['level'] or calculate_level(user_row['points'] or 0)
-                rank_text = f'#{user_rank}' if user_rank else 'Unranked'
-                user_progress = _progress_bar(user_row['points'] or 0)
-                pages[-1] += (
-                    f'\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n'
-                    f'\U0001f464 **Your Rank**: {rank_text} \u2014 Level **{user_level}** | **{user_row["points"] or 0:,}** XP\n'
-                    f'{user_progress}'
-                )
-
-            title = '\U0001f3c6 Community Leaderboard \u2014 XP'
-        else:
-            stat_map = {
-                'chat': 'total_messages',
-                'voice': 'total_voice_minutes',
-                'streaming': 'total_streaming_minutes',
-                'gaming': 'total_gaming_minutes',
-            }
-            column = stat_map[category]
-            rows = await self._get_stat_leaderboard(column, period if period != 'alltime' else None)
-
-            if not rows:
-                embed = await info_embed(
-                    title=f'Leaderboard \u2014 {category.title()}',
-                    description='No data recorded yet for this category.',
-                    contributor_source=__name__,
-                    user=interaction.user,
-                    guild=interaction.guild,
-                )
-                await interaction.followup.send(embed=embed)
-                return
-
-            pages = []
-            page_lines = []
-            for i, row in enumerate(rows):
-                uid = int(row['discord_id'])
-                member = interaction.guild.get_member(uid) if interaction.guild else None
-                name = member.display_name if member else f'User {uid}'
-                val = row.get(column) or row.get('stat_val') or 0
-                if i < 3:
-                    page_lines.append(f'{medals[i]} **{name}**: **{val:,}**')
-                else:
-                    page_lines.append(f'`#{i + 1}` {name}: {val:,}')
-                if len(page_lines) == 10:
-                    pages.append('\n'.join(page_lines))
-                    page_lines = []
-            if page_lines:
-                pages.append('\n'.join(page_lines))
-
-            title = f'\U0001f3c6 Community Leaderboard \u2014 {category.title()} ({period_label[period]})'
-
-        if not pages:
-            pages = ['No data yet.']
-
-        view = PaginationView(pages=pages, title=title, author_id=interaction.user.id)
-        embed = view._build_embed()
-        # wait=True returns the message (without it followup.send returns None and the view never times out cleanly)
-        view.message = await interaction.followup.send(embed=embed, view=view, wait=True)
-
-    @leaderboard_group.subcommand(name='season', description='View current and past season standings')
-    @safe_slash_command()
-    async def leaderboard_season_command(self, interaction: nextcord.Interaction) -> None:
-        """Show current monthly standings and previous season podium winners."""
-        await interaction.response.defer()
-
-        if not runtime_state.db_available:
-            embed = await error_embed(
-                title='DB Unavailable',
-                description='Cannot fetch season data right now.',
-                contributor_source=__name__,
-            )
-            await interaction.followup.send(embed=embed)
+        column = _LEADERBOARD_CATEGORIES[category]
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send('Leaderboards are per server; use this in a server.')
             return
+        rows = await self._get_stat_leaderboard(
+            column, None if period == 'alltime' else period, limit=50, guild_id=guild.id
+        )
+        scope = 'all time, this server' if period == 'alltime' else f'{_PERIOD_LABELS[period]}, this server'
+        unit = 'XP' if category == 'xp' else ('messages' if category == 'chat' else 'min')
+        medals = ['\U0001f947', '\U0001f948', '\U0001f949']
+        lines = []
+        for i, row in enumerate(rows):
+            uid = int(row['discord_id'])
+            member = guild.get_member(uid) if guild else None
+            name = member.display_name if member else f'User {uid}'
+            val = int(row.get('value') or 0)
+            lines.append(
+                f'{medals[i]} **{name}**: **{val:,}** {unit}' if i < 3 else f'`#{i + 1}` {name}: {val:,} {unit}'
+            )
+        pages = ['\n'.join(lines[i : i + 10]) for i in range(0, len(lines), 10)] or ['No activity recorded yet.']
+        if category in ('gaming', 'streaming', 'coding'):
+            pages[-1] += '\n\n*Tracked only if this server enabled activity tracking; members can `/privacy optout`.*'
+        if category == 'xp' and period == 'alltime':
+            server_xp = await self._guild_xp(interaction.user.id, guild.id)
+            rank = await self._get_user_rank(interaction.user.id, guild.id) if server_xp else None
+            pages[-1] += (
+                f'\n\n──────────\n'
+                f'\U0001f464 **Your rank here**: {f"#{rank}" if rank else "Unranked"} | **{server_xp:,}** XP in this server'
+            )
+        title = f'\U0001f3c6 Leaderboard — {category.title()} ({scope})'
+        view = PaginationView(pages=pages, title=title, author_id=interaction.user.id)
+        # wait=True returns the message (without it followup.send returns None and the view never times out cleanly)
+        view.message = await interaction.followup.send(embed=view._build_embed(), view=view, wait=True)
 
+    @leaderboard_group.subcommand(name='season', description="View this server's current and previous season")
+    @safe_slash_command(requires_db=True)
+    async def leaderboard_season_command(self, interaction: nextcord.Interaction) -> None:
+        """A season is a calendar month (UTC) of activity in this server."""
+        await interaction.response.defer()
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send('Seasons are per server; use this in a server.')
+            return
         now = datetime.now(UTC)
         current_month = now.strftime('%Y-%m')
         prev_month = (now.replace(day=1) - timedelta(days=1)).strftime('%Y-%m')
+        medals = ['\U0001f947', '\U0001f948', '\U0001f949']
 
-        # Current month standings (top 3 per category)
-        lines = [f'**Current Season: {current_month}**\n']
-        for cat_name, cat_key in [('XP', 'xp'), ('Chat', 'chat'), ('Voice', 'voice')]:
-            if cat_key == 'xp':
-                rows = await db.fetch(
-                    'SELECT discord_id, points FROM users WHERE points > 0 ORDER BY points DESC LIMIT 3'
-                )
-                col = 'points'
-            else:
-                col_map = {'chat': 'total_messages', 'voice': 'total_voice_minutes'}
-                rows = await self._get_stat_leaderboard(col_map[cat_key], limit=3)
-                col = col_map[cat_key]
+        lines = [f'**Current season: {current_month}**\n']
+        for label, column in (('XP', 'points'), ('Chat', 'total_messages'), ('Voice', 'total_voice_minutes')):
+            rows = await self._get_stat_leaderboard(column, 'season', limit=3, guild_id=guild.id)
+            if not rows:
+                lines.append(f'**{label}:** No data yet')
+                continue
+            cat_lines = []
+            for i, row in enumerate(rows):
+                member = guild.get_member(int(row['discord_id']))
+                name = member.display_name if member else f'User {row["discord_id"]}'
+                cat_lines.append(f'{medals[i]} **{name}**: {int(row["value"]):,}')
+            lines.append(f'**{label}:**\n' + '\n'.join(cat_lines))
 
-            if rows:
-                medals = ['\U0001f947', '\U0001f948', '\U0001f949']
-                cat_lines = []
-                for i, row in enumerate(rows):
-                    uid = int(row['discord_id'])
-                    member = interaction.guild.get_member(uid) if interaction.guild else None
-                    name = member.display_name if member else f'User {uid}'
-                    val = row.get(col) or row.get('stat_val') or 0
-                    cat_lines.append(f'{medals[i]} **{name}**: {val:,}')
-                lines.append(f'**{cat_name}:**\n' + '\n'.join(cat_lines))
-            else:
-                lines.append(f'**{cat_name}:** No data yet')
-
-        # Previous season podium
-        lines.append(f'\n**Previous Season: {prev_month}**')
-        try:
-            snapshots = await db.fetch(
-                """
-                SELECT category, user_id, rank, score
-                FROM leaderboard_snapshots
-                WHERE guild_id = $1 AND season_month = $2 AND rank <= 3
-                ORDER BY category, rank
-                """,
-                interaction.guild.id if interaction.guild else 0,
-                prev_month,
-            )
-        except Exception:
-            snapshots = []
-
+        lines.append(f'\n**Previous season: {prev_month}**')
+        # Presence categories hide members who have since opted out.
+        snapshots = await db.fetch(
+            """SELECT s.category, s.user_id, s.rank, s.score FROM leaderboard_snapshots s
+               LEFT JOIN users u ON u.discord_id = s.user_id::text
+               WHERE s.guild_id = $1 AND s.season_month = $2 AND s.rank <= 3
+                 AND (s.category NOT IN ('gaming', 'streaming', 'coding') OR COALESCE(u.presence_opt_in, FALSE))
+               ORDER BY s.category, s.rank""",
+            guild.id,
+            prev_month,
+        )
         if snapshots:
             cats: dict[str, list] = {}
             for snap in snapshots:
                 cats.setdefault(snap['category'], []).append(snap)
-            medals = ['\U0001f947', '\U0001f948', '\U0001f949']
             for cat, entries in cats.items():
                 prev_lines = []
                 for entry in entries:
-                    member = interaction.guild.get_member(entry['user_id']) if interaction.guild else None
+                    member = guild.get_member(entry['user_id'])
                     name = member.display_name if member else f'User {entry["user_id"]}'
                     prev_lines.append(f'{medals[entry["rank"] - 1]} **{name}**: {entry["score"]:,}')
                 lines.append(f'**{cat.title()}:**\n' + '\n'.join(prev_lines))
@@ -1644,44 +1214,34 @@ class RPGManager(commands.Cog):
 
         embed = await success_embed(
             title='Season Standings',
-            description='\n'.join(lines),
+            description='\n'.join(lines)[:4000],
             contributor_source=__name__,
             user=interaction.user,
-            guild=interaction.guild,
+            guild=guild,
         )
         await interaction.followup.send(embed=embed)
 
     @nextcord.slash_command(
         name='setupleaderboard',
-        description='Set the leaderboard channel (admin only)',
+        description="Set this server's auto-updating leaderboard channel (Manage Server)",
         contexts=[nextcord.InteractionContextType.guild],
         default_member_permissions=nextcord.Permissions(manage_guild=True),
     )
-    @main_server_only()
-    @admin_only()
-    @safe_slash_command()
+    @manage_guild_only()
+    @safe_slash_command(requires_db=True)
     async def setupleaderboard_command(
         self,
         interaction: nextcord.Interaction,
         channel: nextcord.TextChannel = nextcord.SlashOption(description='Channel for the leaderboard'),
     ):
-        """Designate a channel for the auto-updating leaderboard."""
-        global LEADERBOARD_CHANNEL_ID  # noqa: PLW0603
-
-        LEADERBOARD_CHANNEL_ID = channel.id
-
-        # Also persist to guild_settings
-        try:
-            await guild_settings_service.update_settings(interaction.guild.id, leaderboard_channel_id=channel.id)
-        except Exception:
-            logger.debug('Failed to persist leaderboard channel to guild_settings', exc_info=True)
-
-        # Send initial leaderboard embed
-        embed = await self._build_leaderboard_embed(guild=interaction.guild)
-        if embed:
-            msg = await channel.send(embed=embed)
-            self._leaderboard_message = msg
-
+        """Designate the channel for the auto-updating leaderboard (stored in guild settings)."""
+        await guild_settings_service.update_settings(
+            interaction.guild.id, leaderboard_channel_id=channel.id, leaderboard_message_id=None
+        )
+        self._leaderboard_messages.pop(interaction.guild.id, None)
+        outbound.forget_status(f'leaderboard:{interaction.guild.id}')
+        if self.update_leaderboard.is_running():
+            self.update_leaderboard.restart()
         embed = await success_embed(
             title='Leaderboard Configured',
             description=f'Leaderboard will auto-update in {channel.mention} every {LEADERBOARD_UPDATE_INTERVAL // 60} minutes.',
@@ -1691,18 +1251,14 @@ class RPGManager(commands.Cog):
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
 
-    @nextcord.slash_command(
-        name='activity',
-        description='View detailed activity stats or summary for yourself or another user',
-    )
+    @nextcord.slash_command(name='activity', description='View detailed activity stats or summary')
     async def activity_group(self, interaction: nextcord.Interaction) -> None:
-        """Activity command group."""
         embed = await info_embed(
             title='Activity Commands',
             description=(
                 '**Available subcommands:**\n\n'
-                '\u2022 `/activity stats [user]` \u2014 Detailed activity statistics\n'
-                '\u2022 `/activity summary [user]` \u2014 7-day sparkline summary'
+                '• `/activity stats [user]` — All-time totals (all servers)\n'
+                '• `/activity summary [user]` — Last 7 days in this server'
             ),
             contributor_source=__name__,
             user=interaction.user,
@@ -1711,7 +1267,7 @@ class RPGManager(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @activity_group.subcommand(name='stats', description='View detailed activity stats')
-    @safe_slash_command()
+    @safe_slash_command(requires_db=True)
     async def activity_stats_command(
         self,
         interaction: nextcord.Interaction,
@@ -1719,32 +1275,13 @@ class RPGManager(commands.Cog):
             description='User to check (defaults to you)', required=False
         ),
     ):
-        """Show detailed activity statistics."""
+        """All-time activity totals across all servers."""
         target = user or interaction.user
-        await self._ensure_user(target.id)
-
-        try:
-            row = await db.fetch_one(
-                """
-                SELECT points, level, total_messages, total_voice_minutes,
-                       total_streaming_minutes, total_gaming_minutes,
-                       total_listening_minutes, total_commands, last_active,
-                       current_streak, longest_streak
-                FROM users WHERE discord_id = $1
-                """,
-                str(target.id),
-            )
-        except Exception:
-            embed = await error_embed(
-                title='Error',
-                description='Could not fetch activity data.',
-                contributor_source=__name__,
-                user=interaction.user,
-                guild=interaction.guild,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
+        row = await self._user_row(
+            target.id,
+            """points, total_messages, total_voice_minutes, total_streaming_minutes, total_gaming_minutes,
+               total_coding_minutes, total_commands, last_active, current_streak, longest_streak, presence_opt_in""",
+        )
         if not row:
             embed = await info_embed(
                 title='No Activity',
@@ -1757,30 +1294,13 @@ class RPGManager(commands.Cog):
             return
 
         points = row['points'] or 0
-        level = row['level'] or calculate_level(points)
-        messages = row['total_messages'] or 0
-        voice_min = row['total_voice_minutes'] or 0
-        streaming_min = row['total_streaming_minutes'] or 0
-        gaming_min = row['total_gaming_minutes'] or 0
-        listening_min = row['total_listening_minutes'] or 0
-        commands_count = row['total_commands'] or 0
-        last_active = row.get('last_active')
         current_streak = row.get('current_streak') or 0
-        longest_streak = row.get('longest_streak') or 0
-
+        last_active = row.get('last_active')
         last_active_text = 'Never'
         if last_active:
             if last_active.tzinfo is None:
                 last_active = last_active.replace(tzinfo=UTC)
-            delta = datetime.now(UTC) - last_active
-            if delta < timedelta(minutes=1):
-                last_active_text = 'Just now'
-            elif delta < timedelta(hours=1):
-                last_active_text = f'{int(delta.total_seconds() // 60)}m ago'
-            elif delta < timedelta(days=1):
-                last_active_text = f'{int(delta.total_seconds() // 3600)}h ago'
-            else:
-                last_active_text = f'{delta.days}d ago'
+            last_active_text = f'<t:{int(last_active.timestamp())}:R>'
 
         activity_role = 'None'
         for role_key, threshold in reversed(_ACTIVITY_ROLE_THRESHOLDS):
@@ -1788,39 +1308,42 @@ class RPGManager(commands.Cog):
                 activity_role = _ACTIVITY_ROLE_NAMES[role_key]
                 break
 
-        next_level_pts = points_to_next_level(points)
-        progress = _progress_bar(points)
-        streak_mult = _streak_multiplier(current_streak)
-
-        streak_text = f'\U0001f525 **Streak**: {current_streak}d (Best: {longest_streak}d) | Bonus: {streak_mult}x XP'
-
         description = (
-            f'{progress}\n'
-            f'`{next_level_pts:,} XP to next level`\n\n'
-            f'\U0001f464 **Level** {level} \u2022 **XP** {points:,} \u2022 **Rank** {activity_role}\n'
-            f'{streak_text}'
+            f'{_progress_bar(points)}\n'
+            f'`{points_to_next_level(points):,} XP to next level`\n\n'
+            f'\U0001f464 **Level** {calculate_level(points)} • **XP** {points:,} • **Rank** {activity_role}\n'
+            f'\U0001f525 **Streak**: {current_streak}d (Best: {row.get("longest_streak") or 0}d) | '
+            f'Bonus: {_streak_multiplier(current_streak)}x XP\n'
+            '*All servers, all time.*'
         )
-
         embed = await success_embed(
-            title=f'Activity Stats \u2014 {target.display_name}',
+            title=f'Activity Stats — {target.display_name}',
             description=description,
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
-        embed.add_field(name='\U0001f4ac Messages', value=f'{messages:,}', inline=True)
-        embed.add_field(name='\U0001f50a Voice', value=f'{voice_min:,} min', inline=True)
-        embed.add_field(name='\U0001f4fa Streaming', value=f'{streaming_min:,} min', inline=True)
-        embed.add_field(name='\U0001f3ae Gaming', value=f'{gaming_min:,} min', inline=True)
-        embed.add_field(name='\U0001f3b5 Listening', value=f'{listening_min:,} min', inline=True)
-        embed.add_field(name='\U0001f4f1 Commands', value=f'{commands_count:,}', inline=True)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name='\U0001f4ac Messages', value=f'{row["total_messages"] or 0:,}', inline=True)
+        embed.add_field(name='\U0001f50a Voice', value=f'{row["total_voice_minutes"] or 0:,} min', inline=True)
+        embed.add_field(name='\U0001f4f1 Commands', value=f'{row["total_commands"] or 0:,}', inline=True)
+        if row.get('presence_opt_in'):
+            embed.add_field(name='\U0001f3ae Gaming', value=f'{row["total_gaming_minutes"] or 0:,} min', inline=True)
+            embed.add_field(name='\U0001f4bb Coding', value=f'{row["total_coding_minutes"] or 0:,} min', inline=True)
+            embed.add_field(
+                name='\U0001f4fa Streaming', value=f'{row["total_streaming_minutes"] or 0:,} min', inline=True
+            )
+        else:
+            embed.add_field(
+                name='\U0001f3ae Games / coding / streaming',
+                value='Not tracked (you opted out — `/privacy optin` to allow it again)',
+                inline=False,
+            )
         embed.add_field(name='\U0001f552 Last Active', value=last_active_text, inline=True)
-
         await safe_send(interaction, embed=embed)
 
-    @activity_group.subcommand(name='summary', description='7-day activity sparkline summary')
-    @safe_slash_command()
+    @activity_group.subcommand(name='summary', description='7-day activity summary in this server')
+    @safe_slash_command(requires_db=True)
     async def activity_summary_command(
         self,
         interaction: nextcord.Interaction,
@@ -1828,92 +1351,60 @@ class RPGManager(commands.Cog):
             description='User to check (defaults to you)', required=False
         ),
     ):
-        """Show 7-day sparkline charts for messages, voice, coding, gaming, streaming."""
+        """Last 7 UTC days (today included) in this server, one bar per day (empty days shown)."""
         target = user or interaction.user
-
-        if not runtime_state.db_available:
-            embed = await error_embed(
-                title='DB Unavailable',
-                description='Cannot fetch activity data right now.',
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        try:
-            rows = await db.fetch(
-                """
-                SELECT activity_date, xp_earned, messages, voice_minutes,
-                       gaming_minutes, streaming_minutes, coding_minutes
-                FROM user_activity_daily
-                WHERE user_id = $1 AND guild_id = $2
-                  AND activity_date >= CURRENT_DATE - INTERVAL '7 days'
-                ORDER BY activity_date ASC
-                """,
-                target.id,
-                interaction.guild.id if interaction.guild else 0,
-            )
-        except Exception:
-            embed = await error_embed(
-                title='Error',
-                description='Could not fetch activity summary.',
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        # Also fetch streak from users table
-        streak_row = await db.fetch_one(
-            'SELECT current_streak, longest_streak FROM users WHERE discord_id = $1',
-            str(target.id),
+        today = datetime.now(UTC).date()
+        start = today - timedelta(days=6)
+        rows = await db.fetch(
+            """
+            SELECT activity_date, messages, voice_minutes, gaming_minutes, streaming_minutes, coding_minutes
+            FROM user_activity_daily
+            WHERE user_id = $1 AND guild_id = $2 AND activity_date BETWEEN $3 AND $4
+            """,
+            target.id,
+            interaction.guild.id if interaction.guild else 0,
+            start,
+            today,
         )
-        current_streak = (streak_row.get('current_streak') or 0) if streak_row else 0
-        longest_streak = (streak_row.get('longest_streak') or 0) if streak_row else 0
+        by_day = {r['activity_date']: r for r in rows}
+        days = [start + timedelta(days=i) for i in range(7)]
 
-        if not rows:
-            embed = await info_embed(
-                title=f'Activity Summary \u2014 {target.display_name}',
-                description='No activity data for the past 7 days.',
-                contributor_source=__name__,
-                user=interaction.user,
-                guild=interaction.guild,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        # Build sparklines
-        messages = [r['messages'] or 0 for r in rows]
-        voice = [r['voice_minutes'] or 0 for r in rows]
-        coding = [r['coding_minutes'] or 0 for r in rows]
-        gaming = [r['gaming_minutes'] or 0 for r in rows]
-        streaming = [r['streaming_minutes'] or 0 for r in rows]
+        def series(col: str) -> list[int]:
+            return [int(by_day[d][col] or 0) if d in by_day else 0 for d in days]
 
         def fmt_hours(val: int) -> str:
-            if val == 0:
-                return '0m'
             h, m = divmod(val, 60)
             return f'{h}h {m}m' if h else f'{m}m'
 
-        streak_mult = _streak_multiplier(current_streak)
-
+        streak_row = await self._user_row(target.id, 'current_streak, longest_streak, presence_opt_in') or {}
+        current_streak = streak_row.get('current_streak') or 0
+        messages, voice = series('messages'), series('voice_minutes')
         lines = [
             f'\U0001f4ac Messages: {_sparkline(messages)} **{sum(messages)}**',
             f'\U0001f50a Voice: {_sparkline(voice)} **{fmt_hours(sum(voice))}**',
-            f'\U0001f4bb Coding: {_sparkline(coding)} **{fmt_hours(sum(coding))}**',
-            f'\U0001f3ae Gaming: {_sparkline(gaming)} **{fmt_hours(sum(gaming))}**',
-            f'\U0001f4fa Streaming: {_sparkline(streaming)} **{fmt_hours(sum(streaming))}**',
-            '',
-            f'\U0001f525 **Streak**: {current_streak}d (Best: {longest_streak}d) | Bonus: {streak_mult}x XP',
         ]
-
+        if streak_row.get('presence_opt_in'):
+            for label, col in (
+                ('\U0001f4bb Coding', 'coding_minutes'),
+                ('\U0001f3ae Gaming', 'gaming_minutes'),
+                ('\U0001f4fa Streaming', 'streaming_minutes'),
+            ):
+                values = series(col)
+                lines.append(f'{label}: {_sparkline(values)} **{fmt_hours(sum(values))}**')
+        lines += [
+            '',
+            f'\U0001f525 **Streak**: {current_streak}d (Best: {streak_row.get("longest_streak") or 0}d) | '
+            f'Bonus: {_streak_multiplier(current_streak)}x XP',
+            f'*{start:%d %b} – {today:%d %b} (UTC), this server.*',
+        ]
         embed = await success_embed(
-            title=f'Activity Summary \u2014 {target.display_name}',
+            title=f'Activity Summary — {target.display_name}',
             description='\n'.join(lines),
             contributor_source=__name__,
             user=interaction.user,
             guild=interaction.guild,
         )
-        embed.set_thumbnail(url=target.avatar.url if target.avatar else target.default_avatar.url)
+        embed.set_thumbnail(url=target.display_avatar.url)
         await safe_send(interaction, embed=embed)
 
 
