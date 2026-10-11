@@ -287,3 +287,134 @@ async def test_activity_roles_use_this_servers_xp_and_skip_unsafe_roles():
     member.add_roles.assert_awaited_once()
     assert member.add_roles.await_args.args[0] is safe
     assert low_threshold >= 0
+
+
+class _Role:
+    def __init__(self, rid, name, perms=0, pos=1):
+        self.id, self.name, self.position = rid, name, pos
+        self.permissions = nextcord.Permissions(perms)
+        self.managed = False
+        self.members: list = []
+
+    def is_default(self):
+        return False
+
+    def __ge__(self, other):
+        return self.position >= other.position
+
+
+def _role_guild(roles, member):
+    guild = MagicMock()
+    guild.id = GUILD_ID
+    guild.roles = roles
+    guild.me = SimpleNamespace(top_role=_Role(9, 'bot', pos=10))
+    guild.get_member = lambda uid: member if uid == member.id else None
+    return guild
+
+
+def _role_member(roles=()):
+    member = MagicMock()
+    member.id, member.bot, member.roles = 5, False, list(roles)
+    member.add_roles = AsyncMock()
+    member.remove_roles = AsyncMock()
+    return member
+
+
+async def test_activity_role_that_becomes_privileged_during_the_query_is_not_assigned():
+    from datetime import UTC, datetime
+
+    from src.cogs.rpg.rpg_manager import _ACTIVITY_ROLE_NAMES, _ACTIVITY_ROLE_THRESHOLDS
+
+    key = _ACTIVITY_ROLE_THRESHOLDS[0][0]
+    role = _Role(1, _ACTIVITY_ROLE_NAMES[key])
+    member = _role_member()
+    guild = _role_guild([role], member)
+
+    async def fetch(*_a):
+        role.permissions = nextcord.Permissions(administrator=True)  # changed while we awaited
+        return [{'user_id': 5, 'xp': 10**9, 'last_day': datetime.now(UTC).date()}]
+
+    with patch.dict(RPGManager._evaluate_guild_activity_roles.__globals__, {'db': SimpleNamespace(fetch=fetch)}):
+        await _cog([guild])._evaluate_guild_activity_roles(guild)
+    member.add_roles.assert_not_awaited()
+
+
+async def test_unsafe_activity_role_already_held_is_not_removed():
+    from src.cogs.rpg.rpg_manager import _ACTIVITY_ROLE_NAMES, _ACTIVITY_ROLE_THRESHOLDS
+
+    key = _ACTIVITY_ROLE_THRESHOLDS[-1][0]
+    staff = _Role(2, _ACTIVITY_ROLE_NAMES[key], perms=nextcord.Permissions(ban_members=True).value)
+    member = _role_member([staff])
+    staff.members = [member]
+    guild = _role_guild([staff], member)
+    with patch.dict(
+        RPGManager._evaluate_guild_activity_roles.__globals__,
+        {'db': SimpleNamespace(fetch=AsyncMock(return_value=[]))},  # inactive: would normally lose the role
+    ):
+        await _cog([guild])._evaluate_guild_activity_roles(guild)
+    member.remove_roles.assert_not_awaited()
+
+
+def test_activity_on_the_notice_day_starts_a_new_inactivity_episode():
+    from datetime import date
+
+    from src.cogs.rpg.rpg_manager import _notified_since
+
+    notices = {(5, 'week'): date(2026, 10, 1), (6, 'week'): date(2026, 10, 1)}
+    assert _notified_since(notices, 5, 'week', date(2026, 9, 20))  # still the same lull
+    assert not _notified_since(notices, 5, 'week', date(2026, 10, 1))  # came back later that day
+    assert not _notified_since(notices, 7, 'week', date(2026, 9, 20))  # never notified
+
+
+async def test_leaderboard_moves_to_the_new_channel_and_leaves_the_old_message():
+    from src.services.guild_settings_service import GuildSettings
+
+    old_channel, new_channel = MagicMock(spec=nextcord.TextChannel), MagicMock(spec=nextcord.TextChannel)
+    old_channel.id, new_channel.id = 100, 200
+    old_message = MagicMock()
+    old_message.channel = old_channel
+    guild = MagicMock()
+    guild.id = GUILD_ID
+    guild.get_channel = lambda cid: {100: old_channel, 200: new_channel}.get(cid)
+    cog = _cog([guild])
+    cog._leaderboard_messages[GUILD_ID] = old_message
+    cog._build_leaderboard_embed = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
+    calls = []
+
+    async def upsert(key, channel, **kw):
+        calls.append((key, channel, kw['message']))
+        return SimpleNamespace(message=None, status=None)
+
+    g = RPGManager._update_guild_leaderboard.__globals__
+    settings = GuildSettings(guild_id=GUILD_ID, leaderboard_channel_id=200)
+    with (
+        patch.dict(g, {'outbound': SimpleNamespace(upsert_status=upsert)}),
+        patch.object(g['guild_settings_service'], 'get_settings', AsyncMock(return_value=settings)),
+    ):
+        await cog._update_guild_leaderboard(guild)
+    (key, channel, message) = calls[0]
+    assert channel is new_channel and message is None and key.endswith(':200')
+
+
+async def test_live_role_ignores_members_who_opted_out():
+    from src.services.guild_settings_service import GuildSettings
+
+    role = _Role(77, 'Live')
+    before, after = _role_member(), _role_member()
+    streaming = SimpleNamespace(type=nextcord.ActivityType.streaming)
+    before.activities, after.activities = [], [streaming]
+    after.guild = _role_guild([role], after)
+    after.guild.get_role = lambda _rid: role
+    cog = _cog([after.guild])
+    g = RPGManager.on_presence_update.__globals__
+    on = GuildSettings(guild_id=GUILD_ID, presence_tracking_enabled=True)
+    with (
+        patch.dict(g, {'LIVE_ROLE_ID': 77}),
+        patch.object(g['guild_settings_service'], 'get_settings', AsyncMock(return_value=on)),
+    ):
+        cog._consent[5] = (False, None)
+        await cog.on_presence_update(before, after)
+        after.add_roles.assert_not_awaited()
+        cog._consent.pop(5)
+        await cog.on_presence_update(before, after)
+        after.add_roles.assert_awaited_once()
