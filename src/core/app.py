@@ -10,6 +10,7 @@ from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import commands
 
 from src.config.config import BOT_PREFIX, DISCORD_TOKEN
+from src.core.cache_listener import CacheHandler, cache_listener
 from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
 from src.database.database import db
@@ -35,6 +36,8 @@ EXTENSIONS = [
     'src.cogs.admin.notifications',
     'src.cogs.admin.honeypot',
     'src.cogs.admin.massunban',
+    'src.cogs.admin.maintenance',
+    'src.cogs.admin.api_bridge',
     'src.cogs.admin.setup',
     'src.cogs.admin.welcome',
     'src.cogs.networking.networking',
@@ -47,6 +50,7 @@ EXTENSIONS = [
     # 'src.cogs.radio.radio',  # disabled until needed — spoken-word only, see AGENTS.md "Content policy"
     'src.cogs.rpg.rpg_manager',
     'src.cogs.stats',
+    'src.cogs.privacy',
     'src.cogs.external.info',
     'src.cogs.external.export',
     'src.cogs.status',
@@ -131,6 +135,47 @@ def load_extensions(bot: commands.Bot, extensions: list[str]) -> None:
             runtime_state.failed_cogs.append(extension)
             runtime_state.degraded_features.append(extension)
             logger.error(f'Failed to load extension {extension}: {exc}', exc_info=True)
+
+
+def register_cache_handlers(bot: commands.Bot) -> None:
+    """Invalidate the bot's caches when the dashboard API changes data (see src/core/cache_listener.py)."""
+    from src.services.guild_settings_service import guild_settings_service
+
+    def _cog_call(name: str, method: str, *args):
+        cog = bot.get_cog(name)
+        fn = getattr(cog, method, None) if cog is not None else None
+        return fn(*args) if fn is not None else None
+
+    cache_listener.register(
+        'guild_settings',
+        CacheHandler(
+            on_notify=lambda ident: guild_settings_service.invalidate_cache(int(ident)) if ident.isdigit() else None,
+            reset=lambda: guild_settings_service.invalidate_cache(),
+        ),
+    )
+    cache_listener.register(
+        'honeypots',
+        CacheHandler(
+            on_notify=lambda _ident: _cog_call('Honeypot', '_invalidate_cache'),
+            reset=lambda: _cog_call('Honeypot', '_invalidate_cache'),
+        ),
+    )
+    cache_listener.register(
+        'privacy',
+        CacheHandler(
+            on_notify=lambda ident: _cog_call('RPGManager', 'reload_opt_in', int(ident)) if ident.isdigit() else None,
+            reset=lambda: _cog_call('RPGManager', 'load_opt_ins'),
+        ),
+    )
+    cache_listener.register(
+        'massunban',
+        CacheHandler(
+            on_notify=lambda ident: (
+                _cog_call('MassUnban', 'handle_dashboard_job', int(ident)) if ident.isdigit() else None
+            ),
+            reset=lambda: _cog_call('MassUnban', 'process_dashboard_jobs'),
+        ),
+    )
 
 
 def configure_bot_events(bot: commands.Bot) -> None:
@@ -224,6 +269,15 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
         bot.notifier = AdminNotifier(bot)  # type: ignore[attr-defined]
 
+        from src.utils.outbound import outbound
+
+        async def _breaker_alert(title: str, description: str) -> None:
+            await bot.notifier.send_alert(  # type: ignore[attr-defined]
+                title=title, description=description, severity='WARN', dedupe_key=f'outbound:{title}'
+            )
+
+        outbound.bind(bot, alert=_breaker_alert)
+
         await initialize_database()
 
         from src.core.checks import StartupChecks
@@ -236,6 +290,9 @@ def configure_bot_events(bot: commands.Bot) -> None:
 
         # nextcord never calls Cog.cog_load; start each cog's async setup now that the DB is up (H-01).
         await run_cog_ready_hooks(bot)
+
+        register_cache_handlers(bot)
+        cache_listener.start()
 
         migrations_state = 'degraded' if 'migrations' in runtime_state.degraded_features else 'ok'
         logger.info(f'{bot.user} is ready. DB available={runtime_state.db_available} migrations={migrations_state}')
