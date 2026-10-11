@@ -1,13 +1,17 @@
+"""One guild-scoped mentorship workflow. Legacy records are participant-only read-only history."""
+
 import logging
 
 import nextcord
 from nextcord.ext import commands, tasks
 
-from src.config.config import MENTORSHIP_CATEGORIES, MENTORSHIP_ROLES, POINTS_CONFIG
-from src.database.database import db, get_or_create_user
+from src.config.config import MENTORSHIP_CATEGORIES, MENTORSHIP_ROLES
 from src.services.mentorship_service import MentorshipService
-from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.safety import DatabaseUnavailableError, safe_background_task, safe_send, safe_slash_command
+from src.utils.embed_limits import bounded_items, clip_text
+from src.utils.embeds import info_embed, success_embed
+from src.utils.outbound import outbound
+from src.utils.roles import punitive_role_problem
+from src.utils.safety import ValidationError, safe_background_task, safe_command, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.mentorship')
 
@@ -24,833 +28,467 @@ class Mentorship(commands.Cog):
     def cog_unload(self):
         self.check_in_loop.cancel()
 
-    # ==================== SLASH COMMANDS ====================
+    @staticmethod
+    def _actor(target):
+        return target.user if isinstance(target, nextcord.Interaction) else target.author
 
-    @nextcord.slash_command(
-        name='mentor',
-        description='Mentorship commands',
-    )
-    async def mentor(self, interaction: nextcord.Interaction):
-        embed = await info_embed(
-            title='Mentorship Commands',
-            description=(
-                '**Available subcommands:**\n\n'
-                '\u2022 `/mentor register` \u2014 Register as mentor/mentee\n'
-                '\u2022 `/mentor list` \u2014 List available mentors\n'
-                '\u2022 `/mentor request` \u2014 Request mentorship\n'
-                '\u2022 `/mentor accept` \u2014 Accept a request\n'
-                '\u2022 `/mentor complete` \u2014 Complete mentorship\n'
-                '\u2022 `/mentor stats` \u2014 View stats'
-            ),
-            contributor_source=__name__,
-            user=interaction.user,
-            guild=interaction.guild,
+    @staticmethod
+    def _guild(target):
+        if target.guild is None:
+            raise ValidationError('Use mentorship commands in a server.')
+        return target.guild.id
+
+    @staticmethod
+    async def _defer(target):
+        if isinstance(target, nextcord.Interaction) and not target.response.is_done():
+            await target.response.defer(ephemeral=True)
+
+    async def _reply(self, target, title, description, *, success=False, personal=False):
+        builder = success_embed if success else info_embed
+        embed = await builder(
+            title, clip_text(description, 3000), user=self._actor(target), contributor_source=__name__
         )
-        await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='register', description='Register as a mentor or mentee')
-    @safe_slash_command()
-    async def mentor_register_slash(
-        self,
-        interaction: nextcord.Interaction,
-        role: str = nextcord.SlashOption(
-            name='role', description='Your role', choices={r.title(): r for r in MENTORSHIP_ROLES}
-        ),
-    ):
-        role = role.lower()
-        if role not in [r.lower() for r in MENTORSHIP_ROLES]:
-            roles = ', '.join(MENTORSHIP_ROLES)
-            embed = await error_embed(
-                'Invalid Role', f'Available roles: {roles}', user=interaction.user, contributor_source=__name__
+        if personal and not isinstance(target, nextcord.Interaction):
+            result = await outbound.dm(
+                self._actor(target), kind='mentorship_private_records', embed=embed, essential=True
             )
-            await safe_send(interaction, embed=embed, ephemeral=True)
+            await self._reply(
+                target,
+                'Private Mentorship Records',
+                'Sent in DM.' if result.ok else 'Unable to DM your records. Use the slash command for private output.',
+            )
             return
+        await safe_send(target, embed=embed, ephemeral=True)
 
-        role_name = role.title()
-        guild_role = nextcord.utils.get(interaction.guild.roles, name=role_name)
-        if not guild_role:
+    async def _assign_registration_role(self, guild, member, role_name: str) -> tuple[bool, str]:
+        if guild is None:
+            return False, 'Role skipped: registration roles are only available in a server.'
+        role = nextcord.utils.get(guild.roles, name=role_name)
+        if role is None:
             try:
-                guild_role = await interaction.guild.create_role(
+                role = await guild.create_role(
                     name=role_name,
-                    color=nextcord.Color.blue() if role == 'mentor' else nextcord.Color.green(),
-                    reason='Mentorship role creation',
+                    permissions=nextcord.Permissions.none(),
+                    color=nextcord.Color.blue() if role_name == 'Mentor' else nextcord.Color.green(),
+                    reason='Mentorship registration',
                 )
-            except Exception as e:
-                logger.error(f'Error creating role: {str(e)}')
-                embed = await error_embed(
-                    'Role Error',
-                    'Failed to create role. Please check my permissions.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
-
+            except Exception as exc:
+                logger.warning('Unable to create enrollment role in guild %s: %s', guild.id, type(exc).__name__)
+                return False, 'Role skipped: the bot could not create the decorative role.'
+        problem = punitive_role_problem(role, guild)
+        if problem:
+            return False, f'Role skipped: {problem}. No role was assigned.'
         try:
-            await interaction.user.add_roles(guild_role)
-            embed = await success_embed(
-                title='Role Added',
-                description=f'You are now registered as a {role_name}!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f'Error adding role: {str(e)}')
-            embed = await error_embed(
-                'Role Error',
-                'Failed to add role. Please check my permissions.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
+            await member.add_roles(role, reason='Mentorship registration')
+        except Exception as exc:
+            logger.warning('Unable to assign enrollment role in guild %s: %s', guild.id, type(exc).__name__)
+            return False, 'Role skipped: the bot could not assign the decorative role.'
+        return True, f'The {role_name} role was assigned.'
 
-    @mentor.subcommand(name='list', description='List available mentors')
-    @safe_slash_command()
+    async def _register(self, target, role: str, skills=None, bio=None, categories=None):
+        guild_id = self._guild(target)
+        role = role.lower()
+        if role not in MENTORSHIP_ROLES:
+            raise ValidationError('Choose mentor or mentee.')
+        await self._defer(target)
+        actor = self._actor(target)
+        if role == 'mentor':
+            await self.mentorship_service.register_mentor(guild_id, str(actor.id), skills, bio, categories=categories)
+            text = 'Your mentor availability is registered in this server. Networking profile unchanged.'
+        else:
+            text = 'You can request mentorship with `/mentor request`; the request records your consent.'
+        _, role_message = await self._assign_registration_role(target.guild, actor, role.title())
+        await self._reply(
+            target,
+            'Registration Complete',
+            f'{text}\n{role_message}\nReminders are opt-in via `/mentor reminders`.',
+            success=True,
+        )
+
+    async def _list(self, target, category=None, page=1):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        if category is not None:
+            category = category.strip().lower().replace(' ', '_')
+            category = None if category in {'all', ''} else category
+        rows = await self.mentorship_service.find_mentors(guild_id, category, page)
+        text = f'Page {page}. Available mentors in this server (including newcomers):\n'
+        for row in rows[:5]:
+            text += f'<@{row["discord_id"]}> · {bounded_items(row["categories"], 180)}\n'
+            text += f'Skills: {bounded_items(row["skills"], 180)}\n{clip_text(row["bio"], 180)}\n'
+        if not rows:
+            text += 'No available mentors on this page.'
+        if len(rows) > 5:
+            text += f'\nMore results: page {page + 1}.' if page < 1000 else '\nPage limit reached.'
+        await self._reply(target, 'Available Mentors', text)
+
+    async def _notify(self, guild, user_id, title, description):
+        member = guild.get_member(int(user_id))
+        if member is None:
+            return
+        embed = await info_embed(title, description, user=member, contributor_source=__name__)
+        try:
+            await outbound.dm(member, kind='mentorship_update', embed=embed)
+        except Exception as exc:
+            logger.warning('Optional mentorship notification failed: %s', type(exc).__name__)
+
+    async def _request(self, target, mentor, category, message=''):
+        guild_id = self._guild(target)
+        if mentor.bot or target.guild.get_member(mentor.id) is None:
+            raise ValidationError('Choose a non-bot member of this server.')
+        await self._defer(target)
+        actor = self._actor(target)
+        category = category.strip().lower().replace(' ', '_')
+        row = await self.mentorship_service.create_mentorship_request(
+            guild_id, str(mentor.id), str(actor.id), category, message
+        )
+        await self._reply(
+            target,
+            'Request Recorded',
+            f'Mentorship `M{row["id"]}` is pending mentor acceptance. DM delivery is not guaranteed.',
+            success=True,
+        )
+        await self._notify(
+            target.guild,
+            mentor.id,
+            'Mentorship Request',
+            f'<@{actor.id}> requested {category} mentorship (`M{row["id"]}`) in {clip_text(target.guild.name, 120)}. '
+            f'\n{clip_text(row["request_message"], 1000)}\nUse `/mentor accept` for this member in that server.',
+        )
+
+    async def _accept(self, target, mentee):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        actor = self._actor(target)
+        row = await self.mentorship_service.find_live_pair(guild_id, str(actor.id), str(mentee.id), 'pending')
+        if row is None:
+            raise ValidationError('No pending request for you as mentor in this server.')
+        await self.mentorship_service.transition(guild_id, row['id'], str(actor.id), 'accept')
+        await self._reply(target, 'Mentorship Accepted', f'Mentorship `M{row["id"]}` is active.', success=True)
+        await self._notify(target.guild, mentee.id, 'Mentorship Accepted', f'Mentorship M{row["id"]} is now active.')
+
+    @staticmethod
+    def _id(value: str):
+        if not value.startswith('M') or not value[1:].isascii() or not value[1:].isdigit() or len(value) > 11:
+            raise ValidationError(
+                'Use a canonical ID such as M123 from `/mentor engagements`. Old match IDs are unsupported.'
+            )
+        result = int(value[1:])
+        if not 0 < result < 2**31:
+            raise ValidationError('Invalid canonical mentorship ID.')
+        return result
+
+    async def _end(self, target, mentorship_id: int, outcome='successful'):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        row = await self.mentorship_service.transition(
+            guild_id, mentorship_id, str(self._actor(target).id), 'end', outcome
+        )
+        credit = (
+            ', '.join(f'<@{award["discord_id"]}>: {award["points"]} XP' for award in row['awards'])
+            or 'No XP awards for this action.'
+        )
+        await self._reply(
+            target, 'Mentorship Closed', f'M{row["id"]}: {row["status"]} / {row["outcome"]}.\n{credit}', success=True
+        )
+        other = (
+            row['mentee_discord_id']
+            if row['mentor_discord_id'] == str(self._actor(target).id)
+            else row['mentor_discord_id']
+        )
+        await self._notify(
+            target.guild, other, 'Mentorship Closed', f'M{row["id"]}: {row["status"]} / {row["outcome"]}.\n{credit}'
+        )
+
+    async def _complete(self, target, mentee):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        row = await self.mentorship_service.find_live_pair(
+            guild_id, str(self._actor(target).id), str(mentee.id), 'active'
+        )
+        if row is None:
+            raise ValidationError('No active mentorship for you as mentor in this server.')
+        await self._end(target, row['id'])
+
+    async def _engagements(self, target, page=1, *, legacy=False):
+        guild_id = None if legacy else self._guild(target)
+        await self._defer(target)
+        rows = await self.mentorship_service.get_user_mentorships(str(self._actor(target).id), guild_id, page)
+        text = (
+            'Unbound legacy history is read-only; no inferred guild or historical rewards.\n'
+            if legacy
+            else 'Current-server engagements. Use M-prefixed IDs with `/mentor end`.\n'
+        )
+        for row in rows[:5]:
+            label = f'Legacy #{row["id"]}' if legacy else f'M{row["id"]}'
+            text += f'**{label}** · {clip_text(row["category"], 100)} · {clip_text(row["status"], 40)}\n'
+            other = (
+                row['mentee_discord_id']
+                if row['mentor_discord_id'] == str(self._actor(target).id)
+                else row['mentor_discord_id']
+            )
+            text += f'Partner: <@{other}>\n' if other else 'Partner unavailable in legacy record.\n'
+            if not legacy and row['status'] == 'pending':
+                text += f'Request: {clip_text(row["request_message"], 180)}\n'
+        if not rows:
+            text += 'No records on this page.'
+        if len(rows) > 5 and page < 1000:
+            text += f'\nMore results: page {page + 1}.'
+        await self._reply(target, 'Mentorship History' if legacy else 'Your Mentorships', text, personal=True)
+
+    async def _stats(self, target):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        row = await self.mentorship_service.get_mentorship_stats(guild_id)
+        await self._reply(
+            target,
+            'Server Mentorship Stats',
+            f'Total: {row["total"]}\nActive: {row["active"]}\nCompleted: {row["completed"]}\nUnbound history is excluded.',
+        )
+
+    async def _availability(self, target, available):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        await self.mentorship_service.set_availability(guild_id, str(self._actor(target).id), available)
+        await self._reply(
+            target,
+            'Availability Updated',
+            'Available for new requests.'
+            if available
+            else 'Paused; no new requests. Existing engagements are unchanged.',
+            success=True,
+        )
+
+    async def _reminders(self, target, enabled):
+        guild_id = self._guild(target)
+        await self._defer(target)
+        await self.mentorship_service.set_reminders(guild_id, str(self._actor(target).id), enabled)
+        await self._reply(
+            target,
+            'Reminder Preference Saved',
+            'Opted in; first check-in is no sooner than seven days from now.'
+            if enabled
+            else 'Check-in reminders disabled.',
+            success=True,
+        )
+
+    async def _help(self, target):
+        await self._reply(
+            target,
+            'Mentorship Commands',
+            'Guild-scoped, opt-in mentorship. `/mentor` and `!mentor`: register, apply, list, request, accept, complete, end, cancel, engagements, history, stats, availability, reminders.\n'
+            'Mentor certifies successful completion (50/25 XP once); either participant may cancel. Roles are optional decoration.\n'
+            'Use M-prefixed canonical IDs; old match IDs are read-only archive. Reminders default off.',
+        )
+
+    @nextcord.slash_command(name='mentor', description='Guild-scoped opt-in mentorship')
+    async def mentor(self, interaction: nextcord.Interaction):
+        await self._help(interaction)
+
+    @mentor.subcommand(
+        name='register', description='Opt in as mentor or prepare as mentee; role assignment is optional'
+    )
+    @safe_slash_command(requires_db=True)
+    async def mentor_register_slash(self, interaction: nextcord.Interaction, role: str):
+        await self._register(interaction, role)
+
+    @mentor.subcommand(
+        name='apply', description='Publish your mentor availability without changing your networking profile'
+    )
+    @safe_slash_command(requires_db=True)
+    async def mentor_apply(self, interaction: nextcord.Interaction, skills: str, bio: str, categories: str = ''):
+        chosen = (
+            [c.strip().lower().replace(' ', '_') for c in categories.split(',') if c.strip()] if categories else None
+        )
+        await self._register(interaction, 'mentor', skills, bio, chosen)
+
+    @mentor.subcommand(name='list', description='List available mentors, five per page')
+    @safe_slash_command(requires_db=True)
     async def mentor_list_slash(
         self,
         interaction: nextcord.Interaction,
         category: str = nextcord.SlashOption(
-            name='category',
-            description='Filter by category',
-            required=False,
-            choices={c.replace('_', ' ').title(): c for c in MENTORSHIP_CATEGORIES},
+            required=False, choices={c.replace('_', ' ').title(): c for c in MENTORSHIP_CATEGORIES}
         ),
+        page: int = 1,
     ):
-        if category and category not in MENTORSHIP_CATEGORIES:
-            categories = ', '.join(MENTORSHIP_CATEGORIES)
-            embed = await error_embed(
-                'Invalid Category',
-                f'Available categories: {categories}',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
+        await self._list(interaction, category, page)
 
-        mentors = await self.mentorship_service.find_mentors(category or '')
-
-        if not mentors:
-            embed = await info_embed(
-                title='No Mentors Found',
-                description='No mentors found.' + (f' for category: {category}' if category else ''),
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        embed = await info_embed(
-            title=f'Available Mentors{f" - {category}" if category else ""}',
-            description='Here are the available mentors:',
-            user=interaction.user,
-            contributor_source=__name__,
-        )
-
-        for mentor in mentors:
-            user = self.bot.get_user(int(mentor['discord_id']))
-            if user:
-                embed.add_field(
-                    name=user.display_name,
-                    value=f'Completed: {mentor["completed_mentorships"]} | Points: {mentor["points"]}',
-                    inline=False,
-                )
-
-        await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='request', description='Request mentorship from a mentor')
-    @safe_slash_command()
+    @mentor.subcommand(name='request', description='Request an available mentor in this server')
+    @safe_slash_command(requires_db=True)
     async def mentor_request_slash(
         self,
         interaction: nextcord.Interaction,
         mentor: nextcord.Member,
-        category: str = nextcord.SlashOption(
-            name='category',
-            description='Mentorship category',
-            choices={c.replace('_', ' ').title(): c for c in MENTORSHIP_CATEGORIES},
-        ),
+        category: str = nextcord.SlashOption(choices={c.replace('_', ' ').title(): c for c in MENTORSHIP_CATEGORIES}),
+        message: str = '',
     ):
-        if category not in MENTORSHIP_CATEGORIES:
-            categories = ', '.join(MENTORSHIP_CATEGORIES)
-            embed = await error_embed(
-                'Invalid Category',
-                f'Available categories: {categories}',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
+        await self._request(interaction, mentor, category, message)
 
-        mentor_role = nextcord.utils.get(interaction.guild.roles, name='Mentor')
-        if not mentor_role or mentor_role not in mentor.roles:
-            embed = await error_embed(
-                'Not a Mentor',
-                'This user is not registered as a mentor.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-            return
-
-        try:
-            await self.mentorship_service.create_mentorship_request(str(mentor.id), str(interaction.user.id), category)
-
-            embed = await success_embed(
-                title='Mentorship Request Sent',
-                description=f'Request sent to {mentor.mention} for {category} mentorship!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-            mentor_embed = await info_embed(
-                title='New Mentorship Request',
-                description=f'{interaction.user.mention} has requested your mentorship in {category}!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            mentor_embed.add_field(
-                name='How to Accept',
-                value=f'Use `/mentor accept mentee:{interaction.user.mention}` to accept this request.',
-                inline=False,
-            )
-            try:
-                await mentor.send(embed=mentor_embed)
-            except nextcord.Forbidden:
-                pass
-
-        except ValueError as e:
-            embed = await error_embed('Request Failed', str(e), user=interaction.user, contributor_source=__name__)
-            await safe_send(interaction, embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f'Error creating mentorship request: {str(e)}')
-            embed = await error_embed(
-                'Request Failed',
-                'An error occurred while creating the mentorship request.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='accept', description='Accept a mentorship request')
-    @safe_slash_command()
+    @mentor.subcommand(name='accept', description='Mentor accepts a pending request')
+    @safe_slash_command(requires_db=True)
     async def mentor_accept_slash(self, interaction: nextcord.Interaction, mentee: nextcord.Member):
-        try:
-            mentorships = await self.mentorship_service.get_user_mentorships(str(interaction.user.id))
-            pending_mentorship = next(
-                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'pending'), None
-            )
+        await self._accept(interaction, mentee)
 
-            if not pending_mentorship:
-                embed = await error_embed(
-                    'No Pending Request',
-                    'No pending mentorship request found from this user.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
-
-            mentorship = await self.mentorship_service.accept_mentorship(
-                pending_mentorship['id'], str(interaction.user.id)
-            )
-
-            embed = await success_embed(
-                title='Mentorship Started',
-                description=f'Mentorship between {interaction.user.mention} and {mentee.mention} has begun!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            embed.add_field(name='Category', value=mentorship['category'])
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-            mentee_embed = await success_embed(
-                title='Mentorship Request Accepted',
-                description=f'{interaction.user.mention} has accepted your mentorship request!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            try:
-                await mentee.send(embed=mentee_embed)
-            except nextcord.Forbidden:
-                pass
-
-        except ValueError as e:
-            embed = await error_embed('Accept Failed', str(e), user=interaction.user, contributor_source=__name__)
-            await safe_send(interaction, embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f'Error accepting mentorship: {str(e)}')
-            embed = await error_embed(
-                'Accept Failed',
-                'An error occurred while accepting the mentorship.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='complete', description='Complete a mentorship')
-    @safe_slash_command()
+    @mentor.subcommand(name='complete', description='Mentor certifies successful completion')
+    @safe_slash_command(requires_db=True)
     async def mentor_complete_slash(self, interaction: nextcord.Interaction, mentee: nextcord.Member):
-        try:
-            mentorships = await self.mentorship_service.get_user_mentorships(str(interaction.user.id))
-            active_mentorship = next(
-                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'active'), None
-            )
+        await self._complete(interaction, mentee)
 
-            if not active_mentorship:
-                embed = await error_embed(
-                    'No Active Mentorship',
-                    'No active mentorship found with this user.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
+    @mentor.subcommand(name='end', description='Close a canonical engagement (use M-prefixed ID, not old match ID)')
+    @safe_slash_command(requires_db=True)
+    async def mentor_end(self, interaction: nextcord.Interaction, mentorship_id: str, outcome: str = 'successful'):
+        await self._end(interaction, self._id(mentorship_id), outcome)
 
-            mentorship = await self.mentorship_service.complete_mentorship(
-                active_mentorship['id'], str(interaction.user.id)
-            )
+    @mentor.subcommand(name='cancel', description='Either participant cancels a pending/active engagement without XP')
+    @safe_slash_command(requires_db=True)
+    async def mentor_cancel(self, interaction: nextcord.Interaction, mentorship_id: str):
+        await self._end(interaction, self._id(mentorship_id), 'cancelled')
 
-            embed = await success_embed(
-                title='Mentorship Completed',
-                description=f'Mentorship between {interaction.user.mention} and {mentee.mention} has been completed!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            embed.add_field(name='Category', value=mentorship['category'])
-            embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentor_session']))
-            await safe_send(interaction, embed=embed, ephemeral=True)
+    @mentor.subcommand(name='engagements', description='View your current-server canonical engagements')
+    @safe_slash_command(requires_db=True)
+    async def mentor_engagements(self, interaction: nextcord.Interaction, page: int = 1):
+        await self._engagements(interaction, page)
 
-            mentee_embed = await success_embed(
-                title='Mentorship Completed',
-                description=f'Your mentorship with {interaction.user.mention} has been completed!',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            mentee_embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentee_completion']))
-            try:
-                await mentee.send(embed=mentee_embed)
-            except nextcord.Forbidden:
-                pass
+    @mentor.subcommand(name='history', description='View your unbound legacy history, read-only')
+    @safe_slash_command(requires_db=True)
+    async def mentor_history(self, interaction: nextcord.Interaction, page: int = 1):
+        await self._engagements(interaction, page, legacy=True)
 
-        except ValueError as e:
-            embed = await error_embed('Complete Failed', str(e), user=interaction.user, contributor_source=__name__)
-            await safe_send(interaction, embed=embed, ephemeral=True)
-        except Exception as e:
-            logger.error(f'Error completing mentorship: {str(e)}')
-            embed = await error_embed(
-                'Complete Failed',
-                'An error occurred while completing the mentorship.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='stats', description='View mentorship statistics')
-    @safe_slash_command()
+    @mentor.subcommand(name='stats', description='Current-server mentorship statistics')
+    @safe_slash_command(requires_db=True)
     async def mentor_stats_slash(self, interaction: nextcord.Interaction):
-        try:
-            user_stats = await self.mentorship_service.get_user_stats(str(interaction.user.id))
-            overall_stats = await self.mentorship_service.get_mentorship_stats()
+        await self._stats(interaction)
 
-            embed = await info_embed(title='Mentorship Statistics', user=interaction.user, contributor_source=__name__)
+    @mentor.subcommand(name='availability', description='Pause/resume mentor availability')
+    @safe_slash_command(requires_db=True)
+    async def mentor_availability(self, interaction: nextcord.Interaction, available: bool):
+        await self._availability(interaction, available)
 
-            embed.add_field(
-                name='Your Stats as Mentor',
-                value=f'Total: {user_stats["as_mentor"]["total"]}\nActive: {user_stats["as_mentor"]["active"]}\nCompleted: {user_stats["as_mentor"]["completed"]}',
-                inline=True,
-            )
+    @mentor.subcommand(name='reminders', description='Opt in/out of weekly check-in DMs (default off)')
+    @safe_slash_command(requires_db=True)
+    async def mentor_reminders(self, interaction: nextcord.Interaction, enabled: bool):
+        await self._reminders(interaction, enabled)
 
-            embed.add_field(
-                name='Your Stats as Mentee',
-                value=f'Total: {user_stats["as_mentee"]["total"]}\nActive: {user_stats["as_mentee"]["active"]}\nCompleted: {user_stats["as_mentee"]["completed"]}',
-                inline=True,
-            )
+    @commands.group(name='mentor', invoke_without_command=True)
+    async def mentor_prefix(self, ctx):
+        await self._help(ctx)
 
-            embed.add_field(
-                name='Overall Platform Stats',
-                value=f'Total: {overall_stats["total_mentorships"]}\nActive: {overall_stats["active_mentorships"]}\nCompleted: {overall_stats["completed_mentorships"]}',
-                inline=False,
-            )
+    @mentor_prefix.command(name='register')
+    @safe_command(requires_db=True)
+    async def mentor_register_prefix(self, ctx, role: str):
+        await self._register(ctx, role)
 
-            category_stats = ''
-            for category, count in overall_stats['category_distribution'].items():
-                category_stats += f'{category}: {count}\n'
-            if category_stats:
-                embed.add_field(name='Category Distribution', value=category_stats, inline=False)
+    @mentor_prefix.command(name='apply')
+    @safe_command(requires_db=True)
+    async def mentor_apply_prefix(self, ctx, skills: str, *, bio: str):
+        categories = None
+        if bio.startswith('--categories '):
+            pieces = bio.removeprefix('--categories ').split('|', 1)
+            if len(pieces) != 2:
+                raise ValidationError('Use `!mentor apply "skills" --categories programming,career | bio`.')
+            categories = [c.strip().lower().replace(' ', '_') for c in pieces[0].split(',') if c.strip()]
+            bio = pieces[1].strip()
+        await self._register(ctx, 'mentor', skills, bio, categories)
 
-            await safe_send(interaction, embed=embed, ephemeral=True)
+    @mentor_prefix.command(name='list')
+    @safe_command(requires_db=True)
+    async def mentor_list_prefix(self, ctx, category: str = None, page: int = 1):
+        await self._list(ctx, category, page)
 
-        except Exception as e:
-            logger.error(f'Error getting mentorship stats: {str(e)}')
-            embed = await error_embed(
-                'Stats Error',
-                'An error occurred while fetching mentorship statistics.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
+    @mentor_prefix.command(name='request')
+    @safe_command(requires_db=True)
+    async def mentor_request_prefix(self, ctx, mentor: nextcord.Member, category: str, *, message: str = ''):
+        await self._request(ctx, mentor, category, message)
 
-    # ==================== PHASE 5: Mentorship Matching ====================
+    @mentor_prefix.command(name='accept')
+    @safe_command(requires_db=True)
+    async def mentor_accept_prefix(self, ctx, mentee: nextcord.Member):
+        await self._accept(ctx, mentee)
 
-    @mentor.subcommand(name='apply', description='Register as an available mentor with skills')
-    @safe_slash_command()
-    async def mentor_apply(
-        self,
-        interaction: nextcord.Interaction,
-        skills: str,
-        bio: str,
-    ):
-        """Register as a mentor. Skills are comma-separated (e.g. Python, React, DevOps)."""
-        try:
-            skills_list = [s.strip() for s in skills.split(',') if s.strip()]
-            if not skills_list:
-                embed = await error_embed(
-                    'Missing Skills',
-                    'Please provide at least one skill.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
+    @mentor_prefix.command(name='complete')
+    @safe_command(requires_db=True)
+    async def mentor_complete_prefix(self, ctx, mentee: nextcord.Member):
+        await self._complete(ctx, mentee)
 
-            # Ensure user exists
-            await get_or_create_user(str(interaction.user.id))
+    @mentor_prefix.command(name='end')
+    @safe_command(requires_db=True)
+    async def mentor_end_prefix(self, ctx, mentorship_id: str, outcome: str = 'successful'):
+        await self._end(ctx, self._id(mentorship_id), outcome)
 
-            # Upsert into mentorship_matches as a mentor registration
-            resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
-            await db.execute(
-                """INSERT INTO mentorship_matches (guild_id, mentor_id, mentee_id, category, status)
-                   VALUES ($1, $2, $2, 'registered', 'registered')
-                   ON CONFLICT DO NOTHING""",
-                interaction.guild.id if interaction.guild else 0,
-                resolved_id,
-            )
+    @mentor_prefix.command(name='cancel')
+    @safe_command(requires_db=True)
+    async def mentor_cancel_prefix(self, ctx, mentorship_id: str):
+        await self._end(ctx, self._id(mentorship_id), 'cancelled')
 
-            # Add Mentor role
-            mentor_role = nextcord.utils.get(interaction.guild.roles, name='Mentor') if interaction.guild else None
-            if not mentor_role and interaction.guild:
-                try:
-                    mentor_role = await interaction.guild.create_role(
-                        name='Mentor',
-                        color=nextcord.Color.blue(),
-                        reason='Mentorship registration',
-                    )
-                except Exception:
-                    pass
-            if mentor_role:
-                try:
-                    await interaction.user.add_roles(mentor_role)
-                except Exception:
-                    pass
+    @mentor_prefix.command(name='engagements')
+    @safe_command(requires_db=True)
+    async def mentor_engagements_prefix(self, ctx, page: int = 1):
+        await self._engagements(ctx, page)
 
-            # Update profile skills
-            profile_data = {
-                'title': f'Mentor ({", ".join(skills_list[:3])})',
-                'skills': skills_list,
-                'bio': bio[:1000],
-            }
-            from src.services.networking_service import NetworkingService
+    @mentor_prefix.command(name='history')
+    @safe_command(requires_db=True)
+    async def mentor_history_prefix(self, ctx, page: int = 1):
+        await self._engagements(ctx, page, legacy=True)
 
-            svc = NetworkingService()
-            await svc.upsert_profile(str(interaction.user.id), profile_data)
+    @mentor_prefix.command(name='stats')
+    @safe_command(requires_db=True)
+    async def mentor_stats_prefix(self, ctx):
+        await self._stats(ctx)
 
-            embed = await success_embed(
-                title='Mentor Registration Complete',
-                description=(
-                    f'You are now registered as a mentor!\n\n**Skills:** {", ".join(skills_list)}\n**Bio:** {bio[:200]}'
-                ),
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
+    @mentor_prefix.command(name='availability')
+    @safe_command(requires_db=True)
+    async def mentor_availability_prefix(self, ctx, available: bool):
+        await self._availability(ctx, available)
 
-        except Exception as e:
-            logger.error('Mentor apply error: %s', e, exc_info=True)
-            embed = await error_embed(
-                'Registration Failed',
-                'An error occurred during registration.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-    @mentor.subcommand(name='end', description='End an active mentorship and record the outcome')
-    @safe_slash_command()
-    async def mentor_end(
-        self,
-        interaction: nextcord.Interaction,
-        match_id: int,
-        outcome: str = nextcord.SlashOption(
-            description='Outcome of the mentorship',
-            choices={'Successful': 'successful', 'Incomplete': 'incomplete', 'Cancelled': 'cancelled'},
-        ),
-    ):
-        """Close an active mentorship session."""
-        try:
-            resolved_id = await self.mentorship_service._resolve_user_id(str(interaction.user.id))
-
-            # Claim completion and award both participants in one atomic statement. A second
-            # concurrent invocation cannot claim the active row or award its XP again.
-            match = await db.fetch_one(
-                """WITH completed AS (
-                       UPDATE mentorship_matches
-                       SET status = 'completed', ended_at = NOW(), outcome = $3
-                       WHERE id = $1 AND (mentor_id = $2 OR mentee_id = $2)
-                         AND status = 'active' AND mentor_id <> mentee_id
-                       RETURNING mentor_id, mentee_id
-                   ), awarded AS (
-                       UPDATE users SET points = points + $4, total_commands = total_commands + 1
-                       WHERE $3 = 'successful'
-                         AND id IN (SELECT mentor_id FROM completed UNION SELECT mentee_id FROM completed)
-                       RETURNING id
-                   )
-                   SELECT * FROM completed""",
-                match_id,
-                resolved_id,
-                outcome,
-                POINTS_CONFIG['mentor_session'],
-            )
-
-            if not match:
-                embed = await error_embed(
-                    'Not Found',
-                    'No active mentorship match found with that ID.',
-                    user=interaction.user,
-                    contributor_source=__name__,
-                )
-                await safe_send(interaction, embed=embed, ephemeral=True)
-                return
-
-            embed = await success_embed(
-                title='Mentorship Ended',
-                description=(
-                    f'Mentorship match `#{match_id}` has been closed.\n'
-                    f'**Outcome:** {outcome.title()}\n'
-                    + (
-                        f'Both mentor and mentee received **{POINTS_CONFIG["mentor_session"]} XP**.'
-                        if outcome == 'successful'
-                        else ''
-                    )
-                ),
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-        except Exception as e:
-            logger.error('Mentor end error: %s', e, exc_info=True)
-            embed = await error_embed(
-                'Error',
-                'An error occurred while ending the mentorship.',
-                user=interaction.user,
-                contributor_source=__name__,
-            )
-            await safe_send(interaction, embed=embed, ephemeral=True)
-
-    # ==================== Weekly Check-in DMs ====================
+    @mentor_prefix.command(name='reminders')
+    @safe_command(requires_db=True)
+    async def mentor_reminders_prefix(self, ctx, enabled: bool):
+        await self._reminders(ctx, enabled)
 
     @tasks.loop(hours=24)
     @safe_background_task(name='mentorship_checkins')
     async def check_in_loop(self):
-        """Send check-in DMs to active mentorships that haven't been checked in for 7+ days."""
-        try:
-            stale = await db.fetch(
-                """SELECT id, mentor_id, mentee_id, category
-                   FROM mentorship_matches
-                   WHERE status = 'active' AND mentor_id <> mentee_id
-                   AND last_checkin_at < NOW() - INTERVAL '7 days'"""
+        service = self.mentorship_service
+        rows = await service.due_reminders()
+        groups: dict[tuple[int, int, int, str], list] = {}
+        for row in rows:
+            groups.setdefault((row['guild_id'], row['user_id'], row['revision'], row['discord_id']), []).append(row)
+        failures = 0
+        for guild_id, user_id, revision, discord_id in groups:
+            if not await service.claim_reminder(guild_id, user_id, revision):
+                continue
+            guild = self.bot.get_guild(guild_id)
+            member = guild.get_member(int(discord_id)) if guild else None
+            if member is None:
+                continue
+            embed = await info_embed(
+                'Mentorship Check-in',
+                'You opted in to check-ins for this server. Use `/mentor engagements` to view current status; `/mentor reminders false` to opt out.',
+                user=member,
+                contributor_source=__name__,
             )
-        except DatabaseUnavailableError:
-            return
-
-        for match in stale:
-            for uid_field in ['mentor_id', 'mentee_id']:
-                try:
-                    user_id = match[uid_field]
-                    user_row = await db.fetch_one('SELECT discord_id FROM users WHERE id = $1', user_id)
-                    if not user_row:
-                        continue
-                    member = self.bot.get_user(int(user_row['discord_id']))
-                    if not member:
-                        continue
-
-                    checkin_embed = await info_embed(
-                        title='Mentorship Check-in',
-                        description=(
-                            f'Hi! This is a friendly check-in for your **{match["category"]}** mentorship '
-                            f'(match `#{match["id"]}`).\n\n'
-                            f'How is everything going? If the mentorship is complete, '
-                            f'you can end it with `/mentor end {match["id"]}`.'
-                        ),
-                        user=member,
-                        contributor_source=__name__,
-                    )
-                    await member.send(embed=checkin_embed)
-                except nextcord.Forbidden:
-                    pass
-                except Exception as e:
-                    logger.debug('Check-in DM failed for match %s: %s', match['id'], e)
-
-            # Update last_checkin_at
-            try:
-                await db.execute(
-                    'UPDATE mentorship_matches SET last_checkin_at = NOW() WHERE id = $1',
-                    match['id'],
-                )
-            except Exception:
-                pass
+            matches = await service.current_reminder_matches(guild_id, user_id, revision)
+            if not matches:
+                continue
+            for match in matches[:10]:
+                embed.add_field(name=f'M{match["id"]}', value=clip_text(match['category'], 100), inline=False)
+            result = await outbound.dm(
+                member,
+                kind='mentorship_checkin',
+                embed=embed,
+                dedupe_key=f'mentorship-reminder:{guild_id}:{user_id}:{revision}:{matches[0]["id"]}',
+            )
+            await service.finish_reminder(guild_id, user_id, revision, result.ok)
+            failures = 0 if result.ok else failures + 1
+            if failures >= 3:
+                break
 
     @check_in_loop.before_loop
     async def before_check_in(self):
         await self.bot.wait_until_ready()
 
-    # ==================== PREFIX COMMANDS ====================
-
-    @commands.group(name='mentor', invoke_without_command=True)
-    async def mentor_prefix(self, ctx):
-        """Mentorship commands"""
-        embed = await info_embed(
-            title='Mentorship Commands',
-            description='Connect with mentors and mentees! Use `/mentor` for the best experience.',
-            user=ctx.author,
-            contributor_source=__name__,
-        )
-        embed.add_field(
-            name='Available Commands',
-            value=(
-                '`!mentor register <role>` - Register as a mentor or mentee\n'
-                '`!mentor list [category]` - List available mentors\n'
-                '`!mentor request @mentor <category>` - Request mentorship\n'
-                '`!mentor accept @mentee` - Accept a mentorship request\n'
-                '`!mentor complete @mentee` - Complete a mentorship\n'
-                '`!mentor stats` - View mentorship statistics'
-            ),
-            inline=False,
-        )
-        await ctx.send(embed=embed)
-
-    @mentor_prefix.command(name='register')
-    async def mentor_register_prefix(self, ctx, role: str):
-        """Register as a mentor or mentee"""
-        role = role.lower()
-        if role not in [r.lower() for r in MENTORSHIP_ROLES]:
-            roles = ', '.join(MENTORSHIP_ROLES)
-            await ctx.send(f'❌ Invalid role. Available roles: {roles}')
-            return
-
-        role_name = role.title()
-        guild_role = nextcord.utils.get(ctx.guild.roles, name=role_name)
-        if not guild_role:
-            try:
-                guild_role = await ctx.guild.create_role(
-                    name=role_name,
-                    color=nextcord.Color.blue() if role == 'mentor' else nextcord.Color.green(),
-                    reason='Mentorship role creation',
-                )
-            except Exception as e:
-                logger.error(f'Error creating role: {str(e)}')
-                await ctx.send('❌ Failed to create role. Please check my permissions.')
-                return
-
-        try:
-            await ctx.author.add_roles(guild_role)
-            embed = nextcord.Embed(
-                title='Role Added', description=f'You are now registered as a {role_name}!', color=guild_role.color
-            )
-            await ctx.send(embed=embed)
-        except Exception as e:
-            logger.error(f'Error adding role: {str(e)}')
-            await ctx.send('❌ Failed to add role. Please check my permissions.')
-
-    @mentor_prefix.command(name='list')
-    async def mentor_list_prefix(self, ctx, category: str | None = None):
-        """List available mentors"""
-        if category and category not in MENTORSHIP_CATEGORIES:
-            categories = ', '.join(MENTORSHIP_CATEGORIES)
-            await ctx.send(f'❌ Invalid category. Available categories: {categories}')
-            return
-
-        mentors = await self.mentorship_service.find_mentors(category or '')
-
-        if not mentors:
-            await ctx.send('No mentors found.' + (f' for category: {category}' if category else ''))
-            return
-
-        embed = nextcord.Embed(
-            title=f'Available Mentors{f" - {category}" if category else ""}', color=nextcord.Color.blue()
-        )
-
-        for mentor in mentors:
-            user = self.bot.get_user(int(mentor['discord_id']))
-            if user:
-                embed.add_field(
-                    name=user.display_name,
-                    value=f'Completed: {mentor["completed_mentorships"]} | Points: {mentor["points"]}',
-                    inline=False,
-                )
-
-        await ctx.send(embed=embed)
-
-    @mentor_prefix.command(name='request')
-    async def mentor_request_prefix(self, ctx, mentor: nextcord.Member, category: str):
-        """Request mentorship from a mentor"""
-        if category not in MENTORSHIP_CATEGORIES:
-            categories = ', '.join(MENTORSHIP_CATEGORIES)
-            await ctx.send(f'❌ Invalid category. Available categories: {categories}')
-            return
-
-        mentor_role = nextcord.utils.get(ctx.guild.roles, name='Mentor')
-        if not mentor_role or mentor_role not in mentor.roles:
-            await ctx.send('❌ This user is not registered as a mentor.')
-            return
-
-        try:
-            await self.mentorship_service.create_mentorship_request(str(mentor.id), str(ctx.author.id), category)
-
-            embed = nextcord.Embed(
-                title='Mentorship Request Sent',
-                description=f'Request sent to {mentor.mention} for {category} mentorship!',
-                color=nextcord.Color.blue(),
-            )
-            await ctx.send(embed=embed)
-
-            mentor_embed = nextcord.Embed(
-                title='New Mentorship Request',
-                description=f'{ctx.author.mention} has requested your mentorship in {category}!',
-                color=nextcord.Color.blue(),
-            )
-            mentor_embed.add_field(
-                name='How to Accept',
-                value=f'Use `!mentor accept @{ctx.author.display_name}` to accept this request.',
-                inline=False,
-            )
-            await mentor.send(embed=mentor_embed)
-
-        except ValueError as e:
-            await ctx.send(f'❌ {str(e)}')
-        except Exception as e:
-            logger.error(f'Error creating mentorship request: {str(e)}')
-            await ctx.send('❌ An error occurred while creating the mentorship request.')
-
-    @mentor_prefix.command(name='accept')
-    async def mentor_accept_prefix(self, ctx, mentee: nextcord.Member):
-        """Accept a mentorship request"""
-        try:
-            mentorships = await self.mentorship_service.get_user_mentorships(str(ctx.author.id))
-            pending_mentorship = next(
-                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'pending'), None
-            )
-
-            if not pending_mentorship:
-                await ctx.send('❌ No pending mentorship request found from this user.')
-                return
-
-            mentorship = await self.mentorship_service.accept_mentorship(pending_mentorship['id'], str(ctx.author.id))
-
-            embed = nextcord.Embed(
-                title='Mentorship Started',
-                description=f'Mentorship between {ctx.author.mention} and {mentee.mention} has begun!',
-                color=nextcord.Color.green(),
-            )
-            embed.add_field(name='Category', value=mentorship['category'])
-            await ctx.send(embed=embed)
-
-            mentee_embed = nextcord.Embed(
-                title='Mentorship Request Accepted',
-                description=f'{ctx.author.mention} has accepted your mentorship request!',
-                color=nextcord.Color.green(),
-            )
-            await mentee.send(embed=mentee_embed)
-
-        except ValueError as e:
-            await ctx.send(f'❌ {str(e)}')
-        except Exception as e:
-            logger.error(f'Error accepting mentorship: {str(e)}')
-            await ctx.send('❌ An error occurred while accepting the mentorship.')
-
-    @mentor_prefix.command(name='complete')
-    async def mentor_complete_prefix(self, ctx, mentee: nextcord.Member):
-        """Complete a mentorship"""
-        try:
-            mentorships = await self.mentorship_service.get_user_mentorships(str(ctx.author.id))
-            active_mentorship = next(
-                (m for m in mentorships if m['mentee_discord_id'] == str(mentee.id) and m['status'] == 'active'), None
-            )
-
-            if not active_mentorship:
-                await ctx.send('❌ No active mentorship found with this user.')
-                return
-
-            mentorship = await self.mentorship_service.complete_mentorship(active_mentorship['id'], str(ctx.author.id))
-
-            embed = nextcord.Embed(
-                title='Mentorship Completed',
-                description=f'Mentorship between {ctx.author.mention} and {mentee.mention} has been completed!',
-                color=nextcord.Color.gold(),
-            )
-            embed.add_field(name='Category', value=mentorship['category'])
-            embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentor_session']))
-            await ctx.send(embed=embed)
-
-            mentee_embed = nextcord.Embed(
-                title='Mentorship Completed',
-                description=f'Your mentorship with {ctx.author.mention} has been completed!',
-                color=nextcord.Color.gold(),
-            )
-            mentee_embed.add_field(name='Points Earned', value=str(POINTS_CONFIG['mentee_completion']))
-            await mentee.send(embed=mentee_embed)
-
-        except ValueError as e:
-            await ctx.send(f'❌ {str(e)}')
-        except Exception as e:
-            logger.error(f'Error completing mentorship: {str(e)}')
-            await ctx.send('❌ An error occurred while completing the mentorship.')
-
-    @mentor_prefix.command(name='stats')
-    async def mentor_stats_prefix(self, ctx):
-        """View mentorship statistics"""
-        try:
-            user_stats = await self.mentorship_service.get_user_stats(str(ctx.author.id))
-            overall_stats = await self.mentorship_service.get_mentorship_stats()
-
-            embed = nextcord.Embed(title='Mentorship Statistics', color=nextcord.Color.blue())
-
-            embed.add_field(
-                name='Your Stats as Mentor',
-                value=f'Total: {user_stats["as_mentor"]["total"]}\nActive: {user_stats["as_mentor"]["active"]}\nCompleted: {user_stats["as_mentor"]["completed"]}',
-                inline=True,
-            )
-
-            embed.add_field(
-                name='Your Stats as Mentee',
-                value=f'Total: {user_stats["as_mentee"]["total"]}\nActive: {user_stats["as_mentee"]["active"]}\nCompleted: {user_stats["as_mentee"]["completed"]}',
-                inline=True,
-            )
-
-            embed.add_field(
-                name='Overall Platform Stats',
-                value=f'Total: {overall_stats["total_mentorships"]}\nActive: {overall_stats["active_mentorships"]}\nCompleted: {overall_stats["completed_mentorships"]}',
-                inline=False,
-            )
-
-            category_stats = ''
-            for category, count in overall_stats['category_distribution'].items():
-                category_stats += f'{category}: {count}\n'
-            if category_stats:
-                embed.add_field(name='Category Distribution', value=category_stats, inline=False)
-
-            await ctx.send(embed=embed)
-
-        except Exception as e:
-            logger.error(f'Error getting mentorship stats: {str(e)}')
-            await ctx.send('❌ An error occurred while fetching mentorship statistics.')
-
 
 def setup(bot):
-    """Setup the Mentorship cog"""
-    if bot is not None:
-        bot.add_cog(Mentorship(bot))
-        logging.getLogger('VEKA').info('Loaded cog: src.cogs.mentorship')
-    else:
-        logging.getLogger('VEKA').error('Bot is None in Mentorship cog setup')
+    bot.add_cog(Mentorship(bot))
+    logging.getLogger('VEKA').info('Loaded cog: src.cogs.mentorship')
