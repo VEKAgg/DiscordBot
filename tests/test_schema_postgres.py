@@ -1375,3 +1375,43 @@ async def test_season_is_announced_once_per_server(migrated_db, monkeypatch):
     assert calls == [831, 832, 832]
     done = await migrated_db.fetch('SELECT guild_id FROM season_announcements WHERE season_month = $1', season)
     assert sorted(r['guild_id'] for r in done) == [831, 832]
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_season_archive_waits_for_privacy_delete_and_does_not_resurrect(migrated_db, monkeypatch):
+    """A deletion in progress (user row locked, rows deleted, not yet committed) must win: the archive
+    waits on the same lock and then sees the rows gone."""
+    import asyncio
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock
+
+    import asyncpg
+
+    from src.cogs.rpg import rpg_manager
+    from src.services import activity_service as svc
+
+    monkeypatch.setattr(svc, 'db', migrated_db)
+    monkeypatch.setattr(rpg_manager, 'db', migrated_db)
+    uid = 8301
+    await svc.award('message', [svc.Award(uid, 7701, quantity=3, xp_base=30)])
+    season = datetime.now(UTC).strftime('%Y-%m')
+    await migrated_db.execute('DELETE FROM season_archives WHERE season_month = $1', season)
+
+    deleter = await asyncpg.connect(DSN)
+    try:
+        tx = deleter.transaction()
+        await tx.start()
+        await deleter.execute('SELECT 1 FROM users WHERE discord_id = $1 FOR UPDATE', str(uid))
+        await deleter.execute('DELETE FROM user_activity_daily WHERE user_id = $1', uid)
+        await deleter.execute('DELETE FROM leaderboard_snapshots WHERE user_id = $1', uid)
+
+        archive = asyncio.create_task(rpg_manager.RPGManager(MagicMock()).archive_season(datetime.now(UTC).date()))
+        await asyncio.sleep(0.5)
+        assert not archive.done()  # blocked on the user lock
+        await tx.commit()
+        await asyncio.wait_for(archive, 10)
+    finally:
+        await deleter.close()
+
+    assert await migrated_db.fetchval('SELECT COUNT(*) FROM leaderboard_snapshots WHERE user_id = $1', uid) == 0
+    assert await migrated_db.fetchval('SELECT 1 FROM season_archives WHERE season_month = $1', season) == 1
