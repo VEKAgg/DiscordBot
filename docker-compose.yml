@@ -10,12 +10,14 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       # DATABASE_URL is expected to be provided in the .env file
+    # The host also serves other sites; cap a leak instead of letting it starve them (normal use ~70 MB).
+    mem_limit: 768m
     networks:
       - veka-network
 
   # Dashboard API (src/api): a separate process that shares the database with the bot and never talks
-  # to the Discord gateway. Published only on API_BIND_ADDRESS (default: this machine only); the reverse
-  # proxy (Traefik) forwards https://<API host> to it. See docs/DASHBOARD_API_DEPLOY.md.
+  # to the Discord gateway. No host port: Traefik on the same Docker host reaches it over the external
+  # `proxy-network` (labels below), and so can the website container.
   api:
     build:
       context: .
@@ -29,8 +31,17 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - PYTHONUNBUFFERED=1
-    ports:
-      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PUBLISHED_PORT:-8080}:8080"
+    mem_limit: 512m
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy-network
+      - traefik.http.routers.veka-api.rule=Host(`api.veka.gg`)
+      - traefik.http.routers.veka-api.entrypoints=websecure
+      - traefik.http.routers.veka-api.tls=true
+      - traefik.http.routers.veka-api.tls.certresolver=letsencrypt
+      # internal-only: LAN/tailnet clients only; drop it only if the API must be public (see the doc).
+      - traefik.http.routers.veka-api.middlewares=secure-headers@file,internal-only@file
+      - traefik.http.services.veka-api.loadbalancer.server.port=8080
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/ready', timeout=3)"]
       interval: 30s
@@ -39,7 +50,11 @@ services:
       start_period: 20s
     networks:
       - veka-network
+      - proxy-network
 
 networks:
   veka-network:
     driver: bridge
+  # Traefik's network, created by the Traefik stack on the host; the deploy fails if it is missing.
+  proxy-network:
+    external: true
