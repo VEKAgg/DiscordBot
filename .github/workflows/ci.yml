@@ -68,7 +68,6 @@ jobs:
       - name: Dependency audit
         # PyNaCl 1.5.0 advisories (PYSEC-2026-1448/3002) are accepted until nextcord lifts its PyNaCl<1.6 pin;
         # the affected libsodium API (ed25519 point validation) is not used by nextcord's voice code.
-        # See MIGRATION_NOTES.md.
         run: |
           uv export --locked --no-dev --extra api --no-hashes --format requirements-txt > "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit -r "$RUNNER_TEMP/requirements.txt" --ignore-vuln PYSEC-2026-1448 --ignore-vuln PYSEC-2026-3002
