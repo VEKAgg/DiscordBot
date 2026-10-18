@@ -79,9 +79,9 @@ GitHub configuration (`production` environment or repository level):
 
 ### Dashboard API
 
-The API container publishes no host port. It joins Traefik's external `proxy-network`, and Traefik routes `https://api.veka.gg` to it using the labels in `docker-compose.yml`. The `internal-only` middleware limits it to the LAN and tailnet. The website runs on the same network and can call `http://veka-api:8080` directly.
+The API container publishes no host port. It joins Traefik's external `proxy-network`, and Traefik routes `https://api.veka.gg` to it using the labels in `docker-compose.yml`. The `internal-only` middleware limits it to the LAN and tailnet; only `/v1/health` is public, for status.veka.gg. The website runs on the same network and can call `http://veka-api:8080` directly.
 
-To make the API public, add `api.veka.gg` to the Cloudflare Tunnel (origin `https://<traefik host>:443`, TLS verification on) and remove `internal-only@file` from the router labels.
+`api.veka.gg` is a Cloudflare Tunnel hostname (origin `https://<traefik host>:443`, TLS verification on). To make the whole API public, remove `internal-only@file` from the router labels.
 
 Check it with `curl https://api.veka.gg/v1/ready` (`/v1/health` also reports the database and bot status). OpenAPI docs are disabled in production unless `API_DOCS=1`.
 
