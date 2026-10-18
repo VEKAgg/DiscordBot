@@ -35,5 +35,5 @@ COPY migrations ./migrations
 RUN mkdir -p logs
 
 # Still runs as root: ./logs is bind-mounted from the host and must stay writable for the
-# rotating log file. See MIGRATION_NOTES.md for switching to a non-root user.
+# rotating log file, and the deploy writes .env with mode 600 for the runner user.
 CMD ["python", "main.py"]

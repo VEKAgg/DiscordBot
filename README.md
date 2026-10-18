@@ -1,314 +1,90 @@
 # VEKA Discord Bot
 
-A professional networking and community bot built with
-[nextcord](https://github.com/nextcord/nextcord) and backed by PostgreSQL. It
-provides profiles and connections, a member directory, a marketplace, portfolios,
-mentorship, RSS feeds, XP/activity leaderboards, and moderation tooling (a
-spoken-word radio cog exists but is disabled). It is designed to keep running in a degraded state when its database or
-any single feature is unavailable.
-
-Contributor and agent guidance (conventions, architecture details, known issues)
-lives in [`AGENTS.md`](AGENTS.md);
-deployment notes: [`MIGRATION_NOTES.md`](MIGRATION_NOTES.md).
-
----
-
-## Table of Contents
-
-- [Tech Stack](#tech-stack)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Configuration](#configuration)
-- [Setup](#setup)
-- [Commands](#commands)
-- [Development](#development)
-- [CI/CD](#cicd)
-- [Known Issues](#known-issues)
-
----
-
-## Tech Stack
-
-- **Python** `>=3.13`, **nextcord 3.x**
-- **PostgreSQL** via **asyncpg** — the only datastore (no Redis, no MongoDB)
-- **aiohttp / feedparser** — RSS feeds; **Pillow** — rank and welcome cards; **FFmpeg** — radio audio
-- **uv** for dependencies — `pyproject.toml` + `uv.lock` are the source of truth;
-  `requirements.txt` is generated from the lockfile
-
----
+Community bot for the VEKA professional network, built with [nextcord](https://github.com/nextcord/nextcord) and PostgreSQL.
 
 ## Features
 
-Loaded modules are listed in `EXTENSIONS` in `src/core/app.py`.
+- Profiles, connections and a member directory
+- Marketplace with listings, offers, reviews and a forum channel that turns posts into listings
+- Portfolios and mentorship
+- RSS feeds per server
+- XP, levels, rank cards and per-server leaderboards
+- Moderation: warnings with escalation, honeypot channels, mass unban
+- Per-server setup (`/setup`) and privacy controls (`/privacy`)
+- Dashboard API for the web dashboard (`src/api/`)
 
-- 🤝 **Networking** — professional profiles, connection requests with a searchable member picker, and a member directory (`/profile`, `/connect`, `/directory`)
-- 🛒 **Marketplace** — listings, browsing/search, bumps, watchlist, offers, seller reputation and reviews, featured listings and stats (`/marketplace`, `/featured`, `/marketstats`, `/bump`); members can also just create a post in the server's marketplace **forum** — the bot picks it up as a listing (price read from `$123`/`123 USD`, otherwise held for review); listing images are stored durably by the bot because Discord image links expire; command-created listings can be mirrored to a Directus CMS when `DIRECTUS_URL`/`DIRECTUS_SERVICE_TOKEN` are set
-- 💼 **Portfolio** — add, list, view, delete and search projects (`/portfolio`)
-- 🎓 **Mentorship** — opt-in mentor directory per server, request/accept/complete/cancel, one-time XP for completed mentorships, opt-in check-in reminders (`/mentor`)
-- 📚 **Feeds & resources** — per-guild RSS subscriptions with dedupe, plus a resource browser (`/feed`, `/resource`)
-- 🎮 **XP & activity** — XP from messages, commands and voice with streak multipliers, levels, Pillow rank cards; all-time leaderboards across servers, plus weekly/monthly/season boards per server; auto-updating leaderboard message; game/coding/streaming time in servers that turn activity tracking on (`/level`, `/rank`, `/leaderboard`, `/activity`, `/most`)
-- 🔒 **Privacy** — server admins decide whether game/coding/streaming tracking runs; members can opt out and delete their activity data (`/privacy`). Music is never tracked.
-- 📊 **Server stats** — this server's activity, growth trend and activity tiers (`/stats`, `/serverstats`)
-- 📻 **Radio** — **disabled**; when enabled, admins play a podcast episode or a public audio URL (`/radio podcast`, `/radio play`). No music stations (content policy).
-- ⚙️ **Per-guild setup** — channels and roles configured per server (`/setup`)
-- 👋 **Welcome cards** — generated on member join (`/welcome test`); during a join raid (more than 5 joins a minute) one batched welcome replaces individual cards
-- 🛡️ **Moderation** — warnings with auto-escalation to mute/ban, role-hierarchy checks, moderation stats (`/warn`, `/warnings`, `/clearwarnings`, `/modstats`)
-- 🚫 **Honeypot** — trap channels that softban/ban/timeout/role-assign posters, with logging config (`/honeypot`, `/logging`)
-- 🔓 **Mass unban** — resumable, rate-limit-aware bulk unbans with preview and double confirmation; progress is one edited message; apology DMs are off unless requested per job (`/massunban`)
-- 🩺 **Health & admin** — health, uptime, feature status, startup checks, cog reload, broadcast, lockdown alert (`/health`, `/uptime`, `/botinfo`, `/admin`)
-- 🧹 **Maintenance** — nightly retention of raw logs (see *Data retention*)
-- 🖥️ **Dashboard API** — a separate FastAPI service (`python -m src.api`) for the web dashboard: Discord-OAuth-verified, permission-checked, versioned `/v1` endpoints (see `AGENTS.md` → *Dashboard API*)
-- 📤 **Chat export** — export channel history to `.txt` (`/exportchat`)
+Run `/help` in Discord for the full command list. Most commands exist as a slash command and a `!` prefix command.
 
-**Not implemented:** marketplace transactions / "sold" flow, accepting or rejecting
-offers, watchlist price alerts. XP/levels, profiles and the marketplace are shared
-across servers; leaderboards and stats inside a server are per server.
+## Requirements
 
----
+- Python 3.13+ and [uv](https://docs.astral.sh/uv/)
+- PostgreSQL
 
-## Architecture
+## Getting started
 
-`main.py` → `src/core/app.py:run_bot()` loads `.env`, configures logging, builds
-the bot, registers events and loads extensions. Layers: `src/cogs/` (thin Discord
-handlers) → `src/services/` (business logic) → `src/database/` (data access).
+```bash
+cp .env.example .env      # set DISCORD_TOKEN and DATABASE_URL
+uv sync --extra dev
+pre-commit install
+python main.py
+```
 
-**Degraded mode is the central design theme:**
+With Docker (bot, API and a local PostgreSQL):
 
-- `src/core/runtime_state.py` holds the global health state (`db_available`,
-  `loaded_cogs`, `failed_cogs`, `degraded_features`, …).
-- A database failure at boot doesn't abort startup; the `database` feature is
-  marked degraded.
-- A 30-second `db_health_check` loop pings the DB, flips `db_available`, alerts
-  admins on lost/recovered transitions and, once the DB is back, applies deferred
-  migrations and retries any cog `cog_ready()` startup hook that failed.
-- Extension load failures are isolated per cog.
-- Commands use `@safe_command` / `@safe_slash_command(requires_db=True)` and
-  `safe_send` from `src/utils/safety.py`.
+```bash
+docker compose -f docker-compose.dev.yml up -d --build
+```
 
-**Database:** migrations are plain `.sql` files in `migrations/`,
-applied in filename order on connect and tracked in `schema_migrations` (currently 001–031). Query
-errors are logged with the SQLSTATE, schema object names and a primary message
-(except for data exceptions and PL/pgSQL errors) — never parameter values or
-PostgreSQL `DETAIL` text.
-
----
+Database migrations in `migrations/` run automatically when the bot starts.
 
 ## Configuration
 
-Copy `.env.example` to `.env`. Variables read by `src/config/config.py`:
+All settings are environment variables; see `.env.example`.
 
-| Variable | Required | Default | Notes |
-|---|---|---|---|
-| `DISCORD_TOKEN` | ✅ | — | Bot token |
-| `DATABASE_URL` | ✅* | composed from `POSTGRES_*` | Full PostgreSQL DSN |
-| `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | ✅* | `localhost`/`5432`/`veka_bot`/`veka_bot_user`/`example` | Used if `DATABASE_URL` is unset |
-| `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS` | — | empty | Comma-separated Discord user IDs |
-| `ADMIN_ALERT_CHANNEL_ID` | — | none | Channel for operational alerts |
-| `LIVE_ROLE_ID` | — | none | Role given to members while streaming |
-| `MAIN_GUILD_ID` | — | `1088553066334273537` | The main VEKA server |
-| `MAIN_SERVER_INVITE_URL` | — | `https://discord.gg/veka` | |
-| `DIRECTUS_URL`, `DIRECTUS_SERVICE_TOKEN` | — | empty | Enable the marketplace → Directus mirror |
-| `RETENTION_ACTIVITY_LOG_DAYS`, `RETENTION_HONEYPOT_EVENTS_DAYS`, `RETENTION_MASSUNBAN_ITEMS_DAYS`, `RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS` | — | 90 / 180 / 180 / 30 | Optional retention overrides (days) |
-| `LOG_LEVEL` | — | `INFO` | |
-| `ENVIRONMENT` | — | `development` | |
-| `BOT_VERSION`, `COMMIT_SHA`, `GIT_BRANCH` | — | — | Set by the deploy workflow |
-
-\* Provide either `DATABASE_URL` or the `POSTGRES_*` variables. The command
-prefix is hardcoded to `!`. The marketplace channel is set per server with
-`/setup set marketplace` (text or forum channel).
-
-Configure each server's channels and roles with `/setup interactive` (or `/setup set`)
-or the dashboard. There are no environment/config channel fallbacks.
-
----
-
-## Setup
-
-### Local
-
-```bash
-cp .env.example .env          # fill in DISCORD_TOKEN and DATABASE_URL
-uv sync --extra dev           # runtime + dev deps
-pre-commit install            # once after clone
-python main.py                # needs a reachable PostgreSQL (and FFmpeg for radio)
-```
-
-### Docker
-
-```bash
-docker compose -f docker-compose.dev.yml up -d --build   # bot + bundled PostgreSQL
-docker compose up -d --build                             # production: bot only, external DB via DATABASE_URL
-docker logs veka-discord-bot
-```
-
----
-
-## Commands
-
-Many features have both a slash command and a `!` prefix command; XP/activity, stats, welcome, feeds, marketplace and export are slash-only. Permission
-notes: *Staff* = staff role or `STAFF_IDS`; *Admin* = Administrator/`ADMIN_IDS`;
-*owner outside main* = in other servers only the bot owner may use it; *main server only* = unavailable elsewhere.
-
-### General
-
-| Command | Description |
+| Variable | Description |
 |---|---|
-| `/ping`, `!ping` | Bot latency |
-| `/hello`, `!hello` | Greeting |
-| `/help [command]`, `!help [command]` | Help on commands and categories |
-| `/commands` | List available commands |
-| `/health`, `!health` | Bot health status |
-| `/uptime` | Uptime and service status |
-| `/botinfo` | Bot information and runtime data |
-| `/memberinfo [member]`, `/serverinfo` | Member and server details |
+| `DISCORD_TOKEN` | Bot token (required) |
+| `DATABASE_URL` | PostgreSQL DSN (or set `POSTGRES_HOST/PORT/DB/USER/PASSWORD`) |
+| `ADMIN_IDS`, `OWNER_IDS`, `FOUNDER_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS` | Comma-separated Discord user IDs |
+| `ADMIN_ALERT_CHANNEL_ID` | Channel for operational alerts |
+| `MAIN_GUILD_ID`, `MAIN_SERVER_INVITE_URL` | The main VEKA server |
+| `DIRECTUS_URL`, `DIRECTUS_SERVICE_TOKEN` | Optional marketplace mirror to Directus |
+| `FEED_MAX_*` | RSS feed limits |
+| `RETENTION_*_DAYS` | Data retention overrides |
+| `LOG_LEVEL`, `ENVIRONMENT` | Logging and environment |
+| `API_*` | Dashboard API settings (API process only) |
 
-### Networking
-
-| Command | Description |
-|---|---|
-| `/profile setup` / `edit` / `set` | Create or edit your profile |
-| `/profile view [member]`, `!profile [member]` | View a profile |
-| `!setupprofile` | Set up your profile (prefix flow) |
-| `/connect request [message]` | Pick a member from a searchable menu and send a request |
-| `!connect [@member] [message]` | Send a request directly, or open the picker if no member is given |
-| `/connect list`, `!connections` | Pending requests and connections |
-| `/directory search [skill] [timezone]` | Search the member directory |
-
-### Marketplace
-
-| Command | Description |
-|---|---|
-| `/marketplace post` / `browse` / `view` / `search` | Create, browse, view and search listings |
-| `/marketplace mylistings` / `withdraw` / `bump` | Manage your listings (`/bump` also works) |
-| `/marketplace watch` / `unwatch` / `watchlist` | Watchlist |
-| `/marketplace offer` / `myoffers` | Make offers and view them |
-| `/marketplace review` / `seller` / `reviews` / `helpful` | Reviews and seller reputation |
-| `/marketplace stats`, `/marketstats`, `/featured` | Marketplace analytics and featured listings |
-| `!marketplace_push`, `!marketplace_sync` | (Bot operators) Directus backfill / post missing listings to this server's marketplace channel, max 25 per run |
-
-### Portfolio & Mentorship
-
-| Command | Description |
-|---|---|
-| `/portfolio add` / `list` / `view` / `delete` / `search` (also `!portfolio …`) | Manage and browse projects |
-| `/mentor register` / `apply` / `list` / `request` / `accept` / `complete` / `end` / `cancel` / `engagements` / `history` / `stats` / `availability` / `reminders` (also `!mentor …`) | Mentorship; `end` takes an M-prefixed ID such as `M123` |
-
-### XP, Activity & Stats
-
-| Command | Description |
-|---|---|
-| `/level [user]`, `/rank [user]` | Level, XP and rank card |
-| `/leaderboard show [category] [period]`, `/leaderboard season` | This server's activity (all time, season, month, week) |
-| `/activity stats [user]`, `/activity summary [user]` | All-time totals; last 7 days in this server |
-| `/most streamed` / `played` / `coded` | Activity leaderboards (servers with activity tracking on) |
-| `/privacy status` / `optin` / `optout` / `delete` (also `!privacy …`) | Control and delete your tracked activity |
-| `/stats server`, `/stats demographics`, `/serverstats` | Server analytics |
-| `/setupleaderboard <channel>` | (Manage Server) This server's auto-updating leaderboard channel |
-
-### Feeds & Resources
-
-| Command | Description |
-|---|---|
-| `/feed add <url> <channel> [name] [interval_minutes]` | (Manage Server) Subscribe a channel to an RSS feed |
-| `/feed remove <feed_url>` / `test <feed_url>` | (Manage Server) Remove or preview a feed |
-| `/feed edit <feed_url> [channel] [name] [interval_minutes]` | (Manage Server) Change settings without losing delivery history |
-| `/feed pause <feed_url>` / `resume <feed_url>` | (Manage Server) Stop or restart automatic posting |
-| `/feed list [page]` | Paginated subscriptions, health, and next retry |
-| `/resource sources`, `/resource latest` | View subscriptions or preview a URL |
-
-Feeds are optional, dynamically added **per server**, and stored in PostgreSQL. No code change or restart is needed to manage them. The `feed_url` option of edit/pause/resume/remove autocompletes from the server's subscriptions. Only members with **Manage Server** (or Administrator/server ownership) can manage subscriptions; a staff role alone does not grant access. Use a public RSS/Atom URL, not an ordinary web page. The destination must be a text channel in the same server where the bot has View Channel, Send Messages, and Embed Links.
-
-The scheduler checks due subscriptions every minute; configured intervals are **10–1440 minutes**. Defaults in `.env` (also available as GitHub deployment variables):
-- `FEED_MAX_SUBSCRIPTIONS=25`: maximum subscriptions per server, including paused feeds. Existing subscriptions above the limit are preserved; updating them is allowed.
-- `FEED_MAX_POSTS_PER_POLL=3`: maximum entries posted per feed per poll (1–10).
-- `FEED_MAX_POSTS_PER_GUILD_PER_CYCLE=15`: maximum total automatic posts per server per one-minute cycle. Remaining due feeds wait for the next cycle.
-
-After three failed polls, one warning is sent. Retries back off up to daily, and a successful fetch sends one recovery notice. State survives restarts. Pausing/resuming and editing retain outage backoff and article delivery history; a resume does not force an immediate retry. New subscriptions can post up to the posting limit from the latest available entries. `/feed add` updates an existing URL's settings but preserves its pause state. Lists show fetch health separately from unavailable-channel status; healthy means the latest fetch succeeded, not a guarantee of delivery.
-
-Migration 028 removes only known historical default seeds that still have no destination channel. Configured subscriptions are not deleted, including obsolete URLs: staff can pause, replace, or remove those. Article previews do not produce outage alerts. Feed quotas are serialized in the single bot process; running multiple polling instances against the same database is not supported.
-
-### Radio (disabled)
-
-The radio cog is not loaded. When enabled: `/radio podcast <feed> [episode]`, `/radio play <url>`, `/radio stop`, `/radio status` (admins).
-
-### Server setup & Welcome
-
-| Command | Description |
-|---|---|
-| `/setup show` / `set` / `reset` / `option` / `interactive` (also `!setup …`) | (Staff) Per-server channels (incl. marketplace), roles and on/off options (`presence_tracking`, `inactivity_alerts`, `inactivity_dms`, `welcome_cards`) |
-| `/welcome test` | Preview your welcome card |
-
-### Moderation & Safety
-
-| Command | Description |
-|---|---|
-| `/warn <user> <reason>`, `!warn` | (Staff) Warn a member; escalates automatically |
-| `/warnings <user>`, `!warnings` | (Staff) View warnings |
-| `/clearwarnings <user>`, `!clearwarnings` | (Staff) Clear warnings |
-| `/modstats`, `!modstats` | (Staff) Moderation activity, last 30 days |
-| `/honeypot status` / `create` / `list` / `view` / `edit` / `enable` / `disable` / `delete` / `test` (also `!honeypot …`) | (Admin) Honeypot traps |
-| `/logging setchannel` / `setrole` / `clearrole` / `view` (also `!logging …`) | (Admin) Honeypot alert logging |
-| `/massunban preview` / `run` / `status` / `cancel` / `recent` (also `!massunban …`) | (Admin) Bulk unbans; `notify_users` (`--notify`) opts in to capped apology DMs; `include_unaudited` is slash-only |
-
-### Admin
-
-| Command | Description |
-|---|---|
-| `/admin featurestatus`, `/admin startupchecks`, `/admin detailedstatus` | (Staff) Runtime status |
-| `/admin reloadcog <cog_name>` | (Bot operators) Reload a cog |
-| `/admin pingsquad`, `!pingsquad` | (Staff) Ping the notification squad (once per 10 minutes per server) |
-| `/admin broadcast`, `!broadcast` | (Founder) Announce to a channel |
-| `/admin lockdown` / `panic`, `!lockdown` / `!panic` | (Founder) Toggle a lockdown **alert** (pings staff; channel permissions are not changed) |
-| `/exportchat [channel] [limit]`, `/exportstop` | (Admin, owner outside main) Export chat history |
-
----
+Channels and roles are configured per server with `/setup` or the dashboard.
 
 ## Development
 
 ```bash
 uv run --extra dev ruff check . --fix && uv run --extra dev ruff format .
 uv run --extra dev mypy src/ main.py --explicit-package-bases
-uv run --extra dev pytest tests/ -v
-pre-commit run --all-files
+uv run --extra dev pytest tests/
 ```
 
-Unit tests need no DB or network. `tests/test_schema_postgres.py` runs only when
-`VEKA_TEST_DATABASE_URL` points at an **empty, disposable** PostgreSQL database.
-See `AGENTS.md` for conventions.
+`tests/test_schema_postgres.py` runs only when `VEKA_TEST_DATABASE_URL` points at an empty, disposable database.
 
----
+Work on `dev` and open a pull request to `main`. Coding conventions are in [`AGENTS.md`](AGENTS.md).
 
-## CI/CD
+## Deployment
 
-- **CI** (`.github/workflows/ci.yml`) runs on every pull request, manually, and as the
-  gate of the deploy workflow: ruff, mypy, pytest against a PostgreSQL 17 service,
-  `pip-audit`, and a Docker build.
-- **Deploy** (`.github/workflows/deploy.yml`) runs on every push to `main` (every
-  merged PR) and manually. It calls CI first, then deploys on the self-hosted runner
-  (`self-hosted, X64, Linux, Veka`) in the `production` environment: writes `.env`
-  from secrets and variables, `docker compose build`, `docker compose up -d
-  --force-recreate`, and passes only if `is ready. DB available=True` appears in the
-  logs within 60s (warning if migrations are degraded).
+Every push to `main` runs CI (`.github/workflows/ci.yml`) and then deploys (`.github/workflows/deploy.yml`) on the self-hosted runner: it writes `.env` from GitHub secrets and variables, builds the images and restarts the `veka-discord-bot` and `veka-api` containers with `docker compose`.
 
-Development happens on `dev`; open a PR `dev` → `main` to deploy.
+GitHub configuration (`production` environment or repository level):
 
-## Bot-initiated messages and data retention
+- Secrets: `DISCORD_TOKEN`, `DATABASE_URL`, optional `DIRECTUS_URL`, `DIRECTUS_SERVICE_TOKEN`, `API_SERVICE_TOKEN`
+- Variables: the ID lists, `ADMIN_ALERT_CHANNEL_ID`, and optional `LOG_LEVEL`, `MAIN_SERVER_INVITE_URL`, `FEED_MAX_*`, `API_CORS_ORIGINS`, `API_TRUSTED_PROXIES`, `API_RATE_LIMIT`, `API_PREAUTH_LIMIT`
 
-All messages the bot sends on its own (alerts, digests, DMs, feed posts, listings)
-go through one guard with per-channel, per-server and global budgets, duplicate
-suppression, and a circuit breaker that pauses non-essential sends after repeated
-Discord errors and tells admins once. Unsolicited DMs are opt-in. A nightly job
-deletes raw activity logs after 90 days, honeypot events after 180 days, finished
-mass-unban job items after 180 days and images of withdrawn listings after 30 days.
+### Dashboard API
 
----
+The API container publishes no host port. It joins Traefik's external `proxy-network`, and Traefik routes `https://api.veka.gg` to it using the labels in `docker-compose.yml`. The `internal-only` middleware limits it to the LAN and tailnet. The website runs on the same network and can call `http://veka-api:8080` directly.
 
-## Known Issues
+To make the API public, add `api.veka.gg` to the Cloudflare Tunnel (origin `https://<traefik host>:443`, TLS verification on) and remove `internal-only@file` from the router labels.
 
-See `AGENTS.md` → *Known issues* for the current list. Highlights:
+Check it with `curl https://api.veka.gg/v1/ready` (`/v1/health` also reports the database and bot status). OpenAPI docs are disabled in production unless `API_DOCS=1`.
 
-- Mass-unban date/moderator filters only match bans the bot recorded.
-- The dashboard API is wired into production; the SvelteKit dashboard migration to API-only access is in progress in the dashboard worktrees.
-- The container runs as root.
+## License
 
-No license file is included; all rights reserved unless one is added.
+No license file is included; all rights reserved.
