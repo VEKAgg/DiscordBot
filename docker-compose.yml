@@ -9,15 +9,11 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - PYTHONUNBUFFERED=1
-      # DATABASE_URL is expected to be provided in the .env file
-    # The host also serves other sites; cap a leak instead of letting it starve them (normal use ~70 MB).
     mem_limit: 768m
     networks:
       - veka-network
 
-  # Dashboard API (src/api): a separate process that shares the database with the bot and never talks
-  # to the Discord gateway. No host port: Traefik on the same Docker host reaches it over the external
-  # `proxy-network` (labels below), and so can the website container.
+  # Dashboard API (src/api), reached through Traefik on proxy-network.
   api:
     build:
       context: .
@@ -39,8 +35,13 @@ services:
       - traefik.http.routers.veka-api.entrypoints=websecure
       - traefik.http.routers.veka-api.tls=true
       - traefik.http.routers.veka-api.tls.certresolver=letsencrypt
-      # internal-only: LAN/tailnet clients only; drop it only if the API must be public (see the doc).
       - traefik.http.routers.veka-api.middlewares=secure-headers@file,internal-only@file
+      # /v1/health is public for status.veka.gg; the rest of the API is internal-only.
+      - traefik.http.routers.veka-api-health.rule=Host(`api.veka.gg`) && Path(`/v1/health`)
+      - traefik.http.routers.veka-api-health.entrypoints=websecure
+      - traefik.http.routers.veka-api-health.tls=true
+      - traefik.http.routers.veka-api-health.tls.certresolver=letsencrypt
+      - traefik.http.routers.veka-api-health.middlewares=secure-headers@file
       - traefik.http.services.veka-api.loadbalancer.server.port=8080
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/ready', timeout=3)"]
@@ -55,6 +56,5 @@ services:
 networks:
   veka-network:
     driver: bridge
-  # Traefik's network, created by the Traefik stack on the host; the deploy fails if it is missing.
   proxy-network:
     external: true
