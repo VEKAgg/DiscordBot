@@ -4,6 +4,18 @@ Canonical guide for all coding agents (Claude Code, Codex, OpenCode, Pi, …). `
 
 > nextcord 3.x professional-networking/community bot. Python ≥3.13, PostgreSQL via asyncpg (the **only** datastore — no Redis, no MongoDB). Package management via `uv`; `pyproject.toml` is the source of truth for dependencies.
 
+---
+
+## Session Protocol (read first — every session)
+
+1. **Read** this AGENTS.md fully before touching any code.
+2. **Do** the current task.
+3. **Update** this AGENTS.md (Issue Tracker, decisions, gotchas) whenever context changes.
+4. **Verify** quality gates → **commit + push** — one clean commit per task.
+5. **Log** one line to the Bedrock vault journal: `C:\Users\Shafaat\Documents\Bedrock\60 Journal\<YYYY-MM-DD>.md` (create the file if missing).
+
+---
+
 ## Commands
 
 ```bash
