@@ -150,6 +150,8 @@ Decided 2026-10-11: presence tracking is opt-in (`/privacy`) and Spotify/listeni
 
 1. The SvelteKit dashboard migration onto the bot API is in progress in `wt/dashboard-web`; shared plan/reviews live in the parent workspace's `.agent-notes/dashboard/`.
 2. The container still runs as root: the deploy mounts `.env` with mode 600 for the runner user, so a non-root user needs a deploy change first.
+3. Directus `marketplace_listings` (the web-facing projection written via `DIRECTUS_URL` + `DIRECTUS_SERVICE_TOKEN`, idempotency key `external_ref` = bot listing id) was **empty in production** at the 2026-10-26 MCP audit — verify the sync env vars are set in the deploy secrets and the writer actually runs (command-created listings only; manual forum posts are intentionally not mirrored).
+4. Directus `linked_accounts` (canonical `profile` ↔ `provider` + `external_id` mapping for the VEKA ID contract, root AGENTS.md §C) has no writer from the bot yet — the `/link` confirm flow only writes `platform_accounts`. Implementing the idempotent upsert is the missing piece.
 3. `_is_staff_user` in `safety.py` fakes a context with `SimpleNamespace` to call RBAC — fragile coupling.
 4. `runtime_state.alert_state_cache` is still used ad hoc for export progress.
 5. Historical `total_streaming_minutes` stay inflated by the old double count (no record to repair from).
