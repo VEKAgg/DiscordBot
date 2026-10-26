@@ -1,0 +1,52 @@
+name: agents-md-check
+
+# CI backstop for the VEKA agent contract (see root G:\Desktop\VEKA\AGENTS.md section 7).
+# Fails any push/PR that changes source files without touching AGENTS.md.
+# The local pre-commit hook (core.hooksPath G:/Desktop/VEKA/.git-hooks) is the primary gate.
+
+on:
+  pull_request:
+  push:
+
+jobs:
+  agents-md:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if code changed without AGENTS.md
+        run: |
+          set -eu
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              echo "New branch - nothing to compare. OK."
+              exit 0
+            fi
+          fi
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "Base commit unavailable - skipping check. OK."
+            exit 0
+          fi
+          CODE=$(git diff --name-only "$BASE" "${{ github.sha }}" -- \
+            ':(exclude)*.md' ':(exclude).github' ':(exclude)docs' \
+            ':(exclude)*package-lock.json' ':(exclude)*pnpm-lock.yaml' \
+            ':(exclude)*uv.lock' ':(exclude)*poetry.lock' \
+            ':(exclude)*.gitignore' ':(exclude)*.editorconfig' \
+            ':(exclude)LICENSE' ':(exclude)LICENCE')
+          if [ -z "$CODE" ]; then
+            echo "Only docs/workflow/lockfile changes. OK."
+            exit 0
+          fi
+          if git diff --name-only "$BASE" "${{ github.sha }}" -- AGENTS.md | grep -q .; then
+            echo "AGENTS.md updated alongside code. OK."
+            exit 0
+          fi
+          echo "Code files changed without an AGENTS.md update:"
+          printf '  - %s\n' $CODE
+          echo "Fix: update AGENTS.md (issue tracker / decisions) in the same commit."
+          exit 1
