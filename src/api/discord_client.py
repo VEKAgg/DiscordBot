@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import re
 from dataclasses import dataclass
 
 import aiohttp
@@ -61,6 +63,7 @@ class DiscordClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._sem = asyncio.Semaphore(concurrency)
         self._cache: TTLDict[str, Identity] = TTLDict(ttl=60, maxsize=10_000)
+        self._member_cache: TTLDict[tuple[int, int], dict] = TTLDict(ttl=60, maxsize=10_000)
         self._session: aiohttp.ClientSession | None = None
 
     def _get_session(self) -> aiohttp.ClientSession:
@@ -95,6 +98,82 @@ class DiscordClient:
             raise
         except (aiohttp.ClientError, TimeoutError):
             raise ApiError(503, 'discord_unavailable', 'Could not reach Discord to verify the account.') from None
+
+    async def guild_member(self, guild_id: int, user_id: int) -> dict:
+        """Minimal current-guild member identity, never a global /users directory.
+
+        The route must authorize Manage Server + bot presence before this call.
+        Cached responses are keyed by guild AND member, never just a user ID.
+        """
+        key = (guild_id, user_id)
+        cached = self._member_cache.get(key)
+        if cached is not None:
+            return dict(cached)
+        token = settings.discord_bot_token
+        if not token:
+            raise ApiError(503, 'member_lookup_unconfigured', 'Member lookup is not configured.')
+        missing = {'id': str(user_id), 'username': None, 'display_name': None, 'avatar_url': None, 'found': False}
+        try:
+            async with (
+                self._sem,
+                self._get_session().get(
+                    f'{self.base}/guilds/{guild_id}/members/{user_id}',
+                    headers={'Authorization': f'Bot {token}'},
+                    allow_redirects=False,
+                ) as response,
+            ):
+                if response.status == 404:
+                    self._member_cache.set(key, missing)
+                    return dict(missing)
+                if response.status == 429:
+                    raw = response.headers.get('Retry-After', '5')
+                    retry = (
+                        str(min(3600, max(1, int(float(raw)))))
+                        if len(raw) < 10 and raw.replace('.', '', 1).isdigit()
+                        else '5'
+                    )
+                    raise ApiError(
+                        503,
+                        'discord_rate_limited',
+                        'Discord is rate limiting member lookup.',
+                        headers={'Retry-After': retry},
+                    )
+                if response.status != 200:
+                    raise ApiError(503, 'member_lookup_unavailable', 'Could not read this server’s members.')
+                data = bytearray()
+                async for chunk in response.content.iter_chunked(16384):
+                    data.extend(chunk)
+                    if len(data) > 65536:
+                        raise ApiError(503, 'member_lookup_unavailable', 'Discord returned an invalid member response.')
+                member = json.loads(data)
+                user = member['user']
+                if str(user['id']) != str(user_id):
+                    raise ValueError('Unexpected member')
+                username = str(user.get('username') or '')[:100]
+                display = str(member.get('nick') or user.get('global_name') or username)[:100]
+                avatar = member.get('avatar') or user.get('avatar')
+                avatar_url = None
+                if isinstance(avatar, str) and re.fullmatch(r'[A-Za-z0-9_]{1,100}', avatar):
+                    suffix = 'gif' if avatar.startswith('a_') else 'png'
+                    path = f'guilds/{guild_id}/users/{user_id}' if member.get('avatar') else f'avatars/{user_id}'
+                    avatar_url = (
+                        f'https://cdn.discordapp.com/{path}/avatars/{avatar}.{suffix}'
+                        if member.get('avatar')
+                        else f'https://cdn.discordapp.com/{path}/{avatar}.{suffix}'
+                    )
+                result = {
+                    'id': str(user_id),
+                    'username': username,
+                    'display_name': display,
+                    'avatar_url': avatar_url,
+                    'found': True,
+                }
+                self._member_cache.set(key, result)
+                return dict(result)
+        except ApiError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, ValueError, KeyError, TypeError):
+            raise ApiError(503, 'member_lookup_unavailable', 'Could not read this server’s members.') from None
 
     async def identify(self, token: str, *, fresh: bool = False) -> Identity:
         key = hashlib.sha256(token.encode()).hexdigest()

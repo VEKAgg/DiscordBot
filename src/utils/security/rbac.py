@@ -12,11 +12,9 @@ import nextcord
 from src.config.config import (
     ACTIVE_PRO_IDS,
     ADMIN_IDS,
+    BOT_OPERATOR_IDS,
     DONATOR_IDS,
-    FOUNDER_IDS,
     INTERN_IDS,
-    MAIN_GUILD_ID,
-    OWNER_IDS,
     STAFF_IDS,
 )
 
@@ -113,7 +111,7 @@ class RBAC:
 
     def _check_id_lists(self, user_id: int) -> Role | None:
         """Check if user ID is in any of the env-based ID lists. Returns highest matching role."""
-        if user_id in FOUNDER_IDS or user_id in OWNER_IDS:
+        if user_id in BOT_OPERATOR_IDS:
             return Role.FOUNDER
         if user_id in ADMIN_IDS:
             return Role.ADMIN
@@ -132,8 +130,8 @@ class RBAC:
         Determine user's role from Discord context
 
         Priority:
-        1. .env ID lists (FOUNDER_IDS, OWNER_IDS, etc.)
-        2. Guild owner -> FOUNDER (main guild) / ADMIN (other guilds)
+        1. Explicit bot-operator and community-role ID lists
+        2. Guild owner -> local ADMIN in every guild
         3. Administrator permission -> ADMIN
         4. Discord role name mapping -> highest matching role
         5. Default -> USER
@@ -151,10 +149,9 @@ class RBAC:
         if id_role:
             return id_role
 
-        # 2. Guild owner: FOUNDER only in the main guild. Owners of any other server that adds the
-        #    bot get ADMIN in their own server, not bot-wide founder powers (audit H-07).
+        # Guild ownership never grants platform/operator authority.
         if ctx.guild.owner_id == member.id:
-            return Role.FOUNDER if ctx.guild.id == MAIN_GUILD_ID else Role.ADMIN
+            return Role.ADMIN
 
         # 3. Check administrator permission
         if member.guild_permissions.administrator:
@@ -170,9 +167,9 @@ class RBAC:
                 if ROLE_HIERARCHY.index(mapped_role) > ROLE_HIERARCHY.index(user_role):
                     user_role = mapped_role
 
-        # Any server can create a role with a mapped name. Outside the main guild a role name grants at
-        # most ADMIN, mirroring the guild-owner rule above (founder powers are bot-wide).
-        if user_role == Role.FOUNDER and ctx.guild.id != MAIN_GUILD_ID:
+        # Names can be created in every server, including VEKA communities.
+        # Only the explicit operator ID allowlist can grant the highest tier.
+        if user_role == Role.FOUNDER:
             user_role = Role.ADMIN
 
         return user_role

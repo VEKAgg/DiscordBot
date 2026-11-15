@@ -26,7 +26,7 @@ logger = logging.getLogger('VEKA.marketplace.images')
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 MAX_STORED_BYTES = 2 * 1024 * 1024
 MAX_PIXELS = 20_000_000
-MAX_IMAGES = 4
+MAX_IMAGES = 8
 _ALLOWED_HOSTS = {'cdn.discordapp.com', 'media.discordapp.net'}
 
 
@@ -39,7 +39,8 @@ class StoredImage:
     content_type: str = 'image/webp'
 
     def file(self) -> nextcord.File:
-        return nextcord.File(io.BytesIO(self.data), filename='listing.webp')
+        extension = {'image/webp': 'webp', 'image/jpeg': 'jpg', 'image/png': 'png'}[self.content_type]
+        return nextcord.File(io.BytesIO(self.data), filename=f'listing.{extension}')
 
 
 class ImageStore(Protocol):
@@ -75,6 +76,20 @@ def normalize_image(data: bytes) -> StoredImage:
             if len(encoded) > MAX_STORED_BYTES:
                 raise ValueError('Normalized image exceeds stored size limit')
             return StoredImage(encoded, hashlib.sha256(encoded).hexdigest(), image.width, image.height)
+
+
+def validated_core_image(data: bytes, content_type: str) -> StoredImage:
+    """Validate canonical core JPEG/PNG without relabelling or transcoding its bytes."""
+    formats = {'image/jpeg': 'JPEG', 'image/png': 'PNG'}
+    if content_type not in formats or len(data) > MAX_STORED_BYTES:
+        raise ValueError('Invalid canonical image type/size')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', Image.DecompressionBombWarning)
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != formats[content_type] or image.width > 1600 or image.height > 1600:
+                raise ValueError('Canonical image format/dimensions do not match')
+            image.load()
+            return StoredImage(data, hashlib.sha256(data).hexdigest(), image.width, image.height, content_type)
 
 
 async def download_image(url: str) -> StoredImage | None:
@@ -160,43 +175,60 @@ class PostgresImageStore:
 
         return f'/v1/marketplace/listings/{quote(listing_id, safe="")}/images/{position}'
 
-    async def capture_attachments(self, listing_id: str, attachments, *, message_id: int | None = None) -> int:
-        images = [a for a in attachments if (a.content_type or '').startswith('image/')][:MAX_IMAGES]
+    async def prepare_attachments(self, listing_id: str, attachments) -> list[tuple[int, StoredImage]]:
+        """Prepare a complete desired set, or fail without replacing any image.
+
+        Callers serialize fresh source observations before invoking this method.
+        Identity is attachment ID, not an expiring signed URL or old position.
+        """
+        images = [a for a in attachments if (a.content_type or '').startswith('image/')]
+        if len(images) > MAX_IMAGES:
+            raise ValueError(f'Use at most {MAX_IMAGES} listing images.')
         existing = await db.fetch(
-            'SELECT source_attachment_id FROM marketplace_listing_images WHERE listing_id = $1 ORDER BY position',
+            'SELECT source_attachment_id,bytes,sha256,width,height FROM marketplace_listing_images WHERE listing_id=$1',
             listing_id,
         )
-        if images and [row['source_attachment_id'] for row in existing] == [a.id for a in images]:
-            return len(images)  # Signed URL refreshes do not change attachment identity.
-        captured = 0
+        by_id = {row['source_attachment_id']: row for row in existing}
+        ready: list[tuple[int, StoredImage]] = []
         digests: set[str] = set()
         for attachment in images:
-            current = await db.fetch_one(
-                'SELECT sha256 FROM marketplace_listing_images WHERE listing_id = $1 AND source_attachment_id = $2',
-                listing_id,
-                attachment.id,
+            row = by_id.get(attachment.id)
+            image = (
+                StoredImage(bytes(row['bytes']), row['sha256'], row['width'], row['height'])
+                if row
+                else await download_image(attachment.url)
             )
-            image = await self.get(listing_id, captured) if current else None
-            if current is None or image is None or image.sha256 != current['sha256']:
-                image = await download_image(attachment.url)
             if image is None:
-                continue
-            if image.sha256 in digests:
-                continue
-            digests.add(image.sha256)
-            await self.put(listing_id, captured, image, message_id=message_id, attachment_id=attachment.id)
-            captured += 1
-        # Don't discard durable old images because a transient CDN failure occurred.
-        if captured == len(images):
-            await db.execute(
-                'DELETE FROM marketplace_listing_images WHERE listing_id = $1 AND position >= $2', listing_id, captured
+                raise ValueError('An image could not be captured. No replacement was saved; reattach it and retry.')
+            if image.sha256 not in digests:
+                ready.append((attachment.id, image))
+                digests.add(image.sha256)
+        return ready
+
+    async def replace(self, conn, listing_id: str, images: list[tuple[int, StoredImage]], *, message_id=None):
+        await conn.execute('DELETE FROM marketplace_listing_images WHERE listing_id=$1', listing_id)
+        for position, (attachment_id, image) in enumerate(images):
+            await conn.execute(
+                'INSERT INTO marketplace_listing_images(listing_id,position,content_type,sha256,width,height,bytes,source_message_id,source_attachment_id) '
+                'VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+                listing_id,
+                position,
+                image.content_type,
+                image.sha256,
+                image.width,
+                image.height,
+                image.data,
+                message_id,
+                attachment_id,
             )
-        await db.execute(
-            'UPDATE marketplace_listings SET image_missing = $2 WHERE id = $1',
-            listing_id,
-            bool(images) and captured == 0,
-        )
-        return captured
+        await conn.execute('UPDATE marketplace_listings SET image_missing=FALSE WHERE id=$1', listing_id)
+
+    async def capture_attachments(self, listing_id: str, attachments, *, message_id: int | None = None) -> int:
+        images = await self.prepare_attachments(listing_id, attachments)
+        async with db.transaction() as conn:
+            await conn.fetchrow('SELECT id FROM marketplace_listings WHERE id=$1 FOR UPDATE', listing_id)
+            await self.replace(conn, listing_id, images, message_id=message_id)
+        return len(images)
 
 
 image_store = PostgresImageStore()

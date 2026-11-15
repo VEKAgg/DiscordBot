@@ -11,7 +11,6 @@ from src.cogs.admin.honeypot import Honeypot
 from src.cogs.admin.massunban import MassUnban
 from src.cogs.external.export import ChatExport
 from src.cogs.resources.feeds import Feeds
-from src.services.directus_sync import _rehost_image
 from src.services.rss_service import RSSService
 
 
@@ -36,13 +35,6 @@ async def test_honeypot_zero_deletion_days_preserved(monkeypatch, mock_bot, mock
     execute_ban.assert_awaited_once_with(mock_guild, mock_user, 0)
 
 
-@pytest.mark.parametrize('url', ['http://cdn.discordapp.com/x', 'https://evil.example/x'])
-async def test_rehost_rejects_non_https_or_untrusted_host(url):
-    session = MagicMock()
-    assert await _rehost_image(session, url) is None
-    session.get.assert_not_called()
-
-
 async def test_honeypot_first_trigger_fires_on_fresh_host(monkeypatch, mock_bot, mock_guild, mock_user, mock_db):
     """monotonic() counts from boot; a fresh CI VM has uptime below the cooldown (the original CI failure)."""
     monkeypatch.setattr('src.cogs.admin.honeypot.time.monotonic', lambda: 5.0)
@@ -65,14 +57,6 @@ async def test_honeypot_first_trigger_fires_on_fresh_host(monkeypatch, mock_bot,
     await cog.on_message(message)
     await cog.on_message(message)  # second hit inside the cooldown is still suppressed
     execute_ban.assert_awaited_once_with(mock_guild, mock_user, 1)
-
-
-async def test_rehost_does_not_follow_redirects():
-    session = MagicMock()
-    session.get.return_value.__aenter__ = AsyncMock(return_value=SimpleNamespace(status=302))
-    session.get.return_value.__aexit__ = AsyncMock()
-    assert await _rehost_image(session, 'https://cdn.discordapp.com/x') is None
-    session.get.assert_called_once_with('https://cdn.discordapp.com/x', allow_redirects=False)
 
 
 async def test_export_state_released_on_failure(monkeypatch, mock_bot, mock_interaction):

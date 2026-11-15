@@ -23,7 +23,7 @@ from typing import Any
 import nextcord
 from nextcord.ext import commands, tasks
 
-from src.config.config import OWNER_IDS
+from src.config.config import BOT_OPERATOR_IDS
 from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
@@ -1628,7 +1628,7 @@ class MassUnban(commands.Cog):
             return
 
         user = target.user if isinstance(target, nextcord.Interaction) else target.author
-        if job['requested_by'] != user.id and user.id not in OWNER_IDS:
+        if job['requested_by'] != user.id and user.id not in BOT_OPERATOR_IDS:
             embed = await error_embed(
                 'Not Allowed', 'Only the job runner or owners can cancel.', contributor_source=__name__
             )

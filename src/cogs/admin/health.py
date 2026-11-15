@@ -295,7 +295,7 @@ class Health(commands.Cog):
         if cog:
             await cog.ping_squad_slash(interaction, message)
 
-    @admin.subcommand(name='panic', description='Toggle server lockdown (Founder only)')
+    @admin.subcommand(name='panic', description='Toggle server lockdown (bot operators only)')
     @require_founder()
     @safe_slash_command()
     async def mp_panic(self, interaction: nextcord.Interaction):
@@ -303,7 +303,7 @@ class Health(commands.Cog):
         if cog:
             await cog.panic_slash(interaction)
 
-    @admin.subcommand(name='lockdown', description='Toggle server lockdown (Founder only)')
+    @admin.subcommand(name='lockdown', description='Toggle server lockdown (bot operators only)')
     @require_founder()
     @safe_slash_command()
     async def mp_lockdown(self, interaction: nextcord.Interaction):
@@ -311,7 +311,7 @@ class Health(commands.Cog):
         if cog:
             await cog.lockdown_slash(interaction)
 
-    @admin.subcommand(name='broadcast', description='Send announcement to a channel (Founder only)')
+    @admin.subcommand(name='broadcast', description='Send announcement to a channel (bot operators only)')
     @require_founder()
     @safe_slash_command()
     async def mp_broadcast(
@@ -396,9 +396,8 @@ class Health(commands.Cog):
             radio_status = 'Not loaded'
             radio_uptime = 'N/A'
 
-        from src.config.config import MAIN_GUILD_ID
-
-        guild = self.bot.get_guild(MAIN_GUILD_ID)
+        # Diagnostics concern the invoking community, never a privileged default guild.
+        guild = interaction.guild
 
         # Active users by activity type
         streaming_count = 0

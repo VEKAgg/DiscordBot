@@ -1,8 +1,7 @@
 """Marketplace API image authorization and scoped listing regressions."""
 
-from contextlib import asynccontextmanager
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -71,10 +70,11 @@ async def test_anonymous_and_service_image_access_are_rejected(app):
         assert response.status_code == 403
 
 
-def test_listing_output_keeps_price_cents_and_only_stored_image_urls():
-    row = {'id': 'one', 'price': Decimal('12.34'), 'image_count': 2}
+@pytest.mark.parametrize('currency', ['AED', 'INR', 'USD'])
+def test_listing_output_keeps_price_cents_and_only_stored_image_urls(currency):
+    row = {'id': 'one', 'price': Decimal('12.34'), 'currency': currency, 'image_count': 2}
     output = marketplace._out(row)
-    assert output['price'] == '12.34'
+    assert output['price'] == '12.34' and output['currency'] == currency
     assert output['images'] == ['/v1/marketplace/listings/one/images/0', '/v1/marketplace/listings/one/images/1']
 
 
@@ -96,119 +96,11 @@ async def test_guild_listing_query_is_scoped_and_bounded(app, monkeypatch):
         assert (await client.get('/v1/guilds/77/marketplace/listings?cursor=e30')).status_code == 422
     sql, guild_id, status, source, after, limit = fetch.call_args.args
     assert (guild_id, status, source, after, limit) == (77, None, None, None, 11)
-    assert 'l.guild_id = $1' in sql and 'p.guild_id = $1' in sql
+    assert 'l.guild_id=$1' in sql and 'marketplace_publications' not in sql
+    assert 'l.currency' in sql
 
 
-@pytest.fixture
-def manager(monkeypatch):
-    identity = Identity(
-        DiscordUser(123, 'manager', None, None), {77: UserGuild(77, 'Guild', None, False, MANAGE_GUILD)}
-    )
-    identify = AsyncMock(return_value=identity)
-    monkeypatch.setattr(auth.discord_client, 'identify', identify)
-    monkeypatch.setattr(auth, 'bot_in_guild', AsyncMock(return_value={'guild_id': 77}))
-    return identify
-
-
-@pytest.fixture
-def mutation(monkeypatch):
-    conn = MagicMock()
-    current = {'id': 'one', 'source': 'forum', 'status': 'pending_review', 'price': None, 'image_count': 0}
-    updated = current | {'status': 'active', 'price': Decimal('12.34')}
-    conn.fetchrow = AsyncMock(side_effect=[current, updated])
-    conn.execute = AsyncMock()
-
-    @asynccontextmanager
-    async def transaction():
-        yield conn
-
-    monkeypatch.setattr(marketplace.db, 'transaction', transaction)
-    return conn, current
-
-
-@pytest.mark.parametrize(
-    'body',
-    [
-        {},
-        {'price': None},
-        {'status': None},
-        {'price': 12.34},
-        {'price': True},
-        {'price': '0'},
-        {'price': '-1'},
-        {'price': 'NaN'},
-        {'price': '1.001'},
-        {'status': 'sold'},
-        {'price': '12', 'extra': 'ignored'},
-    ],
-)
-@pytest.mark.usefixtures('manager')
-async def test_patch_strict_validation_precedes_mutations(app, mutation, body):
-    conn, _ = mutation
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url='http://test', headers={'Authorization': 'Bearer manager'}
-    ) as client:
-        assert (await client.patch('/v1/guilds/77/marketplace/listings/one', json=body)).status_code == 422
-    conn.fetchrow.assert_not_awaited()
-    conn.execute.assert_not_awaited()
-
-
-async def test_patch_combines_price_and_approval_with_fresh_permissions_and_audit(app, manager, mutation):
-    conn, _ = mutation
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url='http://test', headers={'Authorization': 'Bearer manager'}
-    ) as client:
-        response = await client.patch(
-            '/v1/guilds/77/marketplace/listings/one', json={'price': '12.34', 'status': 'active'}
-        )
-    assert response.status_code == 200 and response.json()['price'] == '12.34'
-    manager.assert_awaited_with('manager', fresh=True)
-    select, guild, listing = conn.fetchrow.call_args_list[0].args
-    assert (guild, listing) == (77, 'one') and 'FOR UPDATE' in select
-    assert 'p.guild_id = $1' in select
-    update = conn.fetchrow.call_args_list[1].args
-    assert update[1:] == ('one', Decimal('12.34'), 'active')
-    assert 'price_override' in update[0] and 'forum_review_status' in update[0]
-    assert 'dashboard_marketplace_changed' in conn.execute.call_args.args[0]
-
-
-@pytest.mark.parametrize(
-    'status,price,body,code',
-    [
-        ('pending_review', None, {'status': 'active'}, 422),
-        ('active', Decimal('10'), {'status': 'active'}, 409),
-        ('sold', Decimal('10'), {'price': '12'}, 409),
-        ('withdrawn', Decimal('10'), {'price': '12'}, 409),
-        ('removed', Decimal('10'), {'status': 'active'}, 409),
-    ],
-)
-@pytest.mark.usefixtures('manager')
-async def test_patch_lifecycle_conflicts_do_not_write(app, mutation, status, price, body, code):
-    conn, current = mutation
-    current.update(status=status, price=price)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url='http://test', headers={'Authorization': 'Bearer manager'}
-    ) as client:
-        assert (await client.patch('/v1/guilds/77/marketplace/listings/one', json=body)).status_code == code
-    assert conn.fetchrow.await_count == 1
-    conn.execute.assert_not_awaited()
-
-
-@pytest.mark.usefixtures('manager')
-async def test_patch_cross_guild_scope_and_service_impersonation_fail_closed(app, mutation):
-    conn, _ = mutation
-    conn.fetchrow.side_effect = [None]
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url='http://test', headers={'Authorization': 'Bearer manager'}
-    ) as client:
-        assert (await client.patch('/v1/guilds/88/marketplace/listings/one', json={'price': '12'})).status_code == 403
-        assert (await client.patch('/v1/guilds/77/marketplace/listings/one', json={'price': '12'})).status_code == 404
-        assert (
-            await client.patch(
-                '/v1/guilds/77/marketplace/listings/one',
-                json={'price': '12'},
-                headers={'X-Service-Token': 'right', 'X-Acting-User': '123'},
-            )
-        ).status_code == 403
-    assert conn.fetchrow.await_count == 1
-    conn.execute.assert_not_awaited()
+async def test_marketplace_has_no_independent_moderation_write(app):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.patch('/v1/guilds/77/marketplace/listings/one', json={'status': 'active'})
+        assert response.status_code in {404, 405}

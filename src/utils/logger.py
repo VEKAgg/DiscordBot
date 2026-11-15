@@ -40,9 +40,6 @@ def setup_logging(log_level: str | None = None) -> None:
 
         log_level = LOG_LEVEL or 'INFO'
 
-    # Ensure logs directory exists if file logging is still desired
-    os.makedirs('logs', exist_ok=True)
-
     level = getattr(logging, log_level.upper(), logging.INFO)
 
     # We use a consistent machine-readable text format
@@ -61,10 +58,12 @@ def setup_logging(log_level: str | None = None) -> None:
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # File handler (fallback for local dev) — rotate at 5 MB, keep 3 backups
-    file_handler = RotatingFileHandler('logs/bot.log', encoding='utf-8', maxBytes=5 * 1024 * 1024, backupCount=3)
-    file_handler.setFormatter(formatter)
-    root_logger.addHandler(file_handler)
+    # Containers are read-only/non-root and use stdout. Explicit local opt-in only.
+    if os.getenv('VEKA_LOG_TO_FILE', '0') == '1':
+        os.makedirs('logs', exist_ok=True)
+        file_handler = RotatingFileHandler('logs/bot.log', encoding='utf-8', maxBytes=5 * 1024 * 1024, backupCount=3)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
 
     # Muffle spammy library loggers
     logging.getLogger('discord').setLevel(logging.WARNING)
