@@ -1,7 +1,7 @@
 name: CI
 
 # Lint, type-check, test (incl. migrations + SQL against a real PostgreSQL), audit dependencies and build the image.
-# Runs on every pull request, and is called by deploy.yml as the gate for every deploy of main.
+# Runs on every pull request; deploy.yml calls it before dev/main deployments.
 
 on:
   pull_request:
@@ -18,6 +18,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -80,5 +90,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Build image
-        run: docker build -t veka-discord-bot:ci .
+      - name: Build bot and API image
+        run: docker build --build-arg UV_EXTRAS="--extra api" -t veka-discord-bot:ci .

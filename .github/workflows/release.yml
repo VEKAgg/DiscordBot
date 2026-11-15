@@ -1,0 +1,40 @@
+name: Release
+
+# The only normal deployment entrypoint. Never execute PR code on apps.
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy after publishing (disable for a build-only release)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: ci
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read
+      packages: write
+
+  deploy:
+    needs: image
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.deploy) &&
+      (github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch' || vars.PRODUCTION_AUTO_DEPLOY == 'true')
+    uses: ./.github/workflows/deploy.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      image: ${{ needs.image.outputs.image }}
+      revision: ${{ github.sha }}

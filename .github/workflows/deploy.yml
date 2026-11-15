@@ -1,125 +1,84 @@
-name: Deploy
-
-# Every push to main (i.e. every merged PR) runs the full CI as a gate, then deploys that commit to the
-# self-hosted production runner. Manual redeploy: `gh workflow run Deploy --ref main`.
+name: Deploy service
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      image:
+        required: true
+        type: string
+      revision:
+        required: true
+        type: string
+      rollback:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
-  ci:
-    uses: ./.github/workflows/ci.yml
-
   deploy:
-    needs: ci
-    if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, X64, Linux, Veka]
-    timeout-minutes: 20
-    environment: production
-    # One deploy at a time; a newer deploy waits for the running one instead of cancelling it mid-rollout.
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, Veka]
+    timeout-minutes: 30
+    # Private repositories on GitHub Free cannot use native Environments.
+    # Logical environment/activation is enforced below and in the server entrypoint.
     concurrency:
-      group: deploy-production
+      group: deploy-bot-${{ github.ref_name }}
       cancel-in-progress: false
-
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Write .env
-        # Values come in through env (not ${{ }} inside the script) so they are never interpolated into shell code.
+      # Deliberately no checkout on the VM; reviewed tooling is installed from homelab-priv.
+      - name: Verify environment is enabled
         env:
-          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          VEKA_CORE_URL: ${{ vars.VEKA_CORE_URL }}
-          VEKA_CORE_SERVICE_KEY: ${{ secrets.VEKA_CORE_SERVICE_KEY }}
-          VEKA_CORE_INSTALLATION_ID: ${{ vars.VEKA_CORE_INSTALLATION_ID }}
-          ADMIN_IDS: ${{ vars.ADMIN_IDS }}
-          BOT_OPERATOR_IDS: ${{ vars.BOT_OPERATOR_IDS }}
-          STAFF_IDS: ${{ vars.STAFF_IDS }}
-          INTERN_IDS: ${{ vars.INTERN_IDS }}
-          DONATOR_IDS: ${{ vars.DONATOR_IDS }}
-          ACTIVE_PRO_IDS: ${{ vars.ACTIVE_PRO_IDS }}
-          ADMIN_ALERT_CHANNEL_ID: ${{ vars.ADMIN_ALERT_CHANNEL_ID }}
-          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
-          FEED_MAX_SUBSCRIPTIONS: ${{ vars.FEED_MAX_SUBSCRIPTIONS || '25' }}
-          FEED_MAX_POSTS_PER_POLL: ${{ vars.FEED_MAX_POSTS_PER_POLL || '3' }}
-          FEED_MAX_POSTS_PER_GUILD_PER_CYCLE: ${{ vars.FEED_MAX_POSTS_PER_GUILD_PER_CYCLE || '15' }}
-          # Dashboard API. Traefik reaches it over the Docker network
-          # proxy-network, so its X-Forwarded-For comes from a Docker address (172.16.0.0/12).
-          API_SERVICE_TOKEN: ${{ secrets.API_SERVICE_TOKEN }}
-          API_CORS_ORIGINS: ${{ vars.API_CORS_ORIGINS }}
-          API_TRUSTED_PROXIES: ${{ vars.API_TRUSTED_PROXIES || '172.16.0.0/12' }}
-          API_RATE_LIMIT: ${{ vars.API_RATE_LIMIT || '120' }}
-          API_PREAUTH_LIMIT: ${{ vars.API_PREAUTH_LIMIT || '60' }}
+          STAGING_DEPLOY_ENABLED: ${{ vars.STAGING_DEPLOY_ENABLED }}
+          PRODUCTION_DEPLOY_ENABLED: ${{ vars.PRODUCTION_DEPLOY_ENABLED }}
+          PRODUCTION_AUTO_DEPLOY: ${{ vars.PRODUCTION_AUTO_DEPLOY }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/dev) enabled=$STAGING_DEPLOY_ENABLED ;;
+            refs/heads/main) enabled=$PRODUCTION_DEPLOY_ENABLED ;;
+            *) exit 1 ;;
+          esac
+          test "$enabled" = true || {
+            echo "::error::Enable STAGING_DEPLOY_ENABLED or PRODUCTION_DEPLOY_ENABLED in repository variables only after bootstrap/cutover."
+            exit 1
+          }
+          if [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] && [ "$PRODUCTION_AUTO_DEPLOY" != true ]; then
+            echo "::error::Production is manual by default. Dispatch Release on main, or explicitly enable PRODUCTION_AUTO_DEPLOY."
+            exit 1
+          fi
+          test -f /srv/stacks/veka-platform/bin/platform.py
+
+      - name: Deploy and verify
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          IMAGE: ${{ inputs.image }}
+          REVISION: ${{ inputs.revision }}
+          ROLLBACK: ${{ inputs.rollback }}
         run: |
-          umask 077
-          {
-            for name in DISCORD_TOKEN DATABASE_URL VEKA_CORE_URL VEKA_CORE_SERVICE_KEY VEKA_CORE_INSTALLATION_ID \
-                        ADMIN_IDS BOT_OPERATOR_IDS STAFF_IDS INTERN_IDS DONATOR_IDS ACTIVE_PRO_IDS \
-                        ADMIN_ALERT_CHANNEL_ID LOG_LEVEL \
-                        FEED_MAX_SUBSCRIPTIONS FEED_MAX_POSTS_PER_POLL FEED_MAX_POSTS_PER_GUILD_PER_CYCLE \
-                        API_SERVICE_TOKEN API_CORS_ORIGINS API_TRUSTED_PROXIES API_RATE_LIMIT API_PREAUTH_LIMIT; do
-              printf '%s=%s\n' "$name" "${!name}"
-            done
-            printf 'COMMIT_SHA=%s\nBOT_VERSION=%s\nGIT_BRANCH=%s\nENVIRONMENT=production\n' \
-              "$GITHUB_SHA" "$GITHUB_SHA" "$GITHUB_REF_NAME"
-          } > .env
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d "$RUNNER_TEMP/veka-registry.XXXXXX")
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+          case "$GITHUB_REF" in
+            refs/heads/dev) target=staging ;;
+            refs/heads/main) target=production ;;
+            *) exit 1 ;;
+          esac
+          flags=()
+          if [ "$ROLLBACK" = true ]; then flags+=(--rollback); fi
+          python3 /srv/stacks/veka-platform/bin/platform.py "$target" deploy bot "$IMAGE" "$REVISION" "${flags[@]}"
 
-      - name: Build image
-        run: docker compose build
-
-      - name: Start container
-        # Build first, then recreate: the old container keeps running until the new image is ready.
-        run: |
-          docker compose up -d --force-recreate --remove-orphans
-
-      - name: Health check
-        shell: bash
-        run: |
-          MAX_WAIT=60
-          INTERVAL=5
-          ELAPSED=0
-          while [ $ELAPSED -lt $MAX_WAIT ]; do
-            if docker logs veka-discord-bot 2>&1 | grep -q "is ready. DB available=True"; then
-              echo "Health check passed - Bot is ready"
-              # Migrations failing doesn't stop the bot (degraded mode), so surface it loudly.
-              if docker logs veka-discord-bot 2>&1 | grep -q "is ready.*migrations=degraded"; then
-                echo "::warning title=Migrations degraded::Database migrations failed on startup - check 'docker logs veka-discord-bot'"
-              fi
-              exit 0
-            fi
-            echo "Waiting for bot to become ready... ($ELAPSED seconds elapsed)"
-            sleep $INTERVAL
-            ELAPSED=$((ELAPSED+INTERVAL))
-          done
-          echo "::error title=Deploy failed::Bot did not become ready within $MAX_WAIT seconds"
-          docker logs veka-discord-bot 2>&1 | tail -50 || true
-          exit 1
-
-      - name: Dashboard API health check
-        # Runs inside the container: the API publishes no host port.
-        shell: bash
-        run: |
-          for _ in $(seq 1 12); do
-            # /v1/ready is 200 only when the API can query the database (503 otherwise, which urlopen raises).
-            if docker exec veka-api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/v1/ready', timeout=3)" >/dev/null 2>&1; then
-              echo "Dashboard API is ready"
-              exit 0
-            fi
-            echo "Waiting for the dashboard API..."
-            sleep 5
-          done
-          echo "::error title=Dashboard API not ready::API could not reach the database within 60 seconds (the bot itself is running)"
-          docker logs veka-api 2>&1 | tail -50 || true
-          exit 1
-
-      - name: Prune dangling images
+      - name: Deployment result
         if: always()
-        run: docker image prune -f
+        env:
+          RESULT: ${{ job.status }}
+          IMAGE: ${{ inputs.image }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          printf '### bot deployment\n\nResult: %s\n\nBranch: `%s`\n\nCommit: `%s`\n\nImage: `%s`\n' \
+            "$RESULT" "$GITHUB_REF_NAME" "$REVISION" "$IMAGE" >> "$GITHUB_STEP_SUMMARY"

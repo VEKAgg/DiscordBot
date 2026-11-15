@@ -70,24 +70,19 @@ Work on `dev` and open a pull request to `main`. Coding conventions are in [`AGE
 
 ## Deployment
 
-Every push to `main` runs CI (`.github/workflows/ci.yml`) and then deploys (`.github/workflows/deploy.yml`) on the self-hosted runner: it writes `.env` from GitHub secrets and variables, builds the images and restarts the `veka-discord-bot` and `veka-api` containers with `docker compose`.
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and the linked shared platform runbook for staging and production. `release.yml` calls separate reusable CI, GHCR image publishing and deployment workflows. `dev` auto-deploys staging after activation; production `main` deployment is manual by default, with explicit opt-in to auto-deploy.
 
-GitHub configuration (`production` environment or repository level):
+Runtime secrets belong in restricted server files, not GitHub secrets. Repository variables `STAGING_DEPLOY_ENABLED`, `PRODUCTION_DEPLOY_ENABLED` and `PRODUCTION_AUTO_DEPLOY` control activation. The automatic job token handles GHCR authentication. The existing `docker-compose.yml` describes the pre-cutover manual deployment; new workflows use the installed shared platform stack instead. Follow the cutover runbook to stop old containers before replacing production routes or using the same bot token.
 
-- Secrets: `DISCORD_TOKEN`, `DATABASE_URL`, `VEKA_CORE_SERVICE_KEY`, optional `API_SERVICE_TOKEN`
-- Variables: `VEKA_CORE_URL`, `VEKA_CORE_INSTALLATION_ID`, the ID lists, `ADMIN_ALERT_CHANNEL_ID`, and optional `LOG_LEVEL`, `FEED_MAX_*`, `API_CORS_ORIGINS`, `API_TRUSTED_PROXIES`, `API_RATE_LIMIT`, `API_PREAUTH_LIMIT`
-
-Set `BOT_OPERATOR_IDS` explicitly before deploying. No default guild/owner or old owner/founder environment fallback is used. The startup warning clearly identifies an empty allowlist. Containers run as UID:GID `10001:10001`, with read-only root filesystems, dropped capabilities, no-new-privileges and bounded temporary storage. Compose reads the host-owned mode-600 `.env` via `env_file` and injects it; it does not mount secrets or host logs into the unprivileged process. Logs go to stdout (`docker logs`); local file logging is opt-in with `VEKA_LOG_TO_FILE=1`.
+Set `BOT_OPERATOR_IDS` explicitly before deploying. No default guild/owner or old owner/founder environment fallback is used. The startup warning clearly identifies an empty allowlist. Containers run as UID:GID `10001:10001`, with read-only root filesystems, dropped capabilities, no-new-privileges and bounded temporary storage. The platform stack reads host-owned mode-600 `bot.env` via literal `env_file` and injects it; it does not mount secrets or host logs into the unprivileged process. Logs go to stdout (`docker logs`); local file logging is opt-in with `VEKA_LOG_TO_FILE=1`.
 
 ### Dashboard API
 
-The API container publishes no host port. It joins Traefik's external `proxy-network`, and Traefik routes `https://api.veka.gg` to it using the labels in `docker-compose.yml`. The `internal-only` middleware limits it to the LAN and tailnet; only `/v1/health` is public, for status.veka.gg. The website runs on the same network and can call `http://veka-api:8080` directly.
+The API publishes no host port. The website calls the environment-specific private backend alias (`http://veka-staging-bot-api:8080` or `http://veka-production-bot-api:8080`). Staging has no public API router. Production retains only `https://api.veka.gg/v1/health` for status.veka.gg; authenticated dashboard endpoints remain private.
 
 Member names: `POST /v1/guilds/{guild_id}/members/lookup` with `{"user_ids":["123", "456"]}` (1–25 string snowflakes, duplicates coalesced). Requires the signed-in Discord user's Manage Server permission and a fresh bot-presence snapshot; service credentials/acting-user headers cannot use it. Returns `{items:[{id,username,display_name,avatar_url,found}]}`, private/no-store. Only current members of that guild are looked up (no global user fallback); 404 from Discord becomes a null-name `found:false` item, and provider failures/rate limits are retryable 503. Uses the API process's `DISCORD_TOKEN` server-side, caches minimal fields per guild/member for 60 seconds, and bounds lookup requests separately. The dashboard may batch missing names while retaining copyable IDs as fallback.
 
-`api.veka.gg` is a Cloudflare Tunnel hostname (origin `https://<traefik host>:443`, TLS verification on). To make the whole API public, remove `internal-only@file` from the router labels.
-
-Check it with `curl https://api.veka.gg/v1/ready` (`/v1/health` also reports the database and bot status). OpenAPI docs are disabled in production unless `API_DOCS=1`.
+`api.veka.gg` remains a Cloudflare Tunnel hostname. Check the public `/v1/health`; `/v1/ready` is checked inside the API container and is not publicly routed by the platform stack. Rollout also requires a fresh heartbeat matching the deployed bot revision and a successful scoped core-integration probe. OpenAPI docs are disabled in production unless `API_DOCS=1`.
 
 ## License
 

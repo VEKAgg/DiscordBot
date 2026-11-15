@@ -1,0 +1,82 @@
+name: Publish image
+
+on:
+  workflow_call:
+    outputs:
+      image:
+        description: Published repository@sha256:digest
+        value: ${{ jobs.publish.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.reference.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select image and environment
+        id: config
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF" in
+            refs/heads/dev) target=staging; origin=https://staging.veka.gg ;;
+            refs/heads/main) target=production; origin=https://veka.gg ;;
+            *) exit 1 ;;
+          esac
+          echo "repository=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=ghcr.io/${REPOSITORY,,}:$GITHUB_SHA-$target" >> "$GITHUB_OUTPUT"
+          echo "origin=$origin" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.config.outputs.tag }}
+          build-args: UV_EXTRAS=--extra api
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            com.veka.environment=${{ github.ref == 'refs/heads/dev' && 'staging' || 'production' }}
+            com.veka.service=bot
+          cache-from: type=gha,scope=bot-${{ github.ref_name }}
+          cache-to: type=gha,mode=max,scope=bot-${{ github.ref_name }}
+          provenance: mode=min
+          sbom: true
+
+      - name: Record immutable reference
+        id: reference
+        env:
+          REPOSITORY: ${{ steps.config.outputs.repository }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "image=$REPOSITORY@$DIGEST" >> "$GITHUB_OUTPUT"
+          printf '### Published bot\n\nCommit: `%s`\n\nImage: `%s@%s`\n\nBuildKit provenance and SBOM attached.\n' \
+            "$GITHUB_SHA" "$REPOSITORY" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"

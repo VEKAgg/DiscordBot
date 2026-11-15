@@ -1,0 +1,40 @@
+name: Rollback image
+
+# Run on main for production, dev for staging. Does not restore/undo database migrations.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Previously healthy GHCR repository@sha256:digest
+        required: true
+        type: string
+      revision:
+        description: Full commit SHA recorded for that image
+        required: true
+        type: string
+      schema_compatible:
+        description: I verified this image is compatible with the current database schema
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit schema compatibility confirmation
+        env:
+          CONFIRMED: ${{ inputs.schema_compatible }}
+        run: test "$CONFIRMED" = true
+
+  rollback:
+    needs: confirm
+    uses: ./.github/workflows/deploy.yml
+    with:
+      image: ${{ inputs.image }}
+      revision: ${{ inputs.revision }}
+      rollback: true
