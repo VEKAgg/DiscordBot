@@ -1,5 +1,5 @@
 """
-External Server Info Commands — owner-only in external servers.
+Current-community information for authorized server managers.
 Provides /memberinfo and /serverinfo for server intelligence.
 """
 
@@ -11,27 +11,29 @@ from nextcord.ext import commands
 
 from src.utils.embed_limits import bounded_items, clip_text
 from src.utils.embeds import info_embed
-from src.utils.guild_gate import owner_in_external_only
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import manage_guild_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.external.info')
 
 
 class ExternalInfo(commands.Cog):
-    """Owner-only info commands for external servers."""
+    """Guild-scoped information, with no privileged main-community exception."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @nextcord.slash_command(name='memberinfo', description='Show detailed info about a member')
-    @owner_in_external_only()
+    @manage_guild_only()
     @safe_slash_command()
     async def memberinfo(
         self,
         interaction: nextcord.Interaction,
         member: nextcord.Member = nextcord.SlashOption(description='Member to inspect'),
     ):
-        """Show detailed member information."""
+        """Show detailed member information only in the invoking guild."""
+        if interaction.guild is None or member.guild.id != interaction.guild.id:
+            await safe_send(interaction, content='Member not found in this server.', ephemeral=True)
+            return
         user = member
         joined = user.joined_at
         created = user.created_at
@@ -82,7 +84,7 @@ class ExternalInfo(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @nextcord.slash_command(name='serverinfo', description='Show detailed info about this server')
-    @owner_in_external_only()
+    @manage_guild_only()
     @safe_slash_command()
     async def serverinfo(self, interaction: nextcord.Interaction):
         """Show detailed server information."""

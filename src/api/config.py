@@ -18,6 +18,7 @@ def _networks(name: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
 
 @dataclass(frozen=True)
 class ApiSettings:
+    discord_bot_token: str | None = field(default_factory=lambda: os.getenv('DISCORD_TOKEN') or None, repr=False)
     service_token: str | None = field(default_factory=lambda: os.getenv('API_SERVICE_TOKEN') or None)
     cors_origins: list[str] = field(default_factory=lambda: _csv('API_CORS_ORIGINS'))
     rate_limit_per_minute: int = field(default_factory=lambda: max(10, int(os.getenv('API_RATE_LIMIT', '120'))))

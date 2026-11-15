@@ -2,16 +2,12 @@
 
 import io
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
-import nextcord
 import pytest
 from PIL import Image
 
-from src.cogs.marketplace.marketplace import Marketplace
 from src.services.marketplace_images import PostgresImageStore, download_image, normalize_image
-from src.utils.outbound import SendOutcome, SendStatus
 
 
 def png_bytes(size=(2000, 1000)):
@@ -65,54 +61,45 @@ async def test_image_download_redirect_not_followed(monkeypatch):
 
 async def test_store_caps_attachment_count(monkeypatch, mock_db):
     monkeypatch.setattr('src.services.marketplace_images.db', mock_db)
-    image = normalize_image(png_bytes((10, 10)))
-    downloader = AsyncMock(return_value=image)
+    downloader = AsyncMock()
     monkeypatch.setattr('src.services.marketplace_images.download_image', downloader)
-    store = PostgresImageStore()
     attachments = [
-        SimpleNamespace(id=i, url=f'https://cdn.discordapp.com/{i}', content_type='image/png') for i in range(10)
+        SimpleNamespace(id=i, url='https://cdn.discordapp.com/x', content_type='image/png') for i in range(9)
     ]
-    assert await store.capture_attachments('one', attachments) == 1  # duplicate hashes coalesce
-    assert downloader.await_count == 4
-    inserts = [call for call in mock_db.execute.call_args_list if 'INSERT INTO' in call.args[0]]
-    assert len(inserts) == 1
+    with pytest.raises(ValueError, match='at most 8'):
+        await PostgresImageStore().prepare_attachments('one', attachments)
+    downloader.assert_not_awaited()
 
 
-async def test_failed_download_preserves_previous_durable_image(monkeypatch, mock_db):
+async def test_failed_download_does_not_replace_any_image(monkeypatch, mock_db):
     monkeypatch.setattr('src.services.marketplace_images.db', mock_db)
     monkeypatch.setattr('src.services.marketplace_images.download_image', AsyncMock(return_value=None))
     attachment = SimpleNamespace(id=1, url='https://cdn.discordapp.com/one', content_type='image/png')
-    assert await PostgresImageStore().capture_attachments('one', [attachment]) == 0
-    assert all('DELETE FROM' not in call.args[0] for call in mock_db.execute.call_args_list)
+    with pytest.raises(ValueError, match='No replacement'):
+        await PostgresImageStore().capture_attachments('one', [attachment])
+    mock_db.execute.assert_not_awaited()
 
 
-async def test_publication_reuploads_stored_image_not_foreign_url(monkeypatch, mock_db, mock_guild, mock_user):
-    monkeypatch.setattr('src.cogs.marketplace.marketplace.db', mock_db)
-    channel = MagicMock(spec=nextcord.TextChannel)
-    channel.id = 20
-    channel.guild = mock_guild
-    monkeypatch.setattr(
-        'src.cogs.marketplace.marketplace.guild_settings_service.resolve_channel', AsyncMock(return_value=channel)
-    )
-    image = normalize_image(png_bytes((10, 10)))
-    monkeypatch.setattr('src.cogs.marketplace.marketplace.image_store.get', AsyncMock(return_value=image))
-    messenger = SimpleNamespace(
-        send=AsyncMock(return_value=SendOutcome(SendStatus.SENT, message=cast(Any, SimpleNamespace(id=90))))
-    )
-    monkeypatch.setattr('src.cogs.marketplace.marketplace.outbound', messenger)
-    await Marketplace(SimpleNamespace())._post_listing_to_channel(
-        guild=mock_guild,
-        listing_id='one',
-        title='One',
-        price=10,
-        condition='good',
-        category='Other',
-        seller=mock_user,
-        image_url='https://cdn.discordapp.com/expired?secret=signature',
-    )
-    kwargs = messenger.send.call_args.kwargs
-    assert kwargs['embed'].image.url == 'attachment://listing.webp'
-    assert kwargs['file'].filename == 'listing.webp'
+async def test_reordering_uses_attachment_identity_not_old_position(monkeypatch, mock_db):
+    monkeypatch.setattr('src.services.marketplace_images.db', mock_db)
+    one = normalize_image(png_bytes((10, 10)))
+    two = normalize_image(png_bytes((20, 20)))
+    mock_db.fetch.return_value = [
+        dict(source_attachment_id=1, bytes=one.data, sha256=one.sha256, width=10, height=10),
+        dict(source_attachment_id=2, bytes=two.data, sha256=two.sha256, width=20, height=20),
+    ]
+    downloader = AsyncMock()
+    monkeypatch.setattr('src.services.marketplace_images.download_image', downloader)
+    attachments = [SimpleNamespace(id=i, content_type='image/png') for i in (2, 1)]
+    ready = await PostgresImageStore().prepare_attachments('one', attachments)
+    assert [image.sha256 for _, image in ready] == [two.sha256, one.sha256]
+    downloader.assert_not_awaited()
+
+
+async def test_empty_set_is_explicit_removal():
+    conn = AsyncMock()
+    await PostgresImageStore().replace(conn, 'one', [])
+    assert 'DELETE FROM marketplace_listing_images' in conn.execute.call_args_list[0].args[0]
 
 
 def test_api_image_url_encodes_listing_id():

@@ -146,16 +146,20 @@ def test_marketplace_search_rejects_bad_filters_before_query(query, mock_bot):
         enhanced_module.MarketplaceEnhanced(mock_bot)._parse_search_query(query)
 
 
-async def test_marketplace_search_bounds_normalizes_and_parameterizes_values(mock_bot, mock_db, monkeypatch):
+async def test_marketplace_search_bounds_normalizes_and_parameterizes_values(
+    mock_bot, mock_db, mock_interaction, monkeypatch
+):
     monkeypatch.setattr(enhanced_module, 'db', mock_db)
     cog = enhanced_module.MarketplaceEnhanced(mock_bot)
-    filters = cog._parse_search_query("x' OR 1=1 -- | min_price:0 | max_price:$12.34 | min_rating:4.5 | sort:price_low")
+    filters = cog._parse_search_query("x' OR 1=1 -- | min_price:0 | max_price:$12.34 | sort:price_low")
     assert filters['min_price'] == Decimal('0.00')
-    await cog._run_search(filters)
+    await cog._run_search(filters, mock_interaction)
     sql, *params = mock_db.fetch_many.call_args.args
     assert "x' OR 1=1 --" not in sql
-    assert params == ["x' OR 1=1 --", Decimal('0.00'), Decimal('12.34'), Decimal('4.50')]
-    assert 'NULLS LAST, l.id DESC' in sql and sql.endswith(' LIMIT 20')
+    assert params[0] == mock_interaction.guild.id and params[2] is None
+    assert params[3:] == ["x' OR 1=1 --", Decimal('0.00'), Decimal('12.34')]
+    assert 'NULLS LAST,l.id DESC' in sql and sql.endswith(' LIMIT 20')
+    assert 'l.guild_id=$1' in sql and 'l.origin_channel_id=ANY($2::bigint[])' in sql
 
 
 def test_zero_price_only_allowed_for_search_bounds():

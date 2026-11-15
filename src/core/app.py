@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import commands
 
-from src.config.config import BOT_PREFIX, DISCORD_TOKEN
+from src.config.config import BOT_OPERATOR_IDS, BOT_PREFIX, DISCORD_TOKEN
 from src.core.cache_listener import CacheHandler, cache_listener
 from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
@@ -42,7 +42,6 @@ EXTENSIONS = [
     'src.cogs.admin.welcome',
     'src.cogs.networking.networking',
     'src.cogs.marketplace.marketplace',
-    'src.cogs.marketplace.reviews',
     'src.cogs.resources.feeds',
     'src.cogs.mentorship',
     'src.cogs.marketplace_enhanced',
@@ -399,9 +398,19 @@ def configure_bot_events(bot: commands.Bot) -> None:
     bot.close = _close_with_cleanup  # type: ignore[method-assign]
 
 
+def log_operator_configuration() -> None:
+    if not BOT_OPERATOR_IDS:
+        logger.warning(
+            'BOT_OPERATOR_IDS is empty: bot-global operator commands are disabled. Set BOT_OPERATOR_IDS before deployment.'
+        )
+    else:
+        logger.info('Bot operator allowlist configured (%d IDs)', len(BOT_OPERATOR_IDS))
+
+
 def run_bot() -> None:
     load_dotenv()
     setup_logging()
+    log_operator_configuration()
     bot = build_bot()
     configure_bot_events(bot)
 

@@ -90,9 +90,8 @@ class TestIsAdminUser:
         assert _is_admin_user(None) is False
 
     def test_owner_id(self, mock_user):
-        mock_user.id = 941009204045557842  # OWNER_DISCORD_ID
-        # OWNER_IDS is loaded from .env; OWNER_DISCORD_ID may not be in it.
-        # Instead, test with a known admin from ADMIN_IDS or patch it.
+        mock_user.id = 941009204045557842
+        # Explicit administrator IDs still grant local administrator capability.
         with patch('src.utils.safety.ADMIN_IDS', [941009204045557842]):
             assert _is_admin_user(mock_user) is True
 

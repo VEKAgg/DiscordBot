@@ -12,7 +12,7 @@ from nextcord.application_command import BaseApplicationCommand, CallbackWrapper
 from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import application_checks, commands
 
-from src.config.config import ADMIN_IDS, OWNER_IDS
+from src.config.config import ADMIN_IDS, BOT_OPERATOR_IDS
 from src.core.runtime_state import runtime_state
 
 logger = logging.getLogger('VEKA.safety')
@@ -106,7 +106,7 @@ def _is_admin_user(user, guild=None) -> bool:
     """Check if a user has admin privileges via ID lists or Discord permissions."""
     if user is None:
         return False
-    if user.id in OWNER_IDS or user.id in ADMIN_IDS:
+    if user.id in BOT_OPERATOR_IDS or user.id in ADMIN_IDS:
         return True
     if isinstance(user, nextcord.Member):
         if user.guild_permissions.administrator:
@@ -246,15 +246,9 @@ def manage_guild_only():
 
 
 def _bot_operator_predicate(source) -> bool:
-    """Bot-wide operations (reloading code, global settings): OWNER_IDS/ADMIN_IDS, or admins of the main guild."""
-    from src.config.config import MAIN_GUILD_ID
-
-    user, guild = _source_user_and_guild(source)
-    if user is None:
-        return False
-    if user.id in OWNER_IDS or user.id in ADMIN_IDS:
-        return True
-    return guild is not None and guild.id == MAIN_GUILD_ID and _is_admin_user(user, guild)
+    """Bot-wide actions are allowlist-only, independent of guild/role names."""
+    user, _ = _source_user_and_guild(source)
+    return user is not None and user.id in BOT_OPERATOR_IDS
 
 
 def bot_operator_only():

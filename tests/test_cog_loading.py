@@ -21,7 +21,7 @@ class TestExtensionList:
         assert len(EXTENSIONS) > 0
 
     def test_extensions_count(self):
-        assert len(EXTENSIONS) == 24
+        assert len(EXTENSIONS) == 23
 
     def test_all_are_strings(self):
         for ext in EXTENSIONS:

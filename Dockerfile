@@ -21,19 +21,21 @@ FROM python:3.13-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg libopus0 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 veka \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin veka
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    VEKA_LOG_TO_FILE=0
 
 WORKDIR /app
 COPY main.py ./
 COPY src ./src
 COPY migrations ./migrations
-RUN mkdir -p logs
-
-# Still runs as root: ./logs is bind-mounted from the host and must stay writable for the
-# rotating log file, and the deploy writes .env with mode 600 for the runner user.
+# Configuration is injected by Compose env_file, not a mounted credential file.
+# Logs go to stdout; the application needs no writable host bind mount.
+USER 10001:10001
 CMD ["python", "main.py"]

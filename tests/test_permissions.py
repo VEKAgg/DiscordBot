@@ -59,6 +59,8 @@ PRIVILEGED_SLASH_COMMANDS = {
     'setup option',
     'setup interactive',
     'exportchat',
+    'memberinfo',
+    'serverinfo',
     'feed add',
     'feed remove',
     'feed edit',
@@ -194,7 +196,7 @@ async def test_radio_prefix_blocks_admins_of_external_guilds(loaded_bot, mock_co
     """`!radioplay`/`!radiopodcast` control the single shared radio, so they need the same guild gate as slash."""
     cmd = loaded_bot.get_command(name)
     external_guild = MagicMock(spec=nextcord.Guild)
-    external_guild.id = 42  # not MAIN_GUILD_ID
+    external_guild.id = 42  # No community has an operator exception.
     mock_context.author = admin_member
     mock_context.guild = external_guild
 
@@ -220,20 +222,16 @@ async def test_connect_picker_rejects_other_members(mock_guild, mock_interaction
     assert await view.interaction_check(mock_interaction) is True
 
 
-def test_founder_role_name_is_capped_outside_main_guild():
-    """Any server can create a role called "Founder"; outside the main guild it grants at most ADMIN."""
+@pytest.mark.parametrize('guild_id', [1088553066334273537, 42])
+def test_founder_role_name_never_grants_operator_tier(monkeypatch, guild_id):
+    import importlib
     from types import SimpleNamespace
 
-    from src.config.config import MAIN_GUILD_ID
-    from src.utils.security.rbac import Role, rbac
+    module = importlib.import_module('src.utils.security.rbac')
 
-    def ctx(guild_id):
-        member = SimpleNamespace(
-            id=424242,
-            roles=[SimpleNamespace(name='Founder')],
-            guild_permissions=SimpleNamespace(administrator=False),
-        )
-        return SimpleNamespace(guild=SimpleNamespace(id=guild_id, owner_id=1), author=member)
-
-    assert rbac.get_user_role(ctx(MAIN_GUILD_ID)) == Role.FOUNDER
-    assert rbac.get_user_role(ctx(MAIN_GUILD_ID + 1)) == Role.ADMIN
+    monkeypatch.setattr(module, 'BOT_OPERATOR_IDS', [])
+    member = SimpleNamespace(
+        id=424242, roles=[SimpleNamespace(name='Founder')], guild_permissions=SimpleNamespace(administrator=False)
+    )
+    ctx = SimpleNamespace(guild=SimpleNamespace(id=guild_id, owner_id=1), author=member)
+    assert module.rbac.get_user_role(ctx) == module.Role.ADMIN

@@ -28,7 +28,6 @@ from src.config.config import (
     LEADERBOARD_TOP_N,
     LEADERBOARD_UPDATE_INTERVAL,
     LIVE_ROLE_ID,
-    MAIN_GUILD_ID,
     MESSAGE_XP_COOLDOWN,
     RPG_POINTS,
     XP_MULTIPLIERS,
@@ -612,10 +611,8 @@ class RPGManager(commands.Cog):
                     )
 
         # Presence: only in servers that turned tracking on, skipping members who opted out; each member is
-        # credited once per tick (main guild first) so a member of several servers isn't counted twice.
-        guilds = sorted(
-            (g for g in self.bot.guilds if g.id in (tracking_guilds or set())), key=lambda g: g.id != MAIN_GUILD_ID
-        )
+        # credited once per tick (stable guild-ID order) so multiple memberships are not double-counted.
+        guilds = sorted((g for g in self.bot.guilds if g.id in (tracking_guilds or set())), key=lambda g: g.id)
         credited: set[int] = set()
         for guild in guilds:
             for member in guild.members:

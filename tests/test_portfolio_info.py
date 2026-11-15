@@ -164,7 +164,7 @@ async def test_memberinfo_bounds_many_roles(monkeypatch, mock_bot, mock_interact
     member = SimpleNamespace(
         id=123, mention='<@123>', display_name='🙂' * 20000, joined_at=None, created_at=None, bot=False, avatar=None
     )
-    member.guild = cast(Any, SimpleNamespace(default_role=object()))
+    member.guild = cast(Any, SimpleNamespace(id=mock_interaction.guild.id, default_role=object()))
     member.roles = cast(Any, [SimpleNamespace(mention=f'<@&{123456789012345678 + i}>') for i in range(250)])
     member.top_role = member.roles[-1]
     cog = ExternalInfo(mock_bot)

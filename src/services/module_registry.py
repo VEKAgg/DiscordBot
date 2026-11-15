@@ -72,9 +72,9 @@ MODULES = (
     Module(
         'marketplace',
         'Marketplace',
-        'Listings, reviews, offers and forum ingestion.',
+        'Classified listings, explicit submissions and scoped discovery.',
         'community',
-        ('marketplace', 'bump', 'featured', 'marketstats'),
+        ('marketplace',),
     ),
     Module('mentorship', 'Mentorship', 'Mentor registrations and engagements.', 'community', ('mentor',)),
     Module(
@@ -107,7 +107,6 @@ COG_MODULES = {
     'src.cogs.admin.massunban': 'massunban',
     'src.cogs.resources.feeds': 'feeds',
     'src.cogs.marketplace.marketplace': 'marketplace',
-    'src.cogs.marketplace.reviews': 'marketplace',
     'src.cogs.marketplace_enhanced': 'marketplace',
     'src.cogs.mentorship': 'mentorship',
     'src.cogs.networking.networking': 'networking',
