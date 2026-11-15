@@ -25,7 +25,6 @@ from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.services.export_stream import ExportContent, file_io, utf8_chunks
 from src.utils.embeds import error_embed, info_embed, success_embed
-from src.utils.guild_gate import owner_in_external_only
 from src.utils.outbound import outbound
 from src.utils.safety import _is_admin_user, admin_only, safe_send, safe_slash_command
 
@@ -453,11 +452,10 @@ class ChatExport(commands.Cog):
 
     @nextcord.slash_command(
         name='exportchat',
-        description='Export chat history to .txt files (admins; owner only in external servers)',
+        description='Export readable chat history in this server to .txt files (administrators)',
         contexts=[nextcord.InteractionContextType.guild],
         default_member_permissions=nextcord.Permissions(administrator=True),
     )
-    @owner_in_external_only()
     @admin_only()
     @safe_slash_command()
     async def exportchat(

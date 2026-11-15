@@ -4,12 +4,18 @@ services:
     image: veka-discord-bot:dev
     container_name: veka-discord-bot-dev
     restart: unless-stopped
+    env_file:
+      - .env
     volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
       - ./src:/app/src:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       - PYTHONUNBUFFERED=1
+      - VEKA_LOG_TO_FILE=0
       - DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
     networks:
       - veka-network
@@ -25,11 +31,18 @@ services:
     container_name: veka-api-dev
     restart: unless-stopped
     command: ["python", "-m", "src.api"]
+    env_file:
+      - .env
     volumes:
-      - ./.env:/app/.env:ro
       - ./src:/app/src:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       - PYTHONUNBUFFERED=1
+      - VEKA_LOG_TO_FILE=0
       - DATABASE_URL=postgresql://veka_bot_user:example@postgres:5432/veka_bot
       - API_CORS_ORIGINS=http://localhost:5173
     ports:

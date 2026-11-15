@@ -27,9 +27,8 @@ from src.core.lifecycle import has_running_loop, spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
-from src.utils.guild_gate import owner_in_external_only
 from src.utils.http import PublicOnlyResolver, UnsafeURLError, fetch_public_url, validate_public_url
-from src.utils.safety import admin_only, safe_send, safe_slash_command
+from src.utils.safety import admin_only, bot_operator_only, safe_send, safe_slash_command
 
 logger = logging.getLogger('VEKA.radio')
 
@@ -411,7 +410,7 @@ class RadioManager(commands.Cog):
     @radio_group.subcommand(name='play', description='Play a public audio URL (admin only)')
     @safe_slash_command()
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def radio_play(
         self,
         interaction: nextcord.Interaction,
@@ -434,7 +433,7 @@ class RadioManager(commands.Cog):
     @radio_group.subcommand(name='podcast', description='Play an episode from a podcast RSS feed (admin only)')
     @safe_slash_command()
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def radio_podcast(
         self,
         interaction: nextcord.Interaction,
@@ -459,7 +458,7 @@ class RadioManager(commands.Cog):
     @radio_group.subcommand(name='stop', description='Stop the radio and leave the channel (admin only)')
     @safe_slash_command()
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def radio_stop(self, interaction: nextcord.Interaction):
         """Manually stop the radio."""
         if not self._is_connected():
@@ -489,7 +488,7 @@ class RadioManager(commands.Cog):
     @radio_group.subcommand(name='move', description='Move the radio to a different voice channel (admin only)')
     @safe_slash_command()
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def radio_move(
         self,
         interaction: nextcord.Interaction,
@@ -528,7 +527,7 @@ class RadioManager(commands.Cog):
 
     @commands.command(name='radioplay')
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def prefix_radio_play(self, ctx: commands.Context, url: str, *, title: str | None = None):
         """Play a public audio URL. Usage: !radioplay <url> [title]"""
         ok, message = await self._play_url(url, title)
@@ -536,7 +535,7 @@ class RadioManager(commands.Cog):
 
     @commands.command(name='radiopodcast')
     @admin_only()
-    @owner_in_external_only()
+    @bot_operator_only()
     async def prefix_radio_podcast(self, ctx: commands.Context, feed: str, episode: int = 1):
         """Play a podcast episode (1 = latest). Usage: !radiopodcast <feed url> [episode]"""
         if episode < 1:

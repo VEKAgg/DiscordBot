@@ -14,8 +14,7 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
 # Access Control — comma-separated Discord user IDs
 ADMIN_IDS = [int(item) for item in os.getenv('ADMIN_IDS', '').split(',') if item.strip().isdigit()]
-OWNER_IDS = [int(item) for item in os.getenv('OWNER_IDS', '').split(',') if item.strip().isdigit()]
-FOUNDER_IDS = [int(item) for item in os.getenv('FOUNDER_IDS', '').split(',') if item.strip().isdigit()]
+BOT_OPERATOR_IDS = [int(item) for item in os.getenv('BOT_OPERATOR_IDS', '').split(',') if item.strip().isdigit()]
 STAFF_IDS = [int(item) for item in os.getenv('STAFF_IDS', '').split(',') if item.strip().isdigit()]
 INTERN_IDS = [int(item) for item in os.getenv('INTERN_IDS', '').split(',') if item.strip().isdigit()]
 DONATOR_IDS = [int(item) for item in os.getenv('DONATOR_IDS', '').split(',') if item.strip().isdigit()]
@@ -48,12 +47,10 @@ DATABASE_URL = os.getenv('DATABASE_URL') or (
     f'postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}'
 )
 
-# --- Directus marketplace sync (Objective A) ---
-# One-way publish of bot marketplace listings to the VEKA web CMS. Inert until
-# both are set: a missing token disables sync without affecting any command.
-DIRECTUS_URL = os.getenv('DIRECTUS_URL', '').rstrip('/')
-DIRECTUS_SERVICE_TOKEN = os.getenv('DIRECTUS_SERVICE_TOKEN', '')
-DIRECTUS_SYNC_ENABLED = bool(DIRECTUS_URL and DIRECTUS_SERVICE_TOKEN)
+# Canonical marketplace integration. No CMS mirror or fallback.
+VEKA_CORE_URL = os.getenv('VEKA_CORE_URL', '').rstrip('/')
+VEKA_CORE_SERVICE_KEY = os.getenv('VEKA_CORE_SERVICE_KEY', '')
+VEKA_CORE_INSTALLATION_ID = os.getenv('VEKA_CORE_INSTALLATION_ID', '')
 
 # Mentorship Configuration
 MENTORSHIP_CATEGORIES: list[str] = ['programming', 'design', 'career', 'devops', 'data_science', 'other']
@@ -103,17 +100,9 @@ ACTIVITY_ROLES: dict[str, int] = {
 }
 ACTIVITY_ROLE_INACTIVITY_DAYS = 14
 
-# --- Main Server Configuration ---
-_main_guild = os.getenv('MAIN_GUILD_ID', '')
-MAIN_GUILD_ID = int(_main_guild) if _main_guild.strip().isdigit() else 1088553066334273537
-MAIN_SERVER_INVITE_URL = os.getenv('MAIN_SERVER_INVITE_URL', 'https://discord.gg/veka')
-
 # --- Live/Streaming Role ---
 _live_role = os.getenv('LIVE_ROLE_ID', '')
 LIVE_ROLE_ID = int(_live_role) if _live_role.strip().isdigit() else None
-
-# --- Owner ID (hardcoded for guild gating) ---
-OWNER_DISCORD_ID = 941009204045557842
 
 # --- Coding Apps Detection ---
 # Activity names (lowercase) that count as "coding" for the /most coded leaderboard

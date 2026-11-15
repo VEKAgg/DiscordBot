@@ -4,11 +4,16 @@ services:
     image: veka-discord-bot:latest
     container_name: veka-discord-bot
     restart: unless-stopped
-    volumes:
-      - ./logs:/app/logs
-      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       - PYTHONUNBUFFERED=1
+      - VEKA_LOG_TO_FILE=0
     mem_limit: 768m
     networks:
       - veka-network
@@ -23,10 +28,16 @@ services:
     container_name: veka-api
     restart: unless-stopped
     command: ["python", "-m", "src.api"]
-    volumes:
-      - ./.env:/app/.env:ro
+    env_file:
+      - .env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid,nodev
     environment:
       - PYTHONUNBUFFERED=1
+      - VEKA_LOG_TO_FILE=0
     mem_limit: 512m
     labels:
       - traefik.enable=true
