@@ -28,6 +28,9 @@ class GuildSettings:
     leaderboard_message_id: int | None = None
     muted_role_id: int | None = None
     honeypot_channel_ids: list[int] = field(default_factory=list)
+    admin_role_ids: list[int] = field(default_factory=list)
+    staff_role_ids: list[int] = field(default_factory=list)
+    perk_role_ids: list[int] = field(default_factory=list)
     warn_mute_threshold: int = 3
     warn_ban_threshold: int = 5
     honeypot_cooldown_seconds: int = 60
@@ -63,6 +66,9 @@ def settings_from_row(row) -> GuildSettings:
         guild_id=row['guild_id'],
         **{name: get(name) for name in _OPTIONAL_ID_FIELDS},
         honeypot_channel_ids=list(get('honeypot_channel_ids') or []),
+        admin_role_ids=list(get('admin_role_ids') or []),
+        staff_role_ids=list(get('staff_role_ids') or []),
+        perk_role_ids=list(get('perk_role_ids') or []),
         warn_mute_threshold=get('warn_mute_threshold') or 3,
         warn_ban_threshold=get('warn_ban_threshold') or 5,
         honeypot_cooldown_seconds=get('honeypot_cooldown_seconds') or 60,
@@ -78,9 +84,12 @@ def settings_from_row(row) -> GuildSettings:
 
 
 # Column names that may be interpolated into UPDATE statements.
+_ROLE_LIST_FIELDS = ('admin_role_ids', 'staff_role_ids', 'perk_role_ids')
+
 _WRITABLE_FIELDS = frozenset(
     {
         *_OPTIONAL_ID_FIELDS,
+        *_ROLE_LIST_FIELDS,
         'honeypot_channel_ids',
         'warn_mute_threshold',
         'warn_ban_threshold',
@@ -156,6 +165,27 @@ class GuildSettingsService:
             self._cache.pop(guild_id, None)
         else:
             self._cache.clear()
+
+    def peek(self, guild_id: int) -> GuildSettings | None:
+        """Cache-only read (no I/O) for sync callers such as RBAC and the rate limiter.
+
+        Returns None when the guild was never loaded; callers must fall back to
+        permission-only resolution instead of assuming configured roles.
+        """
+        return self._cache.get(guild_id)
+
+    async def warm_cache(self) -> int:
+        """Load every guild_settings row into the cache so sync readers see configured roles."""
+        try:
+            rows = await db.fetch('SELECT * FROM guild_settings')
+        except Exception as exc:
+            logger.warning('Failed to warm guild settings cache: %s', exc)
+            return 0
+        for row in rows or []:
+            settings = settings_from_row(row)
+            self._cache[settings.guild_id] = settings
+        logger.info('Warmed guild settings cache (%d guilds)', len(rows or []))
+        return len(rows or [])
 
     async def resolve_channel(self, guild: nextcord.Guild, channel_type: str) -> nextcord.abc.GuildChannel | None:
         """Resolve a channel ID from settings to a Discord channel object."""

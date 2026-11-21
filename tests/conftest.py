@@ -94,6 +94,9 @@ def mock_user():
     user.bot = False
     user.guild_permissions = MagicMock(spec=nextcord.Permissions)
     user.guild_permissions.administrator = False
+    user.guild_permissions.moderate_members = False
+    user.guild_permissions.kick_members = False
+    user.guild_permissions.ban_members = False
     user.roles = []
     user.joined_at = datetime.now(UTC)
     user.created_at = datetime(2020, 1, 1, tzinfo=UTC)
@@ -144,6 +147,9 @@ def mock_member():
     member.bot = False
     member.guild_permissions = MagicMock(spec=nextcord.Permissions)
     member.guild_permissions.administrator = False
+    member.guild_permissions.moderate_members = False
+    member.guild_permissions.kick_members = False
+    member.guild_permissions.ban_members = False
     member.roles = []
     member.joined_at = datetime(2024, 1, 1, tzinfo=UTC)
     member.created_at = datetime(2020, 1, 1, tzinfo=UTC)
@@ -162,6 +168,9 @@ def admin_member():
     member.bot = False
     member.guild_permissions = MagicMock(spec=nextcord.Permissions)
     member.guild_permissions.administrator = True
+    member.guild_permissions.moderate_members = False
+    member.guild_permissions.kick_members = False
+    member.guild_permissions.ban_members = False
     member.roles = []
     member.joined_at = datetime(2024, 1, 1, tzinfo=UTC)
     member.created_at = datetime(2020, 1, 1, tzinfo=UTC)

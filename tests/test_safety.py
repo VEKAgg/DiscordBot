@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import nextcord
 from nextcord.ext import commands
@@ -89,17 +90,28 @@ class TestIsAdminUser:
     def test_none_user(self):
         assert _is_admin_user(None) is False
 
-    def test_owner_id(self, mock_user):
-        mock_user.id = 941009204045557842
-        # Explicit administrator IDs still grant local administrator capability.
-        with patch('src.utils.safety.ADMIN_IDS', [941009204045557842]):
-            assert _is_admin_user(mock_user) is True
+    def test_platform_operator(self, monkeypatch, mock_user):
+        from src.services.operators import operators
+
+        monkeypatch.setattr(operators, '_operators', frozenset({mock_user.id}))
+        # Operators hold platform authority everywhere, including without guild permissions.
+        assert _is_admin_user(mock_user) is True
 
     def test_admin_permission(self, admin_member):
         assert _is_admin_user(admin_member) is True
 
     def test_regular_user(self, mock_member):
         assert _is_admin_user(mock_member) is False
+
+    def test_admin_role_ids_from_cached_settings(self, monkeypatch, mock_member, mock_guild):
+        from src.services.guild_settings_service import GuildSettings, guild_settings_service
+
+        monkeypatch.setattr(mock_member, 'roles', [SimpleNamespace(id=777)])
+        guild_settings_service._cache[mock_guild.id] = GuildSettings(guild_id=mock_guild.id, admin_role_ids=[777])
+        try:
+            assert _is_admin_user(mock_member, mock_guild) is True
+        finally:
+            guild_settings_service.invalidate_cache(mock_guild.id)
 
 
 # ============================================================

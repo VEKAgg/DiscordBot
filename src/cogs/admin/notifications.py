@@ -19,7 +19,7 @@ from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.outbound import outbound
 from src.utils.safety import DatabaseUnavailableError, safe_background_task, safe_send
-from src.utils.security.rbac import require_founder, require_staff
+from src.utils.security.rbac import require_operator, require_staff
 from src.utils.ttlcache import TTLDict
 
 logger = logging.getLogger('VEKA.admin.notifications')
@@ -195,7 +195,7 @@ class Notifications(commands.Cog):
             logger.error('Failed to ping squad: %s', e)
             await ctx.send('Could not send the ping.')
 
-    # ==================== FOUNDER COMMANDS (delegated via /admin group) ====================
+    # ==================== OPERATOR COMMANDS (delegated via /admin group) ====================
 
     async def broadcast_slash(
         self,
@@ -222,9 +222,9 @@ class Notifications(commands.Cog):
             await safe_send(interaction, embed=embed, ephemeral=True)
 
     @commands.command(name='broadcast')
-    @require_founder()
+    @require_operator()
     async def broadcast_prefix(self, ctx, channel: nextcord.TextChannel, *, message: str):
-        """Send announcement to a channel (Founder only)"""
+        """Send announcement to a channel (bot operators only)"""
         embed = nextcord.Embed(description=message, color=nextcord.Color.orange())
 
         try:

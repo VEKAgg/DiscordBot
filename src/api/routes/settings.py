@@ -27,6 +27,8 @@ from src.api.discord_client import (
 from src.api.errors import ApiError
 from src.database.database import db
 from src.services.guild_settings_policy import (
+    ACCESS_ROLE_MAX,
+    ACCESS_ROLE_SETTINGS,
     CHANNEL_SETTINGS,
     NUMBER_SETTINGS,
     ROLE_SETTINGS,
@@ -41,6 +43,7 @@ router = APIRouter(prefix='/guilds/{guild_id}/settings', tags=['settings'])
 _COLUMNS = (
     [col for _, col, _ in CHANNEL_SETTINGS.values()]
     + [col for _, col, _ in ROLE_SETTINGS.values()]
+    + [col for _, col, _ in ACCESS_ROLE_SETTINGS.values()]
     + [col for _, col, _ in TOGGLE_SETTINGS.values()]
     + list(NUMBER_SETTINGS)
     + ['welcome_message_template']
@@ -64,6 +67,8 @@ class SettingsPatch(BaseModel):
 
     channels: dict[SettingKey, Snowflake | None] = Field(default_factory=dict, max_length=16)
     roles: dict[SettingKey, Snowflake | None] = Field(default_factory=dict, max_length=8)
+    # Each list replaces the tier's roles; [] clears it.
+    access_roles: dict[SettingKey, list[Snowflake]] = Field(default_factory=dict, max_length=3)
     toggles: dict[SettingKey, StrictBool] = Field(default_factory=dict, max_length=8)
     warn_mute_threshold: StrictInt | None = None
     warn_ban_threshold: StrictInt | None = None
@@ -86,6 +91,9 @@ def _serialize(row: dict) -> dict[str, Any]:
     return {
         'channels': {key: sid(row.get(col)) for key, (_, col, _) in CHANNEL_SETTINGS.items()},
         'roles': {key: sid(row.get(col)) for key, (_, col, _) in ROLE_SETTINGS.items()},
+        'access_roles': {
+            key: [str(v) for v in (row.get(col) or [])] for key, (_, col, _) in ACCESS_ROLE_SETTINGS.items()
+        },
         'toggles': {key: bool(row.get(col)) for key, (_, col, _) in TOGGLE_SETTINGS.items()},
         'warn_mute_threshold': row.get('warn_mute_threshold') or 3,
         'warn_ban_threshold': row.get('warn_ban_threshold') or 5,
@@ -106,9 +114,14 @@ async def _load(guild_id: int) -> dict:
     return dict(row) if row else {}
 
 
+def _with_viewer(body: dict[str, Any], access: GuildAccess) -> dict[str, Any]:
+    """Tell the dashboard whether this member may change access roles (same rule as the write)."""
+    return {**body, 'can_edit_access_roles': access.member is not None and access.member.has(ADMINISTRATOR)}
+
+
 @router.get('')
 async def get_settings(access: GuildAccess = guild_access(MANAGE_GUILD)) -> dict:
-    return _serialize(await _load(access.guild_id))
+    return _with_viewer(_serialize(await _load(access.guild_id)), access)
 
 
 def _snowflake(value: str, what: str) -> int:
@@ -161,6 +174,27 @@ def _validate(patch: SettingsPatch, snapshot: dict, access: GuildAccess) -> dict
             raise ApiError(422, 'role_above_bot', 'The bot can only assign roles below its own highest role.')
         changes[column] = int(value)
 
+    if patch.access_roles:
+        # Choosing who counts as a bot admin or staff is an Administrator decision (owners pass).
+        access.require(ADMINISTRATOR)
+    guild_id = str(access.guild_id)
+    for key, ids in patch.access_roles.items():
+        if key not in ACCESS_ROLE_SETTINGS:
+            raise ApiError(422, 'unknown_setting', f'Unknown access tier: {key}')
+        unique = list(dict.fromkeys(ids))
+        if len(unique) > ACCESS_ROLE_MAX:
+            raise ApiError(422, 'too_many_roles', f'Choose at most {ACCESS_ROLE_MAX} roles per tier.')
+        for value in unique:
+            _snowflake(value, 'Role')
+            if value == guild_id:
+                raise ApiError(422, 'everyone_role', '@everyone cannot be an access role.')
+            role = roles.get(value)
+            if role is None:
+                raise ApiError(422, 'unknown_role', f'Role {value} is not in this server.')
+            if role.get('managed'):
+                raise ApiError(422, 'managed_role', 'Integration-managed roles cannot be access roles.')
+        changes[ACCESS_ROLE_SETTINGS[key][1]] = [int(v) for v in unique]
+
     for key, enabled in patch.toggles.items():
         if key not in TOGGLE_SETTINGS:
             raise ApiError(422, 'unknown_setting', f'Unknown option: {key}')
@@ -195,7 +229,7 @@ async def patch_settings(
         current = await _load(access.guild_id)
         if _version(current.get('updated_at')) != if_match.strip('"'):
             raise ApiError(412, 'version_conflict', 'Settings changed since you loaded them; reload and retry.')
-        return _serialize(current)
+        return _with_viewer(_serialize(current), access)
 
     await db.execute(
         'INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', access.guild_id
@@ -239,10 +273,12 @@ async def patch_settings(
             str(access.guild_id),
         )
         await conn.execute("SELECT pg_notify('veka_cache', $1)", f'guild_settings:{access.guild_id}')
-    return _serialize(dict(row) if row else {})
+    return _with_viewer(_serialize(dict(row) if row else {}), access)
 
 
 def _jsonable(value):
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
     if isinstance(value, int) and value > 2**53:
         return str(value)
     if isinstance(value, str):

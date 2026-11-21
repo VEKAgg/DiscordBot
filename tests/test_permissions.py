@@ -24,6 +24,10 @@ PRIVILEGED_SLASH_COMMANDS = {
     'massunban cancel',
     'massunban recent',
     'admin reloadcog',
+    'setup roles',
+    'operator alerts',
+    'operator alerts-clear',
+    'operator refresh',
     'admin featurestatus',
     'admin startupchecks',
     'admin detailedstatus',
@@ -223,15 +227,18 @@ async def test_connect_picker_rejects_other_members(mock_guild, mock_interaction
 
 
 @pytest.mark.parametrize('guild_id', [1088553066334273537, 42])
-def test_founder_role_name_never_grants_operator_tier(monkeypatch, guild_id):
+def test_role_names_never_grant_any_tier(guild_id):
+    """Role-name mapping is deleted: a role called Founder/Admin/Staff grants nothing by name."""
     import importlib
     from types import SimpleNamespace
 
-    module = importlib.import_module('src.utils.security.rbac')
+    from src.services.guild_settings_service import guild_settings_service
 
-    monkeypatch.setattr(module, 'BOT_OPERATOR_IDS', [])
-    member = SimpleNamespace(
-        id=424242, roles=[SimpleNamespace(name='Founder')], guild_permissions=SimpleNamespace(administrator=False)
-    )
-    ctx = SimpleNamespace(guild=SimpleNamespace(id=guild_id, owner_id=1), author=member)
-    assert module.rbac.get_user_role(ctx) == module.Role.ADMIN
+    module = importlib.import_module('src.utils.security.rbac')
+    guild_settings_service.invalidate_cache(guild_id)
+    for name in ('Founder', 'Admin', 'Staff', 'Donator'):
+        member = SimpleNamespace(
+            id=424242, roles=[SimpleNamespace(name=name)], guild_permissions=SimpleNamespace(administrator=False)
+        )
+        ctx = SimpleNamespace(guild=SimpleNamespace(id=guild_id, owner_id=1), author=member)
+        assert module.rbac.get_user_role(ctx) == module.Role.USER, name

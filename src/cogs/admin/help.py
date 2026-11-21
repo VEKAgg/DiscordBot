@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import nextcord
 from nextcord.ext import commands
 
-from src.config.config import BOT_OPERATOR_IDS
 from src.services.guild_modules_service import guild_modules_service
+from src.services.operators import operators
 from src.utils.embeds import info_embed
 from src.utils.safety import _is_admin_user, safe_send, safe_slash_command
 
@@ -76,7 +76,7 @@ class Help(commands.Cog):
                         value='/exportchat exports only channels you can read in this server; /exportstop stops your export.',
                         inline=False,
                     )
-        if user is not None and user.id in BOT_OPERATOR_IDS:
+        if user is not None and operators.is_operator(user.id):
             embed.add_field(
                 name='Bot operators',
                 value='/admin reloadcog · !marketplace_queue · !marketplace_retry · !marketplace_sync',

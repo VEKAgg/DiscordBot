@@ -53,15 +53,15 @@ class RateLimiter:
                 return limit
         return self.default_limits['default']
 
-    def _has_bypass(self, member) -> bool:
-        """Check if a member has cooldown bypass via their role"""
+    async def _has_bypass(self, member) -> bool:
+        """Check if a member has cooldown bypass via their role (async: resolves guild settings)."""
         if member is None:
             return False
         try:
             from src.utils.security.rbac import rbac
 
             ctx_like = type('Ctx', (), {'author': member, 'guild': getattr(member, 'guild', None)})()
-            role = rbac.get_user_role(ctx_like)
+            role = await rbac.get_user_role_async(ctx_like)
             return rbac.has_cooldown_bypass(role)
         except Exception:
             return False
@@ -75,7 +75,7 @@ class RateLimiter:
 
     async def acquire(self, user_id: str, bucket: str, member=None) -> tuple[bool, float]:
         """Atomically check and consume one token. Returns (allowed, retry_after_seconds)."""
-        if self._has_bypass(member):
+        if await self._has_bypass(member):
             return True, 0.0
 
         key = self._get_key(user_id, bucket)
@@ -107,7 +107,7 @@ class RateLimiter:
 
     async def is_rate_limited(self, user_id: str, command: str, member=None) -> tuple[bool, float]:
         """Check without consuming a token. Returns (is_limited, retry_after_seconds)."""
-        if self._has_bypass(member):
+        if await self._has_bypass(member):
             return False, 0
         key = self._get_key(user_id, command)
         async with self.lock:

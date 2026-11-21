@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import commands
 
-from src.config.config import BOT_OPERATOR_IDS, BOT_PREFIX, DISCORD_TOKEN
+from src.config.config import BOT_PREFIX, DISCORD_TOKEN
 from src.core.cache_listener import CacheHandler, cache_listener
 from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
@@ -39,6 +39,7 @@ EXTENSIONS = [
     'src.cogs.admin.maintenance',
     'src.cogs.admin.api_bridge',
     'src.cogs.admin.setup',
+    'src.cogs.admin.operator',
     'src.cogs.admin.welcome',
     'src.cogs.networking.networking',
     'src.cogs.marketplace.marketplace',
@@ -74,6 +75,9 @@ def build_bot() -> commands.Bot:
     )
     bot.runtime_state = runtime_state  # type: ignore[attr-defined]
     bot.notifier = None  # type: ignore[attr-defined]
+    from src.services.operators import operators
+
+    operators.bind(bot)
     from src.core.module_checks import register_module_checks
 
     register_module_checks(bot)
@@ -161,13 +165,19 @@ def register_cache_handlers(bot: commands.Bot) -> None:
         fn = getattr(cog, method, None) if cog is not None else None
         return fn(*args) if fn is not None else None
 
-    cache_listener.register(
-        'guild_settings',
-        CacheHandler(
-            on_notify=lambda ident: guild_settings_service.invalidate_cache(int(ident)) if ident.isdigit() else None,
-            reset=lambda: guild_settings_service.invalidate_cache(),
-        ),
-    )
+    # Reload rather than just drop: sync readers (RBAC cooldown bypass, footer) only see cached
+    # settings, so an emptied entry would fall back to permission-only until something reloaded it.
+    async def _settings_changed(ident: str) -> None:
+        if not ident.isdigit():
+            return
+        guild_settings_service.invalidate_cache(int(ident))
+        await guild_settings_service.get_settings(int(ident))
+
+    async def _settings_reset() -> None:
+        guild_settings_service.invalidate_cache()
+        await guild_settings_service.warm_cache()
+
+    cache_listener.register('guild_settings', CacheHandler(on_notify=_settings_changed, reset=_settings_reset))
     cache_listener.register(
         'honeypots',
         CacheHandler(
@@ -196,7 +206,14 @@ def register_cache_handlers(bot: commands.Bot) -> None:
 def configure_bot_events(bot: commands.Bot) -> None:
     from nextcord.ext import tasks
 
+    from src.services.guild_settings_service import guild_settings_service
+    from src.services.operators import REFRESH_INTERVAL_MINUTES, operators
+
     CONSECUTIVE_HEALTHY_REQUIRED = 3
+
+    @tasks.loop(minutes=REFRESH_INTERVAL_MINUTES)
+    async def operator_refresh_loop():
+        await operators.refresh()
 
     @tasks.loop(seconds=30)
     async def db_health_check():
@@ -294,6 +311,12 @@ def configure_bot_events(bot: commands.Bot) -> None:
         outbound.bind(bot, alert=_breaker_alert)
 
         await initialize_database()
+
+        # Platform operators (Developer Portal team) and the warm guild-settings cache that the
+        # sync RBAC/rate-limit readers rely on. Both degrade loudly but never block startup.
+        await operators.refresh()
+        operator_refresh_loop.start()
+        await guild_settings_service.warm_cache()
 
         from src.core.checks import StartupChecks
 
@@ -398,19 +421,9 @@ def configure_bot_events(bot: commands.Bot) -> None:
     bot.close = _close_with_cleanup  # type: ignore[method-assign]
 
 
-def log_operator_configuration() -> None:
-    if not BOT_OPERATOR_IDS:
-        logger.warning(
-            'BOT_OPERATOR_IDS is empty: bot-global operator commands are disabled. Set BOT_OPERATOR_IDS before deployment.'
-        )
-    else:
-        logger.info('Bot operator allowlist configured (%d IDs)', len(BOT_OPERATOR_IDS))
-
-
 def run_bot() -> None:
     load_dotenv()
     setup_logging()
-    log_operator_configuration()
     bot = build_bot()
     configure_bot_events(bot)
 

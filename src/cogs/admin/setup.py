@@ -10,13 +10,19 @@ import logging
 import nextcord
 from nextcord.ext import commands
 
-from src.services.guild_settings_policy import CHANNEL_SETTINGS, ROLE_SETTINGS, TOGGLE_SETTINGS
+from src.services.guild_settings_policy import (
+    ACCESS_ROLE_MAX,
+    ACCESS_ROLE_SETTINGS,
+    CHANNEL_SETTINGS,
+    ROLE_SETTINGS,
+    TOGGLE_SETTINGS,
+)
 from src.services.guild_settings_policy import allowed_channel_types as _allowed_type_names
 from src.services.guild_settings_policy import channel_type_error as _type_error_for
 from src.services.guild_settings_service import GuildSettings, guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.roles import punitive_role_problem
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import safe_send, safe_slash_command, server_administrator_only
 from src.utils.security import audit_log
 from src.utils.security.rbac import require_staff
 
@@ -46,11 +52,6 @@ async def _audit_setting(guild_id: int, user_id: int, field_name: str, value: in
         )
     except Exception:
         logger.warning('Failed to audit setting change %s in %s', field_name, guild_id, exc_info=True)
-
-
-ROLE_SETTINGS = {
-    'muted': ('Muted Role', 'muted_role_id', 'Role assigned to muted users'),
-}
 
 
 def _format_channel(guild: nextcord.Guild, channel_id: int | None) -> str:
@@ -293,6 +294,84 @@ class Setup(commands.Cog):
             guild=interaction.guild,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @setup_group.subcommand(name='roles', description='Choose which roles count as bot admins, staff or supporters')
+    @server_administrator_only()
+    @safe_slash_command(requires_db=True)
+    async def setup_roles(
+        self,
+        interaction: nextcord.Interaction,
+        action: str = nextcord.SlashOption(description='What to do', choices=['show', 'add', 'remove', 'clear']),
+        tier: str | None = nextcord.SlashOption(
+            description='Access tier',
+            choices={'Bot admins': 'admin', 'Staff': 'staff', 'Supporters': 'perk'},
+            required=False,
+            default=None,
+        ),
+        role: nextcord.Role | None = nextcord.SlashOption(
+            description='Role to add or remove', required=False, default=None
+        ),
+    ):
+        guild = interaction.guild
+        if guild is None:
+            return
+        settings = await guild_settings_service.get_settings(guild.id)
+
+        async def reply(title: str, description: str, ok: bool = True) -> None:
+            make = success_embed if ok else error_embed
+            embed = await make(
+                title=title, description=description, contributor_source=__name__, user=interaction.user, guild=guild
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+
+        if action == 'show':
+            lines = []
+            for label, field_name, description in ACCESS_ROLE_SETTINGS.values():
+                ids = getattr(settings, field_name)
+                shown = ', '.join(_format_role(guild, rid) for rid in ids) if ids else '`None chosen`'
+                lines.append(f'**{label}**: {shown}\n-# {description}')
+            embed = await info_embed(
+                title='Access roles',
+                description='\n\n'.join(lines),
+                contributor_source=__name__,
+                user=interaction.user,
+                guild=guild,
+            )
+            await safe_send(interaction, embed=embed, ephemeral=True)
+            return
+
+        if tier is None:
+            await reply('Access roles', 'Choose a tier.', ok=False)
+            return
+        label, field_name, _ = ACCESS_ROLE_SETTINGS[tier]
+        current = list(getattr(settings, field_name))
+
+        if action == 'clear':
+            updated: list[int] = []
+        else:
+            if role is None:
+                await reply('Access roles', 'Choose a role.', ok=False)
+                return
+            if role.is_default() or role.managed:
+                await reply(
+                    'Access roles', 'Use a normal server role (not @everyone or an integration role).', ok=False
+                )
+                return
+            if action == 'add':
+                if role.id in current:
+                    await reply('Access roles', f'{role.mention} is already in **{label}**.')
+                    return
+                if len(current) >= ACCESS_ROLE_MAX:
+                    await reply('Access roles', f'**{label}** can have at most {ACCESS_ROLE_MAX} roles.', ok=False)
+                    return
+                updated = [*current, role.id]
+            else:
+                updated = [rid for rid in current if rid != role.id]
+
+        await guild_settings_service.update_settings(guild.id, **{field_name: updated})
+        await _audit_setting(guild.id, interaction.user.id, field_name, len(updated))
+        shown = ', '.join(_format_role(guild, rid) for rid in updated) if updated else '`None chosen`'
+        await reply('Access roles', f'**{label}**: {shown}')
 
     @setup_group.subcommand(name='interactive', description='Configure channels and roles using interactive dropdowns')
     @require_staff()

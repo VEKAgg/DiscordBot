@@ -37,9 +37,11 @@ jobs:
             refs/heads/main) target=production; origin=https://veka.gg ;;
             *) exit 1 ;;
           esac
-          echo "repository=ghcr.io/${REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          echo "tag=ghcr.io/${REPOSITORY,,}:$GITHUB_SHA-$target" >> "$GITHUB_OUTPUT"
-          echo "origin=$origin" >> "$GITHUB_OUTPUT"
+          {
+            echo "repository=ghcr.io/${REPOSITORY,,}"
+            echo "tag=ghcr.io/${REPOSITORY,,}:$GITHUB_SHA-$target"
+            echo "origin=$origin"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -78,5 +80,7 @@ jobs:
           set -euo pipefail
           [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "image=$REPOSITORY@$DIGEST" >> "$GITHUB_OUTPUT"
+          # Backticks below are Markdown code spans for the job summary, not command substitution.
+          # shellcheck disable=SC2016
           printf '### Published bot\n\nCommit: `%s`\n\nImage: `%s@%s`\n\nBuildKit provenance and SBOM attached.\n' \
             "$GITHUB_SHA" "$REPOSITORY" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"

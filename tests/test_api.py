@@ -14,6 +14,7 @@ import pytest_asyncio
 from src.api import auth as auth_module
 from src.api.app import create_app
 from src.api.discord_client import (
+    ADMINISTRATOR,
     BAN_MEMBERS,
     MANAGE_GUILD,
     MANAGE_ROLES,
@@ -495,6 +496,42 @@ async def test_settings_role_and_body_rules(app, api_db):
     assert sorted(r.status_code for r in results) == [200, 412]
     assert channels_list.status_code == 200
     assert moderator_channels.status_code == 403  # moderators don't get the private channel inventory
+
+
+async def test_settings_access_roles(app, api_db):
+    """Access roles: Administrator only, real non-managed roles, not @everyone, at most 10, deduped."""
+    await _seed_settings_channels(api_db)
+    headers = {'Authorization': 'Bearer t'}
+    url = f'/v1/guilds/{GUILD}/settings'
+    async with await _client(app) as c:
+        with _as(identity({GUILD: MANAGE_GUILD | MANAGE_ROLES})):
+            version = (await c.get(url, headers=headers)).json()['version']
+            h = {**headers, 'If-Match': version}
+            not_admin = await c.patch(url, headers=h, json={'access_roles': {'staff': ['603']}})
+            manager_view = (await c.get(url, headers=headers)).json()
+        with _as(identity({GUILD: MANAGE_GUILD | ADMINISTRATOR})):
+            unknown_tier = await c.patch(url, headers=h, json={'access_roles': {'founder': ['603']}})
+            everyone = await c.patch(url, headers=h, json={'access_roles': {'staff': [str(GUILD)]}})
+            managed = await c.patch(url, headers=h, json={'access_roles': {'admin': ['602']}})
+            missing = await c.patch(url, headers=h, json={'access_roles': {'perk': ['699']}})
+            too_many = await c.patch(url, headers=h, json={'access_roles': {'perk': [str(700 + i) for i in range(11)]}})
+            ok = await c.patch(url, headers=h, json={'access_roles': {'staff': ['603', '603', '604'], 'perk': []}})
+            reread = await c.get(url, headers=headers)
+
+    assert not_admin.status_code == 403
+    assert manager_view['can_edit_access_roles'] is False
+    assert unknown_tier.json()['error']['code'] == 'unknown_setting'
+    assert everyone.json()['error']['code'] == 'everyone_role'
+    assert managed.json()['error']['code'] == 'managed_role'
+    assert missing.json()['error']['code'] == 'unknown_role'
+    assert too_many.json()['error']['code'] == 'too_many_roles'
+    assert ok.status_code == 200, ok.text
+    assert ok.json()['access_roles'] == {'admin': [], 'staff': ['603', '604'], 'perk': []}
+    assert reread.json()['access_roles']['staff'] == ['603', '604']
+    assert reread.json()['can_edit_access_roles'] is True
+    assert any(item['key'] == 'staff' for item in reread.json()['schema']['access_roles'])
+    row = await api_db.fetchrow('SELECT staff_role_ids FROM guild_settings WHERE guild_id = $1', GUILD)
+    assert list(row['staff_role_ids']) == [603, 604]
 
 
 async def test_chunked_body_over_limit_is_rejected(app):

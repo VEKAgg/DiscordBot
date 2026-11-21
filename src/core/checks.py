@@ -1,9 +1,10 @@
 import logging
 import urllib.parse
 
-from src.config.config import ADMIN_ALERT_CHANNEL_ID, DATABASE_URL, DISCORD_TOKEN
+from src.config.config import DATABASE_URL, DISCORD_TOKEN
 from src.core.runtime_state import runtime_state
 from src.database.database import db
+from src.services.bot_settings_service import bot_settings_service
 
 logger = logging.getLogger('VEKA.checks')
 
@@ -64,10 +65,21 @@ class StartupChecks:
 
     @staticmethod
     async def check_admin_channel() -> dict:
-        if not ADMIN_ALERT_CHANNEL_ID:
+        try:
+            channel_id = await bot_settings_service.get_operator_alert_channel_id()
+        except Exception as e:
             return {
                 'name': 'Admin Channel',
                 'status': 'WARN',
-                'message': 'ADMIN_ALERT_CHANNEL_ID is not set. Operational alerts will not be delivered.',
+                'message': f'Operator alert channel could not be read: {e}',
             }
-        return {'name': 'Admin Channel', 'status': 'PASS', 'message': 'Admin channel ID configured'}
+        if not channel_id:
+            return {
+                'name': 'Admin Channel',
+                'status': 'WARN',
+                'message': (
+                    'Operator alert channel is not set (set it with /operator alerts). '
+                    'Operational alerts will not be delivered.'
+                ),
+            }
+        return {'name': 'Admin Channel', 'status': 'PASS', 'message': 'Operator alert channel configured'}

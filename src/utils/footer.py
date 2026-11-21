@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import nextcord
 
 from src.database.database import db
+from src.services.guild_settings_service import guild_settings_service
+from src.utils.embeds import DEFAULT_CONTRIBUTOR
 from src.utils.security.rbac import ROLE_HIERARCHY, Role, rbac
 
 logger = logging.getLogger('VEKA.footer')
@@ -19,7 +21,6 @@ logger = logging.getLogger('VEKA.footer')
 # ============================================================
 
 REPO_URL = 'https://github.com/VEKAgg/DiscordBot'
-DEFAULT_CONTRIBUTOR = {'name': 'shifu', 'discord_id': '941009204045557842'}
 
 CONTRIBUTION_COOLDOWN_HOURS = 24
 NEW_USER_DAYS = 30
@@ -30,8 +31,7 @@ NEW_USER_DAYS = 30
 
 _FULL_FOOTER = 'Command by @{name} ({discord_id}) | [Contribute]({repo})'
 _COMPACT_FOOTER = 'Command by @{name} ({discord_id})'
-_DONATOR_FOOTER = 'Command by @{name} ({discord_id}) | Thank you for your patronage!'
-_ACTIVE_PRO_FOOTER = 'Command by @{name} ({discord_id}) | Thank you for being an Active Pro!'
+_SUPPORTER_FOOTER = 'Command by @{name} ({discord_id}) | Thank you for your support!'
 _NEW_USER_FOOTER = 'Command by @{name} ({discord_id}) | Tip: {tip}'
 
 # New user tips (rotate through these)
@@ -141,16 +141,21 @@ def _role_footer(user, contributor, guild):
     role = _get_user_role(user, guild or getattr(user, 'guild', None))
     if ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF):
         return ''
-    if role == Role.DONATOR:
-        return _DONATOR_FOOTER.format(**contrib)
-    if role == Role.ACTIVE_PRO:
-        return _ACTIVE_PRO_FOOTER.format(**contrib)
+    if role == Role.PERK:
+        return _SUPPORTER_FOOTER.format(**contrib)
     return None
 
 
 async def build_footer(user, contributor=None, guild=None) -> str:
     """Role-aware footer, identical policy in every community (no main-server CTA)."""
-    footer = _role_footer(user, contributor, guild)
+    resolved_guild = guild or getattr(user, 'guild', None)
+    if resolved_guild is not None and isinstance(getattr(resolved_guild, 'id', None), int):
+        # Warm the settings cache so the sync role lookup below sees configured access roles.
+        try:
+            await guild_settings_service.get_settings(resolved_guild.id)
+        except Exception:
+            pass
+    footer = _role_footer(user, contributor, resolved_guild)
     if footer is not None:
         return footer
     contrib = contributor or DEFAULT_CONTRIBUTOR
