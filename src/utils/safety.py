@@ -250,6 +250,29 @@ def staff_only():
     return permission_guard(_staff_predicate, 'This command is restricted to staff.')
 
 
+def _server_administrator_predicate(source) -> bool:
+    """Owner or Discord Administrator in this guild (or a platform operator). Configured admin roles do
+    NOT pass, so a bot-admin role cannot appoint more bot admins."""
+    user, guild = _source_user_and_guild(source)
+    if user is None:
+        return False
+    if operators.is_operator(user.id):
+        return True
+    if guild is None:
+        return False
+    if getattr(guild, 'owner_id', None) == user.id:
+        return True
+    member = user if isinstance(user, nextcord.Member) else guild.get_member(user.id)
+    return bool(member and getattr(member.guild_permissions, 'administrator', False))
+
+
+def server_administrator_only():
+    """Decorator: server owner or members with Administrator (plus operators). Works for prefix and slash."""
+    return permission_guard(
+        _server_administrator_predicate, 'Only the server owner and members with Administrator can do this.'
+    )
+
+
 def _manage_guild_predicate(source) -> bool:
     user, guild = _source_user_and_guild(source)
     if _is_admin_user(user, guild):

@@ -113,3 +113,24 @@ def test_unknown_settings_never_grant_configured_roles():
 def test_perk_bypasses_cooldowns_and_user_does_not():
     assert rbac.has_cooldown_bypass(Role.PERK)
     assert not rbac.has_cooldown_bypass(Role.USER)
+
+
+# ------------------------------------------------------------------ /setup roles guard
+
+
+def test_setup_roles_needs_owner_or_administrator_not_an_admin_role(monkeypatch):
+    from src.utils import safety
+
+    monkeypatch.setattr(registry, '_operators', frozenset())
+    monkeypatch.setattr(safety, '_source_user_and_guild', lambda src: (src.user, src.guild))
+    member_admin = _member(uid=6, administrator=True)
+    guild = SimpleNamespace(id=GUILD_ID, owner_id=999, get_member=lambda uid: member_admin if uid == 6 else None)
+
+    def allowed(member) -> bool:
+        return safety._server_administrator_predicate(SimpleNamespace(user=member, guild=guild))
+
+    assert not allowed(_member(uid=5, roles=[50]))  # holds a configured bot-admin role only
+    assert allowed(_member(uid=999))  # owner
+    assert allowed(member_admin)  # Discord Administrator
+    monkeypatch.setattr(registry, '_operators', frozenset({7}))
+    assert allowed(_member(uid=7))  # platform operator

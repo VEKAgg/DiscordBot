@@ -508,6 +508,7 @@ async def test_settings_access_roles(app, api_db):
             version = (await c.get(url, headers=headers)).json()['version']
             h = {**headers, 'If-Match': version}
             not_admin = await c.patch(url, headers=h, json={'access_roles': {'staff': ['603']}})
+            manager_view = (await c.get(url, headers=headers)).json()
         with _as(identity({GUILD: MANAGE_GUILD | ADMINISTRATOR})):
             unknown_tier = await c.patch(url, headers=h, json={'access_roles': {'founder': ['603']}})
             everyone = await c.patch(url, headers=h, json={'access_roles': {'staff': [str(GUILD)]}})
@@ -518,6 +519,7 @@ async def test_settings_access_roles(app, api_db):
             reread = await c.get(url, headers=headers)
 
     assert not_admin.status_code == 403
+    assert manager_view['can_edit_access_roles'] is False
     assert unknown_tier.json()['error']['code'] == 'unknown_setting'
     assert everyone.json()['error']['code'] == 'everyone_role'
     assert managed.json()['error']['code'] == 'managed_role'
@@ -526,6 +528,7 @@ async def test_settings_access_roles(app, api_db):
     assert ok.status_code == 200, ok.text
     assert ok.json()['access_roles'] == {'admin': [], 'staff': ['603', '604'], 'perk': []}
     assert reread.json()['access_roles']['staff'] == ['603', '604']
+    assert reread.json()['can_edit_access_roles'] is True
     assert any(item['key'] == 'staff' for item in reread.json()['schema']['access_roles'])
     row = await api_db.fetchrow('SELECT staff_role_ids FROM guild_settings WHERE guild_id = $1', GUILD)
     assert list(row['staff_role_ids']) == [603, 604]

@@ -24,6 +24,7 @@ PRIVILEGED_SLASH_COMMANDS = {
     'massunban cancel',
     'massunban recent',
     'admin reloadcog',
+    'setup roles',
     'operator alerts',
     'operator alerts-clear',
     'operator refresh',

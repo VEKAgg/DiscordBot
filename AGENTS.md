@@ -76,7 +76,7 @@ The bot keeps running when the DB, a cog, or a background task fails:
 
 ### Per-guild settings
 
-Channel/role config is per guild in the `guild_settings` table, read via `from src.services.guild_settings_service import guild_settings_service` (`get_settings`, `update_settings`, `invalidate_cache`, `resolve_channel`, plus cache-only `peek` and startup `warm_cache`; in-memory cache). Configured by staff with `/setup` / `!setup` (`src/cogs/admin/setup.py`); access roles (admin/staff/perk) with `/setup roles`. Server channels have no config/env fallbacks; resolve them through the service. The bot-wide operator alert channel lives in the `bot_settings` table (`src/services/bot_settings_service.py`), set with `/operator alerts`, and is not a server feature channel.
+Channel/role config is per guild in the `guild_settings` table, read via `from src.services.guild_settings_service import guild_settings_service` (`get_settings`, `update_settings`, `invalidate_cache`, `resolve_channel`, plus cache-only `peek` and startup `warm_cache`; in-memory cache). Configured by staff with `/setup` / `!setup` (`src/cogs/admin/setup.py`); access roles (admin/staff/perk) with `/setup roles` (server owner or Administrator only, `server_administrator_only()`; a configured bot-admin role cannot change them). Server channels have no config/env fallbacks; resolve them through the service. The bot-wide operator alert channel lives in the `bot_settings` table (`src/services/bot_settings_service.py`), set with `/operator alerts`, and is not a server feature channel.
 
 ### Per-guild modules
 

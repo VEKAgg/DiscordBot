@@ -22,9 +22,9 @@ from src.services.guild_settings_policy import channel_type_error as _type_error
 from src.services.guild_settings_service import GuildSettings, guild_settings_service
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.roles import punitive_role_problem
-from src.utils.safety import safe_send, safe_slash_command
+from src.utils.safety import safe_send, safe_slash_command, server_administrator_only
 from src.utils.security import audit_log
-from src.utils.security.rbac import require_admin, require_staff
+from src.utils.security.rbac import require_staff
 
 logger = logging.getLogger('VEKA.admin.setup')
 
@@ -296,7 +296,7 @@ class Setup(commands.Cog):
         await safe_send(interaction, embed=embed, ephemeral=True)
 
     @setup_group.subcommand(name='roles', description='Choose which roles count as bot admins, staff or supporters')
-    @require_admin()
+    @server_administrator_only()
     @safe_slash_command(requires_db=True)
     async def setup_roles(
         self,

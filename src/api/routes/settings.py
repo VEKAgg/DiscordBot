@@ -114,9 +114,14 @@ async def _load(guild_id: int) -> dict:
     return dict(row) if row else {}
 
 
+def _with_viewer(body: dict[str, Any], access: GuildAccess) -> dict[str, Any]:
+    """Tell the dashboard whether this member may change access roles (same rule as the write)."""
+    return {**body, 'can_edit_access_roles': access.member is not None and access.member.has(ADMINISTRATOR)}
+
+
 @router.get('')
 async def get_settings(access: GuildAccess = guild_access(MANAGE_GUILD)) -> dict:
-    return _serialize(await _load(access.guild_id))
+    return _with_viewer(_serialize(await _load(access.guild_id)), access)
 
 
 def _snowflake(value: str, what: str) -> int:
@@ -224,7 +229,7 @@ async def patch_settings(
         current = await _load(access.guild_id)
         if _version(current.get('updated_at')) != if_match.strip('"'):
             raise ApiError(412, 'version_conflict', 'Settings changed since you loaded them; reload and retry.')
-        return _serialize(current)
+        return _with_viewer(_serialize(current), access)
 
     await db.execute(
         'INSERT INTO guild_settings (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING', access.guild_id
@@ -268,7 +273,7 @@ async def patch_settings(
             str(access.guild_id),
         )
         await conn.execute("SELECT pg_notify('veka_cache', $1)", f'guild_settings:{access.guild_id}')
-    return _serialize(dict(row) if row else {})
+    return _with_viewer(_serialize(dict(row) if row else {}), access)
 
 
 def _jsonable(value):
