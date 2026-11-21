@@ -3,6 +3,10 @@
 Calls ``/users/@me`` and ``/users/@me/guilds`` with the user's OAuth bearer token (scopes
 ``identify guilds``). Results are cached for 60 s by SHA-256 of the token (the raw token is never
 stored or logged). Privileged writes pass ``fresh=True`` to bypass the cache.
+
+Discord allows only about one ``/users/@me/guilds`` call per second per user, and a dashboard page
+makes several API requests at once. Concurrent lookups for one token therefore share a single
+Discord round trip, and a short rate-limit wait is waited out once instead of failing the page.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ MODERATE_MEMBERS = 1 << 40
 MANAGE_CHANNELS = 1 << 4
 
 MAX_GUILD_PAGES = 5
+# A 429 asking to wait at most this long is retried once; longer waits fail fast with Retry-After.
+MAX_RETRY_WAIT = 2.0
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,8 @@ class DiscordClient:
         self._sem = asyncio.Semaphore(concurrency)
         self._cache: TTLDict[str, Identity] = TTLDict(ttl=60, maxsize=10_000)
         self._member_cache: TTLDict[tuple[int, int], dict] = TTLDict(ttl=60, maxsize=10_000)
+        # Identity lookups in flight, by token hash, so concurrent requests share one.
+        self._inflight: dict[str, asyncio.Task[Identity]] = {}
         self._session: aiohttp.ClientSession | None = None
 
     def _get_session(self) -> aiohttp.ClientSession:
@@ -76,28 +84,37 @@ class DiscordClient:
             await self._session.close()
 
     async def _get(self, path: str, token: str):
-        try:
-            async with (
-                self._sem,
-                self._get_session().get(f'{self.base}{path}', headers={'Authorization': f'Bearer {token}'}) as resp,
-            ):
-                if resp.status == 401:
-                    raise ApiError(401, 'invalid_token', 'The Discord token is invalid or expired.')
-                if resp.status == 429:
-                    retry = resp.headers.get('Retry-After', '5')
-                    raise ApiError(
-                        503,
-                        'discord_rate_limited',
-                        'Discord is rate limiting; retry shortly.',
-                        headers={'Retry-After': retry},
-                    )
-                if resp.status >= 400:
-                    raise ApiError(503, 'discord_unavailable', 'Could not verify the account with Discord.')
-                return await resp.json()
-        except ApiError:
-            raise
-        except (aiohttp.ClientError, TimeoutError):
-            raise ApiError(503, 'discord_unavailable', 'Could not reach Discord to verify the account.') from None
+        for attempt in range(2):
+            retry_in = 0.0
+            try:
+                async with (
+                    self._sem,
+                    self._get_session().get(f'{self.base}{path}', headers={'Authorization': f'Bearer {token}'}) as resp,
+                ):
+                    if resp.status == 401:
+                        raise ApiError(401, 'invalid_token', 'The Discord token is invalid or expired.')
+                    if resp.status == 429:
+                        wait = _retry_after(resp.headers.get('Retry-After'))
+                        if attempt == 0 and wait <= MAX_RETRY_WAIT:
+                            retry_in = wait
+                        else:
+                            raise ApiError(
+                                503,
+                                'discord_rate_limited',
+                                'Discord is rate limiting; retry shortly.',
+                                headers={'Retry-After': str(max(1, round(wait)))},
+                            )
+                    elif resp.status >= 400:
+                        raise ApiError(503, 'discord_unavailable', 'Could not verify the account with Discord.')
+                    else:
+                        return await resp.json()
+            except ApiError:
+                raise
+            except (aiohttp.ClientError, TimeoutError):
+                raise ApiError(503, 'discord_unavailable', 'Could not reach Discord to verify the account.') from None
+            # Outside the semaphore, so other users are not held up while this one waits.
+            await asyncio.sleep(retry_in)
+        raise AssertionError('unreachable')
 
     async def guild_member(self, guild_id: int, user_id: int) -> dict:
         """Minimal current-guild member identity, never a global /users directory.
@@ -181,6 +198,16 @@ class DiscordClient:
             cached = self._cache.get(key)
             if cached is not None:
                 return cached
+        # A lookup already in flight started after any cached copy, so it is fresh enough for both.
+        task = self._inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(self._lookup(key, token))
+            self._inflight[key] = task
+            task.add_done_callback(lambda _t: self._inflight.pop(key, None))
+        # shield: one caller being cancelled (client went away) must not cancel the others' lookup.
+        return await asyncio.shield(task)
+
+    async def _lookup(self, key: str, token: str) -> Identity:
         me = await self._get('/users/@me', token)
         guilds: list[dict] = []
         after = '0'
@@ -210,6 +237,15 @@ class DiscordClient:
         )
         self._cache.set(key, identity)
         return identity
+
+
+def _retry_after(raw: str | None) -> float:
+    """Discord's Retry-After in seconds, bounded; 5 when missing or malformed."""
+    try:
+        value = float(raw) if raw is not None and len(raw) < 10 else 5.0
+    except ValueError:
+        return 5.0
+    return min(3600.0, max(0.0, value))
 
 
 discord_client = DiscordClient()
