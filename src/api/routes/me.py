@@ -26,11 +26,16 @@ async def get_me(principal: Principal = Depends(current_user)) -> dict:
 
 @router.get('/guilds')
 async def my_guilds(principal: Principal = Depends(current_user)) -> dict:
-    """Manage Server guilds in which the bot has a fresh presence snapshot."""
+    """Manage Server guilds: ``items`` where the bot has a fresh presence snapshot, and
+    ``invitable`` where it has not (yet) been added.
+
+    The dashboard needs both, and Discord rate limits the user's guild list tightly, so the
+    website takes them from this one verified lookup instead of asking Discord itself.
+    """
     assert principal.identity is not None
     candidates = [g for g in principal.identity.guilds.values() if g.has(MANAGE_GUILD)]
     if not candidates:
-        return {'items': []}
+        return {'items': [], 'invitable': []}
     rows = await db.fetch(
         """SELECT guild_id, name, icon_url, member_count FROM bot_guild_snapshot
            WHERE guild_id = ANY($1::bigint[]) AND updated_at > NOW() - make_interval(secs => $2)""",
@@ -39,9 +44,11 @@ async def my_guilds(principal: Principal = Depends(current_user)) -> dict:
     )
     present = {r['guild_id']: r for r in rows}
     items = []
+    invitable = []
     for g in sorted(candidates, key=lambda g: g.name.lower()):
         snap = present.get(g.id)
         if snap is None:
+            invitable.append({'id': str(g.id), 'name': g.name, 'icon': g.icon})
             continue
         items.append(
             {
@@ -56,4 +63,4 @@ async def my_guilds(principal: Principal = Depends(current_user)) -> dict:
                 },
             }
         )
-    return {'items': items}
+    return {'items': items, 'invitable': invitable}

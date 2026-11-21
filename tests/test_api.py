@@ -185,6 +185,8 @@ async def test_me_guilds_lists_only_managed_guilds_with_the_bot(app):
     assert [g['id'] for g in r.json()['items']] == [
         str(GUILD)
     ]  # OTHER: moderation but not management; NO_BOT: stale snapshot
+    # Managed guilds without the bot come back too, so the website need not ask Discord itself.
+    assert [g['id'] for g in r.json()['invitable']] == [str(NO_BOT)]
 
 
 @pytest.mark.usefixtures('api_db')
