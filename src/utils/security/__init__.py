@@ -5,7 +5,7 @@ Centralizes all security-related functionality
 
 from .audit import audit_action, audit_log
 from .rate_limiter import rate_limit, rate_limiter
-from .rbac import Role, rbac, require_admin, require_founder, require_mod, require_staff, require_verified
+from .rbac import Role, rbac, require_admin, require_mod, require_operator, require_staff
 from .validation import InputValidator, is_safe, sanitize, validate_id
 
 __all__ = [
@@ -25,7 +25,6 @@ __all__ = [
     'Role',
     'require_mod',
     'require_admin',
-    'require_verified',
     'require_staff',
-    'require_founder',
+    'require_operator',
 ]

@@ -1,7 +1,7 @@
 """
 Moderation Cog — Warnings, auto-escalation, lockdown, and mod stats.
 
-Founders can toggle server lockdown. Staff can warn, view, and clear warnings.
+Bot operators can toggle server lockdown. Staff can warn, view, and clear warnings.
 Auto-escalation applies mute/ban when warning thresholds are reached.
 """
 
@@ -20,7 +20,7 @@ from src.utils.outbound import outbound
 from src.utils.roles import punitive_role_problem
 from src.utils.safety import safe_send, safe_slash_command
 from src.utils.security import require_mod, require_staff
-from src.utils.security.rbac import require_founder
+from src.utils.security.rbac import require_operator
 
 logger = logging.getLogger('VEKA.admin.moderation')
 
@@ -87,7 +87,7 @@ class Moderation(commands.Cog):
         self.lockdown_guilds: set[int] = set()
 
     # ============================================================
-    # Panic / Lockdown (Founder only)
+    # Panic / Lockdown (bot operators only)
     # ============================================================
 
     async def panic_slash(self, interaction: nextcord.Interaction) -> None:
@@ -95,9 +95,9 @@ class Moderation(commands.Cog):
         await self._toggle_lockdown(interaction)
 
     @commands.command(name='panic')
-    @require_founder()
+    @require_operator()
     async def panic_prefix(self, ctx: commands.Context) -> None:
-        """Toggle server lockdown (Founder only)"""
+        """Toggle server lockdown (bot operators only)"""
         await self._toggle_lockdown(ctx)
 
     async def lockdown_slash(self, interaction: nextcord.Interaction) -> None:
@@ -105,7 +105,7 @@ class Moderation(commands.Cog):
         await self._toggle_lockdown(interaction)
 
     @commands.command(name='lockdown')
-    @require_founder()
+    @require_operator()
     async def lockdown_prefix(self, ctx: commands.Context) -> None:
         """Alias for !panic"""
         await self._toggle_lockdown(ctx)
@@ -132,7 +132,7 @@ class Moderation(commands.Cog):
             embed = await alert_embed(
                 title=f'LOCKDOWN {status}',
                 description=(
-                    f'Server lockdown has been **{status.lower()}** by a Founder.\n\n'
+                    f'Server lockdown has been **{status.lower()}** by a bot operator.\n\n'
                     '**Alert only:** channel permissions and bot operations are unchanged.'
                     if active
                     else f'Server lockdown alert has been **{status.lower()}**. Channel permissions are unchanged.'

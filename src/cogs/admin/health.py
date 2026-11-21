@@ -9,7 +9,7 @@ from src.core.lifecycle import run_cog_ready_hooks
 from src.core.runtime_state import runtime_state
 from src.utils.embeds import error_embed, info_embed, success_embed
 from src.utils.safety import _is_staff_user, bot_operator_only, safe_command, safe_send, safe_slash_command, staff_only
-from src.utils.security.rbac import require_founder, require_staff
+from src.utils.security.rbac import require_operator, require_staff
 
 logger = logging.getLogger('VEKA.admin.health')
 
@@ -121,7 +121,7 @@ class Health(commands.Cog):
 
         # Error history — raw error text (hosts, SQL) only for staff (audit M-20)
         user_obj = getattr(target, 'author', None) or getattr(target, 'user', None)
-        if _is_staff_user(user_obj, getattr(target, 'guild', None)):
+        if await _is_staff_user(user_obj, getattr(target, 'guild', None)):
             last_error = (runtime_state.last_db_error or 'None recorded')[:1000]
         else:
             last_error = 'Recorded' if runtime_state.last_db_error else 'None recorded'
@@ -296,7 +296,7 @@ class Health(commands.Cog):
             await cog.ping_squad_slash(interaction, message)
 
     @admin.subcommand(name='panic', description='Toggle server lockdown (bot operators only)')
-    @require_founder()
+    @require_operator()
     @safe_slash_command()
     async def mp_panic(self, interaction: nextcord.Interaction):
         cog = self.bot.get_cog('Moderation')
@@ -304,7 +304,7 @@ class Health(commands.Cog):
             await cog.panic_slash(interaction)
 
     @admin.subcommand(name='lockdown', description='Toggle server lockdown (bot operators only)')
-    @require_founder()
+    @require_operator()
     @safe_slash_command()
     async def mp_lockdown(self, interaction: nextcord.Interaction):
         cog = self.bot.get_cog('Moderation')
@@ -312,7 +312,7 @@ class Health(commands.Cog):
             await cog.lockdown_slash(interaction)
 
     @admin.subcommand(name='broadcast', description='Send announcement to a channel (bot operators only)')
-    @require_founder()
+    @require_operator()
     @safe_slash_command()
     async def mp_broadcast(
         self,

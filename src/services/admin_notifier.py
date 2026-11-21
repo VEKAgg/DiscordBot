@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import nextcord
 
-from src.config.config import ADMIN_ALERT_CHANNEL_ID
 from src.core.runtime_state import runtime_state
+from src.services.bot_settings_service import bot_settings_service
 from src.services.guild_settings_service import guild_settings_service
 from src.utils.embeds import alert_embed
 from src.utils.logger import get_logger
@@ -18,6 +18,7 @@ class AdminNotifier:
     def __init__(self, bot: nextcord.Client):
         self.bot = bot
         self._channel: nextcord.abc.Messageable | None = None
+        self._channel_id: int | None = None
         self._channel_fetched_at: datetime | None = None
 
     async def _get_channel(self, guild_id: int | None = None):
@@ -33,27 +34,37 @@ class AdminNotifier:
             channel_id = settings.alert_channel_id or settings.log_channel_id
             return guild.get_channel(channel_id) if channel_id else None
 
-        # Fallback to global admin alert channel
-        if not ADMIN_ALERT_CHANNEL_ID:
+        # Platform-wide operational alerts: operator_alert_channel_id from bot_settings.
+        return await self._get_operator_channel()
+
+    async def _get_operator_channel(self):
+        channel_id = await bot_settings_service.get_operator_alert_channel_id()
+        if not channel_id:
             return None
 
         now = datetime.now(UTC)
-        if self._channel is not None and self._channel_fetched_at is not None:
-            if now - self._channel_fetched_at < _CHANNEL_CACHE_TTL:
-                return self._channel
-            self._channel = None
+        if (
+            self._channel is not None
+            and self._channel_id == channel_id
+            and self._channel_fetched_at is not None
+            and now - self._channel_fetched_at < _CHANNEL_CACHE_TTL
+        ):
+            return self._channel
+        # A changed channel id (set/clear via /operator alerts) invalidates the cached object.
+        self._channel = None
+        self._channel_id = None
 
-        channel = self.bot.get_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+        channel = self.bot.get_channel(channel_id)
         if channel is None:
             try:
-                channel = await self.bot.fetch_channel(ADMIN_ALERT_CHANNEL_ID)  # type: ignore[arg-type]
+                channel = await self.bot.fetch_channel(channel_id)
             except Exception as e:
-                logger.warning('Failed to fetch admin alert channel: %s', e)
-                self._channel = None
+                logger.warning('Failed to fetch operator alert channel: %s', e)
                 self._channel_fetched_at = now
                 return None
 
         self._channel = channel  # type: ignore[assignment]
+        self._channel_id = channel_id
         self._channel_fetched_at = now
         return self._channel
 

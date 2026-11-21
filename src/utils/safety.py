@@ -12,8 +12,8 @@ from nextcord.application_command import BaseApplicationCommand, CallbackWrapper
 from nextcord.errors import ApplicationCheckFailure
 from nextcord.ext import application_checks, commands
 
-from src.config.config import ADMIN_IDS, BOT_OPERATOR_IDS
 from src.core.runtime_state import runtime_state
+from src.services.operators import operators
 
 logger = logging.getLogger('VEKA.safety')
 
@@ -102,24 +102,42 @@ def map_exception_to_message(error: Exception) -> str:
 # ============================================================
 
 
+def _peek_settings(guild):
+    """Warm-cache guild settings for sync guards; None when unknown (permission-only fallback)."""
+    guild_id = getattr(guild, 'id', None)
+    if not isinstance(guild_id, int):
+        return None
+    from src.services.guild_settings_service import guild_settings_service
+
+    return guild_settings_service.peek(guild_id)
+
+
 def _is_admin_user(user, guild=None) -> bool:
-    """Check if a user has admin privileges via ID lists or Discord permissions."""
+    """Check if a user has admin privileges via the operator registry, guild permissions or admin roles."""
     if user is None:
         return False
-    if user.id in BOT_OPERATOR_IDS or user.id in ADMIN_IDS:
+    if operators.is_operator(user.id):
         return True
-    if isinstance(user, nextcord.Member):
-        if user.guild_permissions.administrator:
-            return True
-    elif guild is not None:
+    member = user if isinstance(user, nextcord.Member) else None
+    if member is None and guild is not None:
         member = guild.get_member(user.id)
-        if member and member.guild_permissions.administrator:
-            return True
-    return False
+    if member is None:
+        return False
+    if getattr(member.guild_permissions, 'administrator', False):
+        return True
+    settings = _peek_settings(guild if guild is not None else getattr(member, 'guild', None))
+    return settings is not None and bool(set(getattr(settings, 'admin_role_ids', []) or []) & _member_role_ids(member))
 
 
-def _is_staff_user(user, guild=None) -> bool:
-    """Check if a user has staff privileges via ID lists or RBAC role."""
+def _member_role_ids(member) -> set:
+    try:
+        return {role.id for role in member.roles}
+    except Exception:
+        return set()
+
+
+async def _is_staff_user(user, guild=None) -> bool:
+    """Check if a user has staff privileges via the operator registry, guild permissions or staff roles."""
     if user is None:
         return False
     # Admin/owner implies staff
@@ -131,7 +149,7 @@ def _is_staff_user(user, guild=None) -> bool:
         from src.utils.security.rbac import ROLE_HIERARCHY, Role, rbac
 
         ctx = SimpleNamespace(author=user, guild=guild)
-        role = rbac.get_user_role(ctx)
+        role = await rbac.get_user_role_async(ctx)
         return ROLE_HIERARCHY.index(role) >= ROLE_HIERARCHY.index(Role.STAFF)
     except Exception:
         return False
@@ -217,18 +235,18 @@ def _admin_predicate(source) -> bool:
     return _is_admin_user(user, guild)
 
 
-def _staff_predicate(source) -> bool:
+async def _staff_predicate(source) -> bool:
     user, guild = _source_user_and_guild(source)
-    return _is_staff_user(user, guild)
+    return await _is_staff_user(user, guild)
 
 
 def admin_only():
-    """Decorator: only allow admin/owner users (by ID or Discord permission). Works for prefix and slash."""
+    """Decorator: only allow admin-tier users (operator, guild owner/administrator or admin role). Works for prefix and slash."""
     return permission_guard(_admin_predicate, 'This command is restricted to server administrators.')
 
 
 def staff_only():
-    """Decorator: only allow staff or higher users (by ID, Discord role, or admin status). Works for prefix and slash."""
+    """Decorator: only allow staff-or-higher users (admin tier included). Works for prefix and slash."""
     return permission_guard(_staff_predicate, 'This command is restricted to staff.')
 
 
@@ -248,7 +266,7 @@ def manage_guild_only():
 def _bot_operator_predicate(source) -> bool:
     """Bot-wide actions are allowlist-only, independent of guild/role names."""
     user, _ = _source_user_and_guild(source)
-    return user is not None and user.id in BOT_OPERATOR_IDS
+    return user is not None and operators.is_operator(user.id)
 
 
 def bot_operator_only():

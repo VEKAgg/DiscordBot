@@ -12,17 +12,10 @@ BOT_VERSION = os.getenv('BOT_VERSION', '1.0.0')
 ENVIRONMENT = os.getenv('ENVIRONMENT', os.getenv('BOT_ENVIRONMENT', 'development'))
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 
-# Access Control — comma-separated Discord user IDs
-ADMIN_IDS = [int(item) for item in os.getenv('ADMIN_IDS', '').split(',') if item.strip().isdigit()]
-BOT_OPERATOR_IDS = [int(item) for item in os.getenv('BOT_OPERATOR_IDS', '').split(',') if item.strip().isdigit()]
-STAFF_IDS = [int(item) for item in os.getenv('STAFF_IDS', '').split(',') if item.strip().isdigit()]
-INTERN_IDS = [int(item) for item in os.getenv('INTERN_IDS', '').split(',') if item.strip().isdigit()]
-DONATOR_IDS = [int(item) for item in os.getenv('DONATOR_IDS', '').split(',') if item.strip().isdigit()]
-ACTIVE_PRO_IDS = [int(item) for item in os.getenv('ACTIVE_PRO_IDS', '').split(',') if item.strip().isdigit()]
-
-# Bot-operator alert destination (server feature channels live in guild_settings).
-_admin_alert_channel = os.getenv('ADMIN_ALERT_CHANNEL_ID', '')
-ADMIN_ALERT_CHANNEL_ID = int(_admin_alert_channel) if _admin_alert_channel.strip().isdigit() else None
+# Access control: no user/channel ID allowlists in the environment.
+# Operators come from the Discord Developer Portal team (src/services/operators.py); server-side
+# admin/staff/perk roles live in guild_settings (dashboard or /setup roles); the operator alert
+# channel is stored in bot_settings (/operator alerts).
 
 # Notification settings
 NOTIFICATION_SQUAD_ROLE_NAME = 'notification squad'

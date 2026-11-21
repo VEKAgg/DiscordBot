@@ -20,6 +20,22 @@ ROLE_SETTINGS: dict[str, tuple[str, str, str]] = {
     'muted': ('Muted Role', 'muted_role_id', 'Role assigned to muted users'),
 }
 
+# Per-server access tiers: lists of role IDs, chosen by the server's owner/administrators.
+ACCESS_ROLE_SETTINGS: dict[str, tuple[str, str, str]] = {
+    'admin': (
+        'Bot admins',
+        'admin_role_ids',
+        'Can configure the bot and use admin commands. The owner and Administrators always can.',
+    ),
+    'staff': (
+        'Staff',
+        'staff_role_ids',
+        'Can use moderation commands. While none are chosen, members who can timeout, kick or ban count as staff.',
+    ),
+    'perk': ('Supporters', 'perk_role_ids', 'Skip command cooldowns and get the supporter footer.'),
+}
+ACCESS_ROLE_MAX = 10
+
 TOGGLE_SETTINGS: dict[str, tuple[str, str, str]] = {
     'inactivity_alerts': (
         'Inactivity Alerts',
@@ -85,6 +101,10 @@ def settings_schema() -> dict:
         'roles': [
             {'key': key, 'label': label, 'description': description}
             for key, (label, _column, description) in ROLE_SETTINGS.items()
+        ],
+        'access_roles': [
+            {'key': key, 'label': label, 'description': description, 'max': ACCESS_ROLE_MAX}
+            for key, (label, _column, description) in ACCESS_ROLE_SETTINGS.items()
         ],
         'toggles': [
             {'key': key, 'label': label, 'description': description, 'module': TOGGLE_MODULES[key]}

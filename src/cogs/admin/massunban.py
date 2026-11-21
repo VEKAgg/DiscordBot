@@ -23,11 +23,11 @@ from typing import Any
 import nextcord
 from nextcord.ext import commands, tasks
 
-from src.config.config import BOT_OPERATOR_IDS
 from src.core.lifecycle import spawn
 from src.core.runtime_state import runtime_state
 from src.database.database import db
 from src.services.guild_settings_service import guild_settings_service
+from src.services.operators import operators
 from src.utils.embeds import error_embed, info_embed, success_embed, veka_embed
 from src.utils.outbound import SendStatus, outbound
 from src.utils.safety import DatabaseUnavailableError, admin_only, safe_command, safe_send, safe_slash_command
@@ -1628,7 +1628,7 @@ class MassUnban(commands.Cog):
             return
 
         user = target.user if isinstance(target, nextcord.Interaction) else target.author
-        if job['requested_by'] != user.id and user.id not in BOT_OPERATOR_IDS:
+        if job['requested_by'] != user.id and not operators.is_operator(user.id):
             embed = await error_embed(
                 'Not Allowed', 'Only the job runner or owners can cancel.', contributor_source=__name__
             )

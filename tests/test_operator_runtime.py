@@ -4,43 +4,51 @@ import importlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
 
-from src.core import app
+from src.services.operators import OperatorRegistry, operators
 from src.utils import logger as log_module
 from src.utils import safety
 
 
+def _set_operators(monkeypatch, ids):
+    """Point the shared registry at an explicit operator set for one test."""
+    monkeypatch.setattr(operators, '_operators', frozenset(ids))
+
+
 @pytest.mark.parametrize('guild_id', [1088553066334273537, 42])
 def test_guild_administrator_and_owner_cannot_become_bot_operator(monkeypatch, mock_interaction, guild_id):
-    monkeypatch.setattr(safety, 'BOT_OPERATOR_IDS', [])
+    _set_operators(monkeypatch, [])
     mock_interaction.guild.id = guild_id
     mock_interaction.guild.owner_id = mock_interaction.user.id
     mock_interaction.user.guild_permissions.administrator = True
     assert not safety._bot_operator_predicate(mock_interaction)
     module = importlib.import_module('src.utils.security.rbac')
-    monkeypatch.setattr(module, 'BOT_OPERATOR_IDS', [])
     assert module.rbac.get_user_role(mock_interaction) == module.Role.ADMIN
 
 
-def test_explicit_operator_is_platform_operator_without_any_special_guild(monkeypatch, mock_interaction):
-    monkeypatch.setattr(safety, 'BOT_OPERATOR_IDS', [mock_interaction.user.id])
+async def test_explicit_operator_is_platform_operator_without_any_special_guild(monkeypatch, mock_interaction):
+    _set_operators(monkeypatch, [mock_interaction.user.id])
     mock_interaction.guild = None
     assert safety._bot_operator_predicate(mock_interaction)
     module = importlib.import_module('src.utils.security.rbac')
-    monkeypatch.setattr(module, 'BOT_OPERATOR_IDS', [mock_interaction.user.id])
-    assert module.rbac.get_user_role(mock_interaction) == module.Role.FOUNDER
+    assert await module.rbac.get_user_role_async(mock_interaction) == module.Role.OPERATOR
 
 
-def test_empty_operator_allowlist_has_one_clear_startup_warning(monkeypatch, caplog):
-    monkeypatch.setattr(app, 'BOT_OPERATOR_IDS', [])
-    app.log_operator_configuration()
-    warnings = [record.message for record in caplog.records if 'BOT_OPERATOR_IDS' in record.message]
+async def test_empty_operator_set_warns_once_and_stays_disabled(caplog):
+    """First failed refresh with an empty set ⇒ operators disabled, exactly one warning."""
+    registry = OperatorRegistry()
+    failing = SimpleNamespace(http=SimpleNamespace(application_info=AsyncMock(side_effect=RuntimeError('down'))))
+    registry.bind(failing)  # type: ignore[arg-type]
+    assert await registry.refresh() is False
+    assert await registry.refresh() is False
+    warnings = [r.message for r in caplog.records if r.levelname == 'WARNING' and 'disabled' in r.message]
     assert len(warnings) == 1
-    assert 'empty' in warnings[0] and 'disabled' in warnings[0] and 'deployment' in warnings[0]
+    assert 'Developer Portal' in warnings[0]
+    assert registry.ids == frozenset() and not registry.is_operator(1)
 
 
 @pytest.mark.parametrize('compose_name', ['docker-compose.yml', 'docker-compose.dev.yml'])

@@ -45,16 +45,13 @@ All settings are environment variables; see `.env.example`.
 |---|---|
 | `DISCORD_TOKEN` | Bot token (required) |
 | `DATABASE_URL` | PostgreSQL DSN (or set `POSTGRES_HOST/PORT/DB/USER/PASSWORD`) |
-| `BOT_OPERATOR_IDS` | Explicit bot-global operator allowlist. Empty disables operator commands and emits one startup warning; guild ownership/role names never grant operator powers. |
-| `ADMIN_IDS`, `STAFF_IDS`, `INTERN_IDS`, `DONATOR_IDS`, `ACTIVE_PRO_IDS` | Comma-separated IDs for community capability/role tiers; not bot-global operator authority. |
-| `ADMIN_ALERT_CHANNEL_ID` | Channel for operational alerts |
 | `VEKA_CORE_URL`, `VEKA_CORE_SERVICE_KEY`, `VEKA_CORE_INSTALLATION_ID` | Canonical marketplace service origin, scoped installation key and stable service-key name |
 | `FEED_MAX_*` | RSS feed limits |
 | `RETENTION_*_DAYS` | Data retention overrides |
 | `LOG_LEVEL`, `ENVIRONMENT` | Logging and environment |
 | `API_*` | Dashboard API settings (API process only) |
 
-Channels and roles are configured per server with `/setup` or the dashboard.
+Channels and roles are configured per server with `/setup` or the dashboard. Access is not configured through the environment: **operators = Developer Portal team members with the Admin/Developer role**, each server's admin/staff/perk roles come from `/setup roles` or the dashboard, and the alert channel is set with `/operator alerts`.
 
 ## Development
 
@@ -74,7 +71,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and the linked shared platform runb
 
 Runtime secrets belong in restricted server files, not GitHub secrets. Repository variables `STAGING_DEPLOY_ENABLED`, `PRODUCTION_DEPLOY_ENABLED` and `PRODUCTION_AUTO_DEPLOY` control activation. The automatic job token handles GHCR authentication. The existing `docker-compose.yml` describes the pre-cutover manual deployment; new workflows use the installed shared platform stack instead. Follow the cutover runbook to stop old containers before replacing production routes or using the same bot token.
 
-Set `BOT_OPERATOR_IDS` explicitly before deploying. No default guild/owner or old owner/founder environment fallback is used. The startup warning clearly identifies an empty allowlist. Containers run as UID:GID `10001:10001`, with read-only root filesystems, dropped capabilities, no-new-privileges and bounded temporary storage. The platform stack reads host-owned mode-600 `bot.env` via literal `env_file` and injects it; it does not mount secrets or host logs into the unprivileged process. Logs go to stdout (`docker logs`); local file logging is opt-in with `VEKA_LOG_TO_FILE=1`.
+Operators come from the Discord Developer Portal team, so an empty team disables operator commands with one startup warning; there is no default guild/owner or legacy owner/founder environment fallback. Containers run as UID:GID `10001:10001`, with read-only root filesystems, dropped capabilities, no-new-privileges and bounded temporary storage. The platform stack reads host-owned mode-600 `bot.env` via literal `env_file` and injects it; it does not mount secrets or host logs into the unprivileged process. Logs go to stdout (`docker logs`); local file logging is opt-in with `VEKA_LOG_TO_FILE=1`.
 
 ### Dashboard API
 
