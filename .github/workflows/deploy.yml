@@ -80,5 +80,7 @@ jobs:
           IMAGE: ${{ inputs.image }}
           REVISION: ${{ inputs.revision }}
         run: |
+          # Backticks below are Markdown code spans for the job summary, not command substitution.
+          # shellcheck disable=SC2016
           printf '### bot deployment\n\nResult: %s\n\nBranch: `%s`\n\nCommit: `%s`\n\nImage: `%s`\n' \
             "$RESULT" "$GITHUB_REF_NAME" "$REVISION" "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
