@@ -1104,7 +1104,7 @@ async def test_presence_is_not_written_for_servers_without_tracking(migrated_db,
         'SELECT total_gaming_minutes, total_voice_minutes, presence_opt_in FROM users WHERE discord_id = $1', str(uid)
     )
     assert (row['total_gaming_minutes'], row['total_voice_minutes']) == (0, 3)
-    assert row['presence_opt_in'] is True  # new members default to allowed (member opt-out model)
+    assert row['presence_opt_in'] is False  # new members are not tracked until they opt in (2026-11-21)
     assert await migrated_db.fetchval('SELECT COUNT(*) FROM user_activity_details WHERE user_id = $1', str(uid)) == 0
 
 
@@ -1223,3 +1223,37 @@ async def test_module_switches_gate_accounting_in_sql(migrated_db, monkeypatch):
         'SELECT messages, xp_earned FROM user_activity_daily WHERE user_id = $1 AND guild_id = $2', uid, guild
     )
     assert row['messages'] == 4 and row['xp_earned'] == 10
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_privacy_export_runs_on_postgres(migrated_db):
+    """asyncpg infers argument types from the casts, which mocks cannot catch."""
+    import json
+
+    from src.services import privacy_service
+
+    uid = 123456789012345678
+    await migrated_db.execute('INSERT INTO users (discord_id) VALUES ($1) ON CONFLICT DO NOTHING', str(uid))
+    await migrated_db.execute('INSERT INTO user_activity_daily (user_id, guild_id) VALUES ($1, $2)', uid, 987001)
+    data = await privacy_service.export_member_data(uid, database=migrated_db)
+    assert data['account'][0]['discord_id'] == str(uid)
+    assert data['daily_activity'][0]['guild_id'] == 987001
+    json.dumps(data, default=str)
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_departed_guild_purge_runs_on_postgres(migrated_db, monkeypatch):
+    from src.cogs.admin import maintenance
+
+    gone, kept = 987002, 987003
+    monkeypatch.setattr(maintenance, 'db', migrated_db)
+    for gid in (gone, kept):
+        await migrated_db.execute(
+            "INSERT INTO audit_logs (user_id, action, guild_id) VALUES ('1', 'purge_test', $1)", str(gid)
+        )
+    await migrated_db.execute(
+        "INSERT INTO bot_guild_departures VALUES ($1, NOW() - INTERVAL '31 days'), ($2, NOW())", gone, kept
+    )
+    assert await maintenance.purge_departed_guilds(set()) == {str(gone): 'purged'}
+    left = await migrated_db.fetch("SELECT guild_id FROM audit_logs WHERE action = 'purge_test'")
+    assert [r['guild_id'] for r in left] == [str(kept)]

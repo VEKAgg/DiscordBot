@@ -60,6 +60,11 @@ RETENTION_ACTIVITY_LOG_DAYS = max(7, int(os.getenv('RETENTION_ACTIVITY_LOG_DAYS'
 RETENTION_HONEYPOT_EVENTS_DAYS = max(7, int(os.getenv('RETENTION_HONEYPOT_EVENTS_DAYS', '180')))
 RETENTION_MASSUNBAN_ITEMS_DAYS = max(7, int(os.getenv('RETENTION_MASSUNBAN_ITEMS_DAYS', '180')))
 RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS = max(1, int(os.getenv('RETENTION_WITHDRAWN_LISTING_IMAGES_DAYS', '30')))
+# Privacy policy retention (owner decision 2026-11-21): moderation records, audit trail and departed servers.
+RETENTION_MODERATION_DAYS = max(30, int(os.getenv('RETENTION_MODERATION_DAYS', '730')))
+RETENTION_AUDIT_LOG_DAYS = max(30, int(os.getenv('RETENTION_AUDIT_LOG_DAYS', '730')))
+RETENTION_INACTIVITY_NOTICE_DAYS = max(30, int(os.getenv('RETENTION_INACTIVITY_NOTICE_DAYS', '400')))
+RETENTION_DEPARTED_GUILD_DAYS = max(1, int(os.getenv('RETENTION_DEPARTED_GUILD_DAYS', '30')))
 
 # API Rate Limits (requests per minute)
 RATE_LIMITS = {'rss_fetch': 5, 'github_api': 60}

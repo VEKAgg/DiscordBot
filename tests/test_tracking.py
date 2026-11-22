@@ -148,10 +148,10 @@ def _presence_member(uid):
     )
 
 
-def test_presence_needs_server_opt_in_and_respects_member_opt_out():
-    opted, other = _presence_member(1), _presence_member(2)
-    cog = _cog([_guild(members=[opted, other])])
-    cog._consent = {2: (False, None)}  # member 2 opted out; member 1 never chose (allowed)
+def test_presence_needs_server_opt_in_and_member_opt_in():
+    opted, other, never = _presence_member(1), _presence_member(2), _presence_member(3)
+    cog = _cog([_guild(members=[opted, other, never])])
+    cog._consent = {1: (True, None), 2: (False, None)}  # 1 opted in, 2 opted out, 3 never chose (off)
 
     off_awards, off_details = cog.collect_tick(2)  # server hasn't enabled tracking
     assert not off_awards['gaming'] and not off_details
@@ -185,9 +185,16 @@ def test_streaming_is_tracked():
     assert snap['streaming'] == {'Valorant'} and snap['gaming'] == {'Valorant'}
 
 
+def test_presence_tracking_is_off_until_the_member_opts_in():
+    cog = _cog([])
+    assert not cog.is_opted_in(1)  # owner decision 2026-11-21: member opt-in
+    cog.set_opt_in(1, True)
+    assert cog.is_opted_in(1)
+
+
 def test_opt_out_clears_presence_sessions():
     cog = _cog([])
-    assert cog.is_opted_in(1)  # default allowed
+    cog.set_opt_in(1, True)
     cog._consecutive = {(1, 'gaming'): 30, (1, 'voice'): 10}
     cog.set_opt_in(1, False)
     assert not cog.is_opted_in(1)
@@ -415,6 +422,9 @@ async def test_live_role_ignores_members_who_opted_out():
         cog._consent[5] = (False, None)
         await cog.on_presence_update(before, after)
         after.add_roles.assert_not_awaited()
-        cog._consent.pop(5)
+        cog._consent.pop(5)  # never chose: off under member opt-in
+        await cog.on_presence_update(before, after)
+        after.add_roles.assert_not_awaited()
+        cog._consent[5] = (True, None)
         await cog.on_presence_update(before, after)
         after.add_roles.assert_awaited_once()

@@ -267,13 +267,13 @@ class RPGManager(commands.Cog):
             loop.cancel()
 
     # ============================================================
-    # Presence consent (member opt-out)
+    # Presence consent (member opt-in)
     # ============================================================
 
     async def load_opt_ins(self) -> None:
         rows = await db.fetch(
             """SELECT discord_id, presence_opt_in, presence_opt_in_changed_at FROM users
-               WHERE presence_opt_in_changed_at IS NOT NULL OR NOT presence_opt_in"""
+               WHERE presence_opt_in"""
         )
         self._consent = {
             int(r['discord_id']): (bool(r['presence_opt_in']), r['presence_opt_in_changed_at'])
@@ -300,8 +300,8 @@ class RPGManager(commands.Cog):
                 self._consecutive.pop(key, None)
 
     def is_opted_in(self, user_id: int) -> bool:
-        """Tracking allowed for this member (default yes; no after /privacy optout or delete)."""
-        return self._consent.get(user_id, (True, None))[0]
+        """Member agreed to activity tracking with /privacy optin (default no; owner decision 2026-11-21)."""
+        return self._consent.get(user_id, (False, None))[0]
 
     # ============================================================
     # Awards
@@ -610,7 +610,7 @@ class RPGManager(commands.Cog):
                         )
                     )
 
-        # Presence: only in servers that turned tracking on, skipping members who opted out; each member is
+        # Presence: only in servers that turned tracking on, and only members who opted in; each member is
         # credited once per tick (stable guild-ID order) so multiple memberships are not double-counted.
         guilds = sorted((g for g in self.bot.guilds if g.id in (tracking_guilds or set())), key=lambda g: g.id)
         credited: set[int] = set()
@@ -619,7 +619,7 @@ class RPGManager(commands.Cog):
                 user_id = member.id
                 if member.bot or user_id in credited or not member.activities:
                     continue
-                allowed, consent_at = self._consent.get(user_id, (True, None))
+                allowed, consent_at = self._consent.get(user_id, (False, None))
                 if not allowed:
                     continue
                 snapshot = self.presence_snapshot(member)

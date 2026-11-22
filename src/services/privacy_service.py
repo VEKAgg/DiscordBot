@@ -28,6 +28,36 @@ _DELETE_STATEMENTS = (
 )
 
 
+# What /privacy export returns (GDPR Art. 15/20): every table keyed by the member's Discord ID,
+# plus the rows tied to their internal users.id. $1 = Discord ID as text.
+_EXPORT_QUERIES: tuple[tuple[str, str], ...] = (
+    ('account', 'SELECT to_jsonb(t) FROM users t WHERE t.discord_id = $1'),
+    (
+        'daily_activity',
+        'SELECT to_jsonb(t) FROM user_activity_daily t WHERE t.user_id = $1::text::bigint ORDER BY t.activity_date',
+    ),
+    ('activity_details', 'SELECT to_jsonb(t) FROM user_activity_details t WHERE t.user_id = $1'),
+    ('active_activities', 'SELECT to_jsonb(t) FROM user_active_activities t WHERE t.user_id = $1'),
+    ('activity_log', 'SELECT to_jsonb(t) FROM user_activity_log t WHERE t.user_id = $1'),
+    ('season_placings', 'SELECT to_jsonb(t) FROM leaderboard_snapshots t WHERE t.user_id = $1::text::bigint'),
+    ('activity_role', 'SELECT to_jsonb(t) FROM user_rpg_roles t WHERE t.user_id = $1'),
+    ('inactivity_notices', 'SELECT to_jsonb(t) FROM inactivity_notices t WHERE t.user_id = $1::text::bigint'),
+    ('warnings', 'SELECT to_jsonb(t) FROM warnings t WHERE t.user_id = $1::text::bigint'),
+    ('security_events', 'SELECT to_jsonb(t) FROM security_events t WHERE t.user_id = $1'),
+    ('security_state', 'SELECT to_jsonb(t) FROM user_security t WHERE t.user_id = $1'),
+    ('spam_trap_events', 'SELECT to_jsonb(t) FROM honeypot_events t WHERE t.user_id = $1::text::bigint'),
+    ('audit_log', 'SELECT to_jsonb(t) FROM audit_logs t WHERE t.user_id = $1 ORDER BY t.created_at'),
+    (
+        'profile',
+        'SELECT to_jsonb(t) FROM profiles t JOIN users u ON u.id = t.user_id WHERE u.discord_id = $1',
+    ),
+    (
+        'portfolio',
+        'SELECT to_jsonb(t) FROM portfolios t JOIN users u ON u.id = t.user_id WHERE u.discord_id = $1',
+    ),
+)
+
+
 def _id(user_id: int) -> str:
     if isinstance(user_id, bool) or not 0 < user_id <= 2**63 - 1:
         raise ValueError('Invalid Discord user ID')
@@ -39,7 +69,7 @@ async def get_privacy(user_id: int, *, database: Database = db) -> dict:
         'SELECT presence_opt_in, presence_opt_in_changed_at FROM users WHERE discord_id = $1', _id(user_id)
     )
     return {
-        'presence_tracking': row is None or bool(row['presence_opt_in']),  # default allowed; false = opted out
+        'presence_tracking': row is not None and bool(row['presence_opt_in']),  # opt-in: default off
         'changed_at': row['presence_opt_in_changed_at'] if row else None,
     }
 
@@ -96,3 +126,13 @@ async def delete_activity_data(user_id: int, *, source: str = 'discord', databas
             source,
             {'scope': 'activity'},
         )
+
+
+async def export_member_data(user_id: int, *, database: Database = db) -> dict:
+    """Everything the bot database holds about one member, as JSON-ready data (GDPR Art. 15)."""
+    uid = _id(user_id)
+    data: dict = {'discord_id': uid}
+    for label, sql in _EXPORT_QUERIES:
+        rows = await database.fetch(sql, uid)
+        data[label] = [json.loads(r[0]) if isinstance(r[0], str) else r[0] for r in rows]
+    return data

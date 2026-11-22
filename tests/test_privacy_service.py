@@ -76,10 +76,10 @@ async def test_audit_failure_rolls_back_and_never_notifies(database):
     assert not any('pg_notify' in c.args[0] for c in conn.execute.call_args_list)
 
 
-async def test_unknown_user_privacy_defaults_allowed(database):
-    """Server opt-in + member opt-out (owner decision): a member who never chose is allowed."""
+async def test_unknown_user_privacy_defaults_off(database):
+    """Server opt-in + member opt-in (owner decision 2026-11-21): a member who never chose is not tracked."""
     db, _, _, _ = database
-    assert await service.get_privacy(123, database=db) == {'presence_tracking': True, 'changed_at': None}
+    assert await service.get_privacy(123, database=db) == {'presence_tracking': False, 'changed_at': None}
 
 
 @pytest.fixture
