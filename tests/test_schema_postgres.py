@@ -1257,3 +1257,37 @@ async def test_departed_guild_purge_runs_on_postgres(migrated_db, monkeypatch):
     assert await maintenance.purge_departed_guilds(set()) == {str(gone): 'purged'}
     left = await migrated_db.fetch("SELECT guild_id FROM audit_logs WHERE action = 'purge_test'")
     assert [r['guild_id'] for r in left] == [str(kept)]
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_privacy_export_covers_every_member_keyed_table(migrated_db):
+    """A new table with a member column must be added to the export."""
+    import re
+
+    from src.services import privacy_service
+
+    member = re.compile(
+        r'^((.*_)?(user|member|author|seller|buyer|owner|creator|mentor|mentee|moderator|discord|reviewer|reviewee|requester|recipient|user\d)_id'
+        r'|\w+_by)$'
+    )
+    sql = ' '.join(query for _, query in privacy_service._EXPORT_QUERIES)
+    rows = await migrated_db.fetch(
+        """SELECT c.table_name, c.column_name FROM information_schema.columns c
+           JOIN information_schema.tables b USING (table_schema, table_name)
+           WHERE c.table_schema = current_schema() AND b.table_type = 'BASE TABLE'"""
+    )
+    keyed = {r['table_name'] for r in rows if member.match(r['column_name'])}
+    assert not {t for t in keyed if not re.search(rf'\b{t}\b', sql)}
+
+
+@pytest.mark.asyncio(loop_scope='module')
+async def test_privacy_export_returns_only_the_members_rows(migrated_db):
+    from src.services import privacy_service
+
+    ids = {}
+    for uid in (880001, 880002, 880003, 880004):
+        ids[uid] = await migrated_db.fetchval('INSERT INTO users (discord_id) VALUES ($1) RETURNING id', str(uid))
+    for a, b in ((880001, 880002), (880003, 880004)):
+        await migrated_db.execute('INSERT INTO connections (user1_id, user2_id) VALUES ($1, $2)', ids[a], ids[b])
+    data = await privacy_service.export_member_data(880002, database=migrated_db)
+    assert [(r['user1_id'], r['user2_id']) for r in data['connections']] == [(ids[880001], ids[880002])]

@@ -55,6 +55,149 @@ _EXPORT_QUERIES: tuple[tuple[str, str], ...] = (
         'portfolio',
         'SELECT to_jsonb(t) FROM portfolios t JOIN users u ON u.id = t.user_id WHERE u.discord_id = $1',
     ),
+    (
+        'marketplace_listings',
+        """SELECT to_jsonb(t) FROM marketplace_listings t
+           WHERE t.seller_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_offers',
+        """SELECT to_jsonb(t) FROM marketplace_offers t
+           WHERE t.buyer_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_review_votes',
+        """SELECT to_jsonb(t) FROM marketplace_review_votes t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_seller_stats',
+        """SELECT to_jsonb(t) FROM marketplace_seller_stats t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_transactions',
+        """SELECT to_jsonb(t) FROM marketplace_transactions t
+           WHERE t.buyer_id IN (SELECT id FROM users WHERE discord_id = $1) OR t.seller_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_views',
+        """SELECT to_jsonb(t) FROM marketplace_views t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_watchlist',
+        """SELECT to_jsonb(t) FROM marketplace_watchlist t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_fraud_flags',
+        """SELECT to_jsonb(t) - 'resolved_by' FROM marketplace_fraud_flags t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'mentor_registrations',
+        """SELECT to_jsonb(t) FROM mentor_registrations t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'mentorship_awards',
+        """SELECT to_jsonb(t) FROM mentorship_awards t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'mentorship_notification_preferences',
+        """SELECT to_jsonb(t) FROM mentorship_notification_preferences t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'mentorships',
+        """SELECT to_jsonb(t) FROM mentorships t
+           WHERE t.mentor_id IN (SELECT id FROM users WHERE discord_id = $1) OR t.mentee_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'mentorship_matches',
+        """SELECT to_jsonb(t) FROM mentorship_matches t
+           WHERE t.mentor_id = $1::text::bigint OR t.mentee_id = $1::text::bigint""",
+    ),
+    (
+        'quiz_attempts',
+        """SELECT to_jsonb(t) FROM quiz_attempts t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'workshop_participants',
+        """SELECT to_jsonb(t) FROM workshop_participants t
+           WHERE t.user_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'workshops',
+        """SELECT to_jsonb(t) FROM workshops t
+           WHERE t.created_by IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'user_footer_state',
+        """SELECT to_jsonb(t) FROM user_footer_state t
+           WHERE t.user_id = $1::text::bigint""",
+    ),
+    (
+        'honeypots',
+        """SELECT to_jsonb(t) FROM honeypots t
+           WHERE t.created_by = $1::text::bigint OR t.updated_by = $1::text::bigint""",
+    ),
+    (
+        'honeypot_logging_config',
+        """SELECT to_jsonb(t) FROM honeypot_logging_config t
+           WHERE t.updated_by = $1::text::bigint""",
+    ),
+    (
+        'guild_modules',
+        """SELECT to_jsonb(t) FROM guild_modules t
+           WHERE t.updated_by = $1::text::bigint""",
+    ),
+    (
+        'massunban_job_items',
+        """SELECT to_jsonb(t) - 'banned_by' FROM massunban_job_items t
+           WHERE t.target_user_id = $1""",
+    ),
+    (
+        'massunban_jobs',
+        """SELECT to_jsonb(t) - 'confirm_token_hash' FROM massunban_jobs t
+           WHERE t.requested_by = $1::text::bigint""",
+    ),
+    (
+        'marketplace_reviews',
+        """SELECT to_jsonb(t) FROM marketplace_reviews t
+           WHERE t.reviewer_id IN (SELECT id FROM users WHERE discord_id = $1) OR t.reviewee_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'connection_requests',
+        """SELECT to_jsonb(t) FROM connection_requests t
+           WHERE t.requester_id IN (SELECT id FROM users WHERE discord_id = $1) OR t.recipient_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'connections',
+        """SELECT to_jsonb(t) FROM connections t
+           WHERE t.user1_id IN (SELECT id FROM users WHERE discord_id = $1) OR t.user2_id IN (SELECT id FROM users WHERE discord_id = $1)""",
+    ),
+    (
+        'marketplace_listing_images',
+        """SELECT to_jsonb(t) - 'bytes' FROM marketplace_listing_images t
+           WHERE t.listing_id IN (SELECT id FROM marketplace_listings WHERE seller_id IN (SELECT id FROM users WHERE discord_id = $1))""",
+    ),
+    (
+        'marketplace_publications',
+        """SELECT to_jsonb(t) FROM marketplace_publications t
+           WHERE t.listing_id IN (SELECT id FROM marketplace_listings WHERE seller_id IN (SELECT id FROM users WHERE discord_id = $1))""",
+    ),
+    (
+        'servers_owned',
+        'SELECT to_jsonb(x) FROM (SELECT guild_id, name FROM bot_guild_snapshot WHERE owner_id = $1::text::bigint) x',
+    ),
+    (
+        'bot_settings_changed',
+        'SELECT to_jsonb(x) FROM (SELECT key, updated_at FROM bot_settings WHERE updated_by = $1::text::bigint) x',
+    ),
 )
 
 
