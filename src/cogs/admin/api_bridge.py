@@ -136,6 +136,11 @@ class ApiBridge(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_join(self, guild: nextcord.Guild) -> None:
         self._mark(guild)
+        if runtime_state.db_available:
+            try:  # added back before the purge: keep the server's data
+                await db.execute('DELETE FROM bot_guild_departures WHERE guild_id = $1', guild.id)
+            except Exception:
+                logger.warning('Failed to clear departure for guild %s', guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_guild_update(self, _before: nextcord.Guild, after: nextcord.Guild) -> None:
@@ -147,8 +152,13 @@ class ApiBridge(commands.Cog):
         if runtime_state.db_available:
             try:
                 await db.execute('DELETE FROM bot_guild_snapshot WHERE guild_id = $1', guild.id)
+                # Privacy: the server's data is deleted after RETENTION_DEPARTED_GUILD_DAYS (maintenance cog).
+                await db.execute(
+                    'INSERT INTO bot_guild_departures (guild_id) VALUES ($1) ON CONFLICT (guild_id) DO NOTHING',
+                    guild.id,
+                )
             except Exception:
-                logger.warning('Failed to drop snapshot for guild %s', guild.id, exc_info=True)
+                logger.warning('Failed to record departure for guild %s', guild.id, exc_info=True)
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: nextcord.abc.GuildChannel) -> None:

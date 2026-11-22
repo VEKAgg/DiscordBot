@@ -239,8 +239,36 @@ async def test_retention_runs_every_rule_even_if_one_fails():
     assert len(calls) == len(RETENTION_RULES)
     assert results['honeypot_events'].startswith('error')
     assert results['user_activity_log'] == 'DELETE 3'
-    # Aggregates and the audit trail are never purged.
-    assert not any(t in sql for sql in calls for t in ('user_activity_daily', 'audit_logs', 'feed_seen_items'))
+    # Aggregates and feed dedupe IDs are never aged out; the audit trail is kept two years.
+    assert not any(t in sql for sql in calls for t in ('user_activity_daily', 'feed_seen_items'))
+    assert results['audit_logs'] == 'DELETE 3'
+    assert results['warnings'] == 'DELETE 3'
+
+
+async def test_departed_guilds_are_purged_after_the_grace_period_unless_back():
+    from src.cogs.admin.maintenance import GUILD_PURGE_STATEMENTS, purge_departed_guilds
+
+    executed: list[tuple[str, int]] = []
+
+    class _Tx:
+        async def __aenter__(self):
+            return SimpleNamespace(execute=AsyncMock(side_effect=lambda sql, gid: executed.append((sql, gid))))
+
+        async def __aexit__(self, *exc):
+            return False
+
+    fake = SimpleNamespace(
+        fetch=AsyncMock(return_value=[{'guild_id': 11}, {'guild_id': 22}]),
+        execute=AsyncMock(),
+        transaction=lambda: _Tx(),
+    )
+    with patch.dict(purge_departed_guilds.__globals__, {'db': fake}):
+        results = await purge_departed_guilds(present_guild_ids={22})
+
+    assert results == {'11': 'purged', '22': 'present'}
+    assert [sql for sql, _ in executed] == list(GUILD_PURGE_STATEMENTS)
+    assert {gid for _, gid in executed} == {11}
+    fake.execute.assert_awaited_once_with('DELETE FROM bot_guild_departures WHERE guild_id = $1', 22)
 
 
 async def test_failed_admin_alert_does_not_consume_cooldown():

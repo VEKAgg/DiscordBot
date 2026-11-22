@@ -1,14 +1,18 @@
-"""Privacy Cog — members control presence tracking and can delete their activity data.
+"""Privacy Cog — members control presence tracking, see and download their data, and can delete it.
 
 Presence-derived tracking (games, coding apps, streaming) runs only in servers that enabled it, and stops
-for a member who runs ``/privacy optout`` (``/privacy optin`` allows it again).
-Message, voice and command counts (XP) are always recorded; ``/privacy delete``
-erases all of a member's activity data and XP. Listening/Spotify is never tracked.
+for a member who runs ``/privacy optout`` (owner decision 2026-11-22; ``/privacy optin`` allows it again).
+Message, voice and command counts (XP) are recorded for leveling; ``/privacy export`` returns everything
+the bot holds about the member and ``/privacy delete`` erases their activity data and XP.
+Listening/Spotify is never tracked.
 """
 
 from __future__ import annotations
 
+import io
+import json
 import logging
+import os
 
 import nextcord
 from nextcord.ext import commands
@@ -21,12 +25,14 @@ from src.utils.security import audit_log as audit_log  # Compatibility for exist
 
 logger = logging.getLogger('VEKA.privacy')
 
+POLICY_URL = os.getenv('VEKA_BOT_POLICY_URL', 'https://veka.gg/legal/bots')
+
 WHAT_IS_TRACKED = (
-    '**Always (needed for XP and levels):** message count, voice minutes, command count, streaks.\n'
+    '**For XP and levels:** message count, voice minutes, command count, streaks (counts only).\n'
     '**In servers that enabled activity tracking, unless you opt out:** games you play, coding apps, and '
-    'streaming time (from your Discord activity), '
-    'shown in `/most` and activity stats.\n'
-    '**Never:** music/Spotify, message content, DMs.'
+    'streaming time (from your Discord activity), shown in `/most` and activity stats.\n'
+    '**Never:** music/Spotify, message content, DMs.\n'
+    f'Full details, retention and your rights: {POLICY_URL}'
 )
 
 
@@ -88,7 +94,7 @@ class Privacy(commands.Cog):
             description=(
                 f'**Activity tracking:** {"allowed" if opted_in else "off (you opted out)"}\n\n{WHAT_IS_TRACKED}\n\n'
                 '`/privacy optout` stops activity tracking for you; `/privacy optin` allows it again. '
-                '`/privacy delete` erases your activity data and XP.'
+                '`/privacy export` gives you a copy of your data; `/privacy delete` erases your activity data and XP.'
             ),
             contributor_source=__name__,
         )
@@ -121,9 +127,9 @@ class Privacy(commands.Cog):
         await set_presence_opt_in(self.bot, interaction.user.id, True)
         embed = await success_embed(
             'Activity tracking allowed',
-            'In servers that enabled activity tracking, your games, coding apps and streaming time count again. '
-            'Turn it off any time '
-            'with `/privacy optout`.',
+            'In servers that enabled activity tracking, the bot records which games, coding apps and streams '
+            'you are active in, and for how long, for leaderboards and activity stats. Server staff can see it. '
+            f'Turn it off any time with `/privacy optout`. Details: {POLICY_URL}',
             contributor_source=__name__,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
@@ -139,6 +145,20 @@ class Privacy(commands.Cog):
             contributor_source=__name__,
         )
         await safe_send(interaction, embed=embed, ephemeral=True)
+
+    @privacy_group.subcommand(name='export', description='Get a copy of everything the bot holds about you')
+    @safe_slash_command(requires_db=True)
+    async def privacy_export(self, interaction: nextcord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await safe_send(interaction, **await self._export_payload(interaction.user.id), ephemeral=True)
+
+    async def _export_payload(self, user_id: int) -> dict:
+        data = await privacy_service.export_member_data(user_id, database=db)
+        raw = json.dumps(data, indent=2, default=str, ensure_ascii=False).encode()
+        return {
+            'content': f'Here is everything the VEKA bot holds about you. Questions: {POLICY_URL}',
+            'file': nextcord.File(io.BytesIO(raw), filename=f'veka-bot-data-{user_id}.json'),
+        }
 
     @privacy_group.subcommand(name='delete', description='Delete your activity data and XP')
     @safe_slash_command(requires_db=True)
@@ -162,13 +182,28 @@ class Privacy(commands.Cog):
     @safe_command(requires_db=True)
     async def privacy_optin_prefix(self, ctx: commands.Context) -> None:
         await set_presence_opt_in(self.bot, ctx.author.id, True)
-        await safe_send(ctx, '✅ Activity tracking is **allowed** for you again. `!privacy optout` turns it off.')
+        await safe_send(
+            ctx,
+            '✅ Activity tracking is **allowed** for you again (games, coding apps, streaming, in servers that enabled it). '
+            f'`!privacy optout` turns it off. Details: {POLICY_URL}',
+        )
 
     @privacy_prefix.command(name='optout')
     @safe_command(requires_db=True)
     async def privacy_optout_prefix(self, ctx: commands.Context) -> None:
         await set_presence_opt_in(self.bot, ctx.author.id, False)
         await safe_send(ctx, '✅ Activity tracking is **off** for you.')
+
+    @privacy_prefix.command(name='export')
+    @safe_command(requires_db=True)
+    async def privacy_export_prefix(self, ctx: commands.Context) -> None:
+        # Personal data goes to the member's DMs, never into a server channel.
+        payload = await self._export_payload(ctx.author.id)
+        try:
+            await ctx.author.send(**payload)
+            await safe_send(ctx, '📬 Sent your data to your DMs.')
+        except nextcord.Forbidden:
+            await safe_send(ctx, 'I could not DM you. Use `/privacy export` instead (only you will see it).')
 
     @privacy_prefix.command(name='delete')
     @safe_command(requires_db=True)
