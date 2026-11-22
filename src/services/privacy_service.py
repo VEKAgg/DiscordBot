@@ -69,7 +69,7 @@ async def get_privacy(user_id: int, *, database: Database = db) -> dict:
         'SELECT presence_opt_in, presence_opt_in_changed_at FROM users WHERE discord_id = $1', _id(user_id)
     )
     return {
-        'presence_tracking': row is not None and bool(row['presence_opt_in']),  # opt-in: default off
+        'presence_tracking': row is None or bool(row['presence_opt_in']),  # default allowed; false = opted out
         'changed_at': row['presence_opt_in_changed_at'] if row else None,
     }
 

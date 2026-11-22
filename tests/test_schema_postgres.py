@@ -1104,7 +1104,7 @@ async def test_presence_is_not_written_for_servers_without_tracking(migrated_db,
         'SELECT total_gaming_minutes, total_voice_minutes, presence_opt_in FROM users WHERE discord_id = $1', str(uid)
     )
     assert (row['total_gaming_minutes'], row['total_voice_minutes']) == (0, 3)
-    assert row['presence_opt_in'] is False  # new members are not tracked until they opt in (2026-11-21)
+    assert row['presence_opt_in'] is True  # new members default to allowed (member opt-out model)
     assert await migrated_db.fetchval('SELECT COUNT(*) FROM user_activity_details WHERE user_id = $1', str(uid)) == 0
 
 

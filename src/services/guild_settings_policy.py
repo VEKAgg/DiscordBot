@@ -56,7 +56,7 @@ TOGGLE_SETTINGS: dict[str, tuple[str, str, str]] = {
     'presence_tracking': (
         'Activity Tracking',
         'presence_tracking_enabled',
-        'Track games, coding apps and streaming time for stats, only for members who run /privacy optin (no music)',
+        'Track games, coding apps and streaming time for stats (members can /privacy optout; no music)',
     ),
 }
 

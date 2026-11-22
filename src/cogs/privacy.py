@@ -1,7 +1,7 @@
 """Privacy Cog — members control presence tracking, see and download their data, and can delete it.
 
-Presence-derived tracking (games, coding apps, streaming) runs only in servers that enabled it, and only
-for members who agreed with ``/privacy optin`` (owner decision 2026-11-21; ``/privacy optout`` stops it).
+Presence-derived tracking (games, coding apps, streaming) runs only in servers that enabled it, and stops
+for a member who runs ``/privacy optout`` (owner decision 2026-11-22; ``/privacy optin`` allows it again).
 Message, voice and command counts (XP) are recorded for leveling; ``/privacy export`` returns everything
 the bot holds about the member and ``/privacy delete`` erases their activity data and XP.
 Listening/Spotify is never tracked.
@@ -29,7 +29,7 @@ POLICY_URL = os.getenv('VEKA_BOT_POLICY_URL', 'https://veka.gg/legal/bots')
 
 WHAT_IS_TRACKED = (
     '**For XP and levels:** message count, voice minutes, command count, streaks (counts only).\n'
-    '**Only if you opt in, in servers that enabled activity tracking:** games you play, coding apps, and '
+    '**In servers that enabled activity tracking, unless you opt out:** games you play, coding apps, and '
     'streaming time (from your Discord activity), shown in `/most` and activity stats.\n'
     '**Never:** music/Spotify, message content, DMs.\n'
     f'Full details, retention and your rights: {POLICY_URL}'
@@ -88,12 +88,12 @@ class Privacy(commands.Cog):
         stored = (
             await db.fetchval('SELECT presence_opt_in FROM users WHERE discord_id = $1', str(user.id)) if user else None
         )
-        opted_in = stored is True  # opt-in: no row / never chose = off
+        opted_in = stored is not False  # no row / never chose = allowed
         return await info_embed(
             title='Your privacy settings',
             description=(
-                f'**Activity tracking:** {"on (you opted in)" if opted_in else "off"}\n\n{WHAT_IS_TRACKED}\n\n'
-                '`/privacy optin` turns activity tracking on for you; `/privacy optout` turns it off. '
+                f'**Activity tracking:** {"allowed" if opted_in else "off (you opted out)"}\n\n{WHAT_IS_TRACKED}\n\n'
+                '`/privacy optout` stops activity tracking for you; `/privacy optin` allows it again. '
                 '`/privacy export` gives you a copy of your data; `/privacy delete` erases your activity data and XP.'
             ),
             contributor_source=__name__,
@@ -121,13 +121,13 @@ class Privacy(commands.Cog):
     async def privacy_status(self, interaction: nextcord.Interaction) -> None:
         await safe_send(interaction, embed=await self._status_embed(interaction.user), ephemeral=True)
 
-    @privacy_group.subcommand(name='optin', description='Agree to tracking of your games, coding apps and streaming')
+    @privacy_group.subcommand(name='optin', description='Allow activity tracking for you again (after an opt-out)')
     @safe_slash_command(requires_db=True)
     async def privacy_optin(self, interaction: nextcord.Interaction) -> None:
         await set_presence_opt_in(self.bot, interaction.user.id, True)
         embed = await success_embed(
-            'Activity tracking on',
-            'In servers that enabled activity tracking, the bot now records which games, coding apps and streams '
+            'Activity tracking allowed',
+            'In servers that enabled activity tracking, the bot records which games, coding apps and streams '
             'you are active in, and for how long, for leaderboards and activity stats. Server staff can see it. '
             f'Turn it off any time with `/privacy optout`. Details: {POLICY_URL}',
             contributor_source=__name__,
@@ -184,7 +184,7 @@ class Privacy(commands.Cog):
         await set_presence_opt_in(self.bot, ctx.author.id, True)
         await safe_send(
             ctx,
-            '✅ Activity tracking is **on** for you (games, coding apps, streaming, in servers that enabled it). '
+            '✅ Activity tracking is **allowed** for you again (games, coding apps, streaming, in servers that enabled it). '
             f'`!privacy optout` turns it off. Details: {POLICY_URL}',
         )
 
